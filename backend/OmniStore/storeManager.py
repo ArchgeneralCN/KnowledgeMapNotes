@@ -65,7 +65,10 @@ class  storeManager:
         entity = [str(i) for i in current_g]
         input_parameter = f"实体列表：{entity}\n问题：{query}"
         output = self.agent.agent_safe_generate_response(prompt, input_parameter)
-        return output.get("entities",[])
+        if isinstance(output, str):
+            return []
+        else:
+            return output.get("entities",[])
 
 
     def select_vectors(self, query, file, n_results):
@@ -143,14 +146,15 @@ class  storeManager:
         # 如果指定了top_n，则只取前top_n个关系
         if top_n > 0:
             edges_with_weight = edges_with_weight[:top_n]
-        
         # 转换为知识库格式
+        print(edges_with_weight,'edges')
+        if not edges_with_weight:
+            return []
+
         for edge in edges_with_weight:
             knowledge_base.append(
                 f"Edge from {edge['source']} to {edge['target']}, Relation: {edge['relation']}, context:{edge['context']}, weight:{edge['weight']}"
             )
-
-        # 计算模块度
         modularity = community_louvain.modularity(partition, current_G.to_undirected())
         print(f"\nModularity of the entire graph: {modularity}")
 

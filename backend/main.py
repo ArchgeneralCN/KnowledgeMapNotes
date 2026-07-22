@@ -19,7 +19,6 @@ import uuid
 from collections import deque
 from dotenv import load_dotenv
 import os
-import os
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 
 load_dotenv(dotenv_path="./.env")

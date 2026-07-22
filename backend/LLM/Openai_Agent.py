@@ -21,7 +21,6 @@ class OpenaiAgent:
         for i in range(repeat):
             try:
                 curr_gpt_response = self.agent_request(prompt, input_parameter)
-                # print(curr_gpt_response,"curr_gpt_response")
                 x = ""
                 if 'json' in curr_gpt_response:
                     pattern = r"```json\s*({.*?})\s*```"
@@ -44,10 +43,11 @@ class OpenaiAgent:
             messages=[
                 {"role": "system", "content": prompt},
                 {'role': 'user', 'content': input_parameter}],
-            temperature=temperature
+            temperature=temperature,
+            extra_body={"thinking": {"type": "disabled"}},
+
         )
         output = response.choices[0].message.content
-        # print(output,"output")
         return output
 
     def agent_safe_generate_response_rag(self, prompt, input_parameter, messages, stream, repeat=3):
@@ -138,7 +138,8 @@ class OpenaiAgent:
             model=model,
             messages=formatted_messages,
             temperature=temperature,
-            stream=True
+            stream=True,
+            extra_body={"thinking": {"type": "disabled"}}
         )
         return response
 
@@ -154,7 +155,8 @@ class OpenaiAgent:
             model=model,
             messages=formatted_messages,
             temperature=temperature,
-            stream=False
+            stream=False,
+            extra_body={"thinking": {"type": "disabled"}}
         )
         output = response.choices[0].message.content
         return output

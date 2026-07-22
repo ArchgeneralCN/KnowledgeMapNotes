@@ -1,375 +1,157 @@
-import json
-import os
-import re
-import itertools
-from collections import defaultdict
-from dotenv import load_dotenv
+import asyncio
+from openai import OpenAI
+from pydantic import BaseModel
+from fastapi import FastAPI, File, UploadFile, BackgroundTasks, Form
+from fastapi.middleware.cors import CORSMiddleware
 from pyvis.network import Network
 import networkx as nx
-import concurrent.futures
+import itertools
+import logging
+from typing import Dict, List, Optional, AsyncGenerator
+from OmniText.PDFProcessor import PDFProcessor
+from OmniText.MDProcessor import MDProcessor
+from concurrent.futures import ThreadPoolExecutor
+import json
+from dotenv import load_dotenv
+import os
+os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 
-load_dotenv(dotenv_path="./.env")
-prompt_vision = os.getenv("PROMPTVISION")
+load_dotenv(dotenv_path="../.env")
 
-class KgManager:
-    def __init__(self,agent,splitter,embedding_model,store):
-        self.store = store
-        # 大模型的对象
-        self.Agent = agent
-        # 用于分割文本
-        self.splitter = splitter
-        # 文本嵌入模型
-        self.embeddings = embedding_model
-        # 文件名
-        self.file = ""
-        # 原始文件类型
-        self.original_file_type = ""
-        # 当前 文本块bid-对应的关系的表
-        self.kg_triplet = []
-        # 当前 实体-实体标签映射表
-        self.bidirectional_mapping = {
-            "entity_to_label": {},
-            "label_to_entities": defaultdict(list)
-        }
-        # 当前 有向图
-        self.current_G = nx.DiGraph()
-        # 当前 文本分块
-        self.Bolts = []
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("../app.log", encoding='utf-8'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("文件处理服务")
 
 
-    def form_default(self,filename):
-        default_data = self.store.load_state(filename)
-        if default_data:
-            self.file = default_data['file']
-            self.kg_triplet = default_data['kg_triplet']
-            self.bidirectional_mapping = default_data['bidirectional_mapping']
-            self.current_G = default_data['current_G']
-            self.Bolts = default_data['Bolts']
-            self.original_file_type = default_data.get('original_file_type', '.txt')
-        else:
-            return None
+class rag_item(BaseModel):
+    request: str
+    model: str
+    flow: bool = False
+    top_k: int = 1
+    weight_threshold: float = 0.3  # 添加权重阈值参数
+    max_relations: int = 20  # 添加最大关系数量参数
+    filename: Optional[str] = None
+    messages: Optional[List[Dict[str, str]]] = None  # 确保消息格式正确
+    session_id: Optional[str] = None  # 会话ID，用于跟踪特定文件的对话
 
 
-    # 实体与实体类型的字典建立
-    def _build_bidirectional_mapping(self, data):
-        mapping = {
-            "entity_to_label": {},
-            "label_to_entities": defaultdict(list)
-        }
-        seen_entities = set()
+app = FastAPI(title="图谱笔记", description="大模型知识图谱笔记软件")
 
-        for entity, label in data:
-            if entity not in seen_entities:
-                mapping["entity_to_label"][entity] = label
-                mapping["label_to_entities"][label].append(entity)
-                seen_entities.add(entity)
+UPLOAD_FOLDER = os.getenv("UPLOAD_FOLDER")
+TXT_FOLDER = os.getenv("TXT_FOLDER")
+RESULT_FOLDER = os.getenv("RESULT_FOLDER")
 
-        return mapping
+PROCESS_STATUS: Dict[str, str] = {}
 
-    # 实体-标签表 利用实体获取标签
-    def get_entity_label(self, knowledge_graph, entity):
-        return knowledge_graph["entity_to_label"].get(entity, "未知标签")
+# 确保目录存在
+for folder in [UPLOAD_FOLDER, TXT_FOLDER, RESULT_FOLDER]:
+    os.makedirs(folder, exist_ok=True)
 
-    # 实体-标签表 利用标签获取实体
-    def get_entities_by_label(self, knowledge_graph, label):
-            return knowledge_graph["label_to_entities"].get(label, [])
-
-    # 用于将文本分块处理
-    def _Txt2Bolts(self,text):
-        # begin  存入向量数据库
-        documents = []
-        embed = []
-        ids = []
-        self.Bolts = self.splitter.split_text(text)
-        for bid, Bolt in self.Bolts:
-            ids.append(bid)
-            documents.append(Bolt)
-            embed.append(self.embeddings.encode(Bolt))
-        return self.Bolts
-
-
-    def 实体提取(self,input_parameter):
-        entity_label = []
-        prompt = open(f"./prompt/{prompt_vision}/entity_extraction2.txt", encoding='utf-8').read()
-        output = self.Agent.agent_safe_generate_response(prompt, input_parameter)
-        if not isinstance(output, dict):
-            entity_label = []
-        else:
-            entity_label = output.get("entities",[])
-            # print(output)
-        return entity_label
-
-    def 关系提取(self,input_parameter,entity):
-        prompt2 = open(f"./prompt/{prompt_vision}/relationship_extraction2.txt", encoding='utf-8').read()
-        output2 = self.Agent.agent_safe_generate_response(
-            prompt2, "笔记内容：" + input_parameter + "\n实体列表：" + json.dumps(entity))
-        print(output2,'output2')
-        # 确保从输出中获取正确的relations和weight值
-        if not isinstance(output2,dict):
-            relations = []
-        else:
-            relations = output2.get("relations", [])
-
-        # 确保权重是浮点数类型
-        for relation in relations:
-            if 'weight' not in relation:
-                relation['weight'] = 0.5
-            else:
-                # 确保weight是浮点数类型
-                relation['weight'] = float(relation['weight'])
-
-        print("原始关系权重:", [(rel['source'], rel['target'], rel['weight']) for rel in relations])
-        return relations
-
-
-    def 知识融合(self,relations):
-        # 创建一个字典来存储实体对及其关系
-        entity_pairs = defaultdict(list)
-
-        # 收集所有具有相同实体的关系
-        for relation in relations:
-            for rel in relation['relation']:
-                source = rel['source']
-                target = rel['target']
-                # 使用排序后的实体对作为键，确保(source,target)和(target,source)被视为相同
-                entity_pair = tuple(sorted([source, target]))
-                entity_pairs[entity_pair].append({
-                    'bid': relation['bid'],
-                    'relation': rel
-                })
-
-        # 处理需要融合的关系
-        merged_relations = []
-        for entity_pair, rel_list in entity_pairs.items():
-            if len(rel_list) > 1:  # 只处理有多个关系的实体对
-                print(entity_pair,"需要更新的",rel_list)
-                # 构建输入文本
-                input_text = f"实体1：{entity_pair[0]}\n实体2：{entity_pair[1]}\n"
-                input_text += "现有关系：\n"
-                for rel in rel_list:
-                    # 确保获取到的权重是浮点数
-                    try:
-                        weight = float(rel['relation'].get('weight', 0.5))
-                    except (ValueError, TypeError):
-                        weight = 0.5
-                    input_text += f"- {rel['relation']['relation']}（上下文：{rel['relation']['context']}，权重：{weight}）\n"
-
-                # 读取提示词模板
-                prompt = open(f"./prompt/{prompt_vision}/knowledge_fusion.txt", encoding='utf-8').read()
-                prompt = prompt.replace("{input_text}", input_text)
-                # print(input_text,"input_text")
-                # 使用Agent进行关系融合
-                merged_result = self.Agent.agent_safe_generate_response(prompt, input_text)
-                print(merged_result, "关系融合")
-
-                # 确保融合后的关系中包含权重
-                if isinstance(merged_result, dict):
-                    merged_result = []
-                else:
-                    for rel in merged_result.get('relations', []):
-                        if 'weight' not in rel:
-                            rel['weight'] = 0.5
-                        else:
-                            # 确保weight是浮点数
-                            try:
-                                rel['weight'] = float(rel['weight'])
-                            except (ValueError, TypeError):
-                                rel['weight'] = 0.5
-
-                # 将融合后的关系添加到结果中
-                for rel in rel_list:
-                    if isinstance(rel, dict) and isinstance(merged_result, dict):
-                        merged_relations.append({
-                            'bid': rel['bid'],
-                            'relation': merged_result.get('relations', [])  # 使用完整的融合后关系列表
-                        })
-                    else:
-                        continue
-            else:
-                # 对于只有一个关系的实体对，直接保留原关系
-                merged_relations.append({
-                    'bid': rel_list[0]['bid'],
-                    'relation': [rel_list[0]['relation']]  # 保持列表格式一致
-                })
-
-        # 确保返回的关系格式正确
-        formatted_relations = []
-        for relation in merged_relations:
-            formatted_relation = {
-                'bid': relation['bid'],
-                'relation': []
-            }
-            for rel in relation['relation']:
-                if isinstance(rel, dict) and all(k in rel for k in ['source', 'target', 'relation', 'context']):
-                    # 确保权重字段存在且为浮点数
-                    if 'weight' not in rel:
-                        rel['weight'] = 0.5
-                    else:
-                        try:
-                            rel['weight'] = float(rel['weight'])
-                        except (ValueError, TypeError):
-                            print(f"警告: 无法将权重 '{rel['weight']}' 转换为浮点数，使用默认值0.5")
-                            rel['weight'] = 0.5
-
-                    formatted_relation['relation'].append(rel)
-                    # print(f"添加关系: {rel['source']} -> {rel['target']}, 权重: {rel['weight']}")
-                else:
-                    print(f"警告：跳过格式不正确的关系: {rel}")
-            if formatted_relation['relation']:  # 只添加有效的关系
-                formatted_relations.append(formatted_relation)
-
-        return formatted_relations
-
-    # 输入处理好的分割文本，输出bid与实体-关系三元集合
-    def 知识图谱的构建(self, text=None):
-        if type(text) == str:
-            self.Bolts = self._Txt2Bolts(text)
-        elif type(text) == list:
-            self.Bolts = text
-        elif text is None:
-            pass
-        kg_triplet = []
-        entity_labels = []
-        num_blocks = len(self.Bolts)
-        # 用于存储每个块的实体识别结果
-        entity_futures = [None] * num_blocks
-        relation_futures = [None] * num_blocks
-        results = [None] * num_blocks
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-            # 1. 先提交第一个块的实体提取
-            entity_futures[0] = executor.submit(self.实体提取, self.Bolts[0][1])
-            for i in range(num_blocks):
-                # 等待当前块实体提取完成
-                entity_label = entity_futures[i].result()
-                entity_labels += entity_label
-                entity = [e[0] for e in entity_label]
-                # 立即提交当前块的关系提取
-                relation_futures[i] = executor.submit(self.关系提取, self.Bolts[i][1], entity)
-                # 如果还有下一个块，提前提交下一个块的实体提取
-                if i + 1 < num_blocks:
-                    entity_futures[i + 1] = executor.submit(self.实体提取, self.Bolts[i + 1][1])
-                # 等待当前块关系提取完成
-                relation = relation_futures[i].result()
-                results[i] = {"bid": self.Bolts[i][0], "relation": relation}
-        kg_triplet = results
-        self.bidirectional_mapping = self._build_bidirectional_mapping(entity_labels)
-        self.kg_triplet = kg_triplet
-        # print(kg_triplet)
-        return kg_triplet
+# 初始化知识图谱组件
+from OmniStore.chromadb_store import StoreTool
+from sentence_transformers import SentenceTransformer
+from KnowledgeGraphManager.KGManager import KgManager
 
 
 
-    def 三元组转有向图nx(self,relations):
-        knowledge_graph = self.bidirectional_mapping
-        self.current_G = nx.DiGraph()
-        for relation in relations:
-            for rel in relation['relation']:
-                source = rel['source']
-                target = rel['target']
-                context = rel['context']
-                relation_text = rel['relation']
-                # 获取权重，确保是浮点数
-                try:
-                    weight = float(rel.get('weight', 0.5))
-                except (ValueError, TypeError):
-                    print(f"警告: 无法转换权重值 '{rel.get('weight')}' 为浮点数，使用默认值0.5")
-                    weight = 0.5
+device = os.getenv("DEVICE")
 
-                # print(f"添加边 {source} -> {target} 权重: {weight}")
 
-                # 添加节点
-                self.current_G.add_node(source,
-                                        title=self.get_entity_label(knowledge_graph, source),
-                                        group=self.get_entity_label(knowledge_graph, source))
-                self.current_G.add_node(target,
-                                        title=self.get_entity_label(knowledge_graph, target),
-                                        group=self.get_entity_label(knowledge_graph, target))
+if os.getenv("IS_USE_LOCAL") == "True":
+    embeddings = SentenceTransformer(
+        os.getenv("EMBEDDINGS_PATH")
+    ).to(device)
+else:
+    # 初始化模型和组件
+    embeddings = SentenceTransformer(os.getenv("EMBEDDINGS")).to(device)
 
-                # 添加边（初始状态）
-                self.current_G.add_edge(source, target,
-                                        title=context,
-                                        label=relation_text,
-                                        weight=weight,  # 添加权重
-                                        font={"size": 0},  # 初始标签隐藏
-                                        color='#97c2fc',
-                                        width=1 + weight * 3,  # 根据权重调整边的粗细
-                                        hoverWidth=3 + weight * 2,
-                                        chosen={  # 点击选中样式
-                                            "edge": {
-                                                "color": "#00FF00",
-                                                "width": 4
-                                            }
-                                        })
-        return self.current_G
 
-    # 增量更新找到要处理的块
-    def _replace_blocks_and_find_changes(self, original_blocks, new_text, split_text_fun):
-        def normalize_text(text):
-            """去除首尾空格、合并多余空格、换行转换为空格"""
-            return re.sub(r'\s+', ' ', text.strip())
+# 创建两个独立的存储工具
+chromadb_store = StoreTool(storage_path= '../chroma_data', embedding_function=embeddings)
 
-        """用原文块替换未变部分，找出新增和删除的块"""
-        normalized_new_text = normalize_text(new_text)  # 归一化新文本
-        replaced_text = normalized_new_text  # 复制新文本
-        matched_blocks = set()  # 记录匹配的块文本
+client = OpenAI(
+    api_key=os.getenv("API_KEY"),
+    base_url=os.getenv("BASE_URL")
+)
 
-        # **第一步**：替换未变的部分
-        for bid, text in original_blocks:
-            norm_text = normalize_text(text)
-            if norm_text in replaced_text:
-                replaced_text = replaced_text.replace(norm_text, bid, 1)
-                matched_blocks.add(norm_text)
+# 多模态模型
+vl_client = OpenAI(
+    # 若没有配置环境变量，请用百炼API Key将下行替换为：api_key="sk-xxx"
+    api_key=os.getenv("VL_API_KEY"),
+    base_url=os.getenv("VL_BASE_URL")
+)
+from LLM.Openai_Agent import OpenaiAgent
+# 创建两个独立的agent
+rag_agent = OpenaiAgent(client)
+kg_agent = OpenaiAgent(client)
 
-        # **第二步**：计算删除的块（原文本中未出现在新文本中的部分）
-        deleted_blocks = [(bid, text) for bid, text in original_blocks if
-                          normalize_text(text) not in normalized_new_text]
+# 创建两个独立的splitter
+simple_files = os.getenv("SIMPLE", "").split(",")
+semantic_files = os.getenv("SEMANTIC", "").split(",")
+character_files = os.getenv("CHARACTER", "").split(",")
 
-        # **第三步**：用 `block_id` 作为分隔符，分割出变动部分
-        split_pattern = '|'.join(re.escape(bid) for bid, _ in original_blocks)
-        unmatched_parts = re.split(split_pattern, replaced_text)  # 只保留变动部分
-        unmatched_parts = [normalize_text(part) for part in unmatched_parts if part.strip()]  # 清理空格
+# 初始化默认分割器
+kg_splitter = None
 
-        # **第四步**：用你的 `split_text()` 切割新增内容
-        added_texts = []
-        for part in unmatched_parts:
-            added_texts.extend([t for t in split_text_fun(part) if t])
+# 创建默认分割器
+if len(simple_files) > 0:
+    from TextSlicer.SimpleTextSplitter import SimpleTextSplitter
+    kg_splitter = SimpleTextSplitter(2048, 1024)
+elif len(semantic_files) > 0:
+    from TextSlicer.SemanticTextSplitter import SemanticTextSplitter
+    kg_splitter = SemanticTextSplitter(2048, 1024)
+elif len(character_files) > 0:
+    from TextSlicer.CharacterTextSplitter import CharacterTextSplitter
+    kg_splitter = CharacterTextSplitter(separator="</end>", keep_separator=False, max_tokens=2048, min_tokens=1024)
 
-        # **第五步**：分配新增块 ID
-        added_blocks = [text for i, text in enumerate(added_texts)]
+# 创建两个独立的kg_manager
+kg_manager = KgManager(agent=kg_agent, splitter=kg_splitter, embedding_model=embeddings, store=chromadb_store)
 
-        return replaced_text, deleted_blocks, added_blocks
+FILE_PROCESSORS = {
+    '.pdf': PDFProcessor,
+    '.md': MDProcessor,
+    # 可扩展，不想写了。。。
+}
+# 添加CORS支持
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-    def 增量更新(self, new_text:str):
-        replaced_new_text, deleted_blocks, added_blocks = self._replace_blocks_and_find_changes(
-            self.Bolts,
-            new_text,
-            self.splitter.split_text)
+# 添加线程池
+executor = ThreadPoolExecutor(max_workers=16)  # 增加线程池大小以处理更多并发请求
+# 添加专用于RAG的线程池
+rag_executor = ThreadPoolExecutor(max_workers=16)  # RAG专用线程池
+# 添加文件处理锁
+file_locks = {}
+# 添加RAG问答锁
+rag_locks = {}
 
-        bids_to_remove = []
+# 消息队列系统
+# 存储结构: {session_id: deque([消息1, 消息2, ...]), ...}
+message_queues = {}
+# 每个会话的事件: {session_id: Event(), ...}
+session_events = {}
+# 每个会话的响应状态: {session_id: {"status": "processing/completed/error", "response": [..]}, ...}
+session_responses = {}
 
-        # 被删除的块
-        for bid, text in deleted_blocks:
-            bids_to_remove.append(bid)
 
-        filtered_data = [item for item in self.kg_triplet if item['bid'] not in bids_to_remove]
 
-        # 只有在有需要删除的ID时才执行删除操作
-        if bids_to_remove:
-            self.store.vector_collection.delete(
-                where={"file": self.file},
-                ids=bids_to_remove
-            )
 
-        add_data = []
-
-        # 新增的块
-        for bid, text in added_blocks:
-            add_data.append((bid, text))
-        print(f"增量更新：\n 新增的块：{add_data},\n  被删除的块：{bids_to_remove}")
-        self.kg_triplet = self.知识图谱的构建(add_data)
-        new_kg_triplet = self.kg_triplet + filtered_data
-
-        return new_kg_triplet
+class 知识图谱可视化:
+    def __init__(self, graph=None):
+        self.current_G = graph or nx.DiGraph()
+        self.file = None
 
     def 绘制知识图谱(self, name, 聚类算法="louvain", 物理引擎="forceAtlas2Based"):
         """
@@ -1214,128 +996,10 @@ class KgManager:
             f.write(content)
             f.truncate()
 
-    # 获取提问的实体（存在与知识图谱的）
-    def text2entity(self, text):
-        prompt = open(f"./prompt/{prompt_vision}/entity_q2merge.txt", encoding='utf-8').read()
-        entity = [str(i) for i in self.current_G]
-        input_parameter = f"实体列表：{entity}\n问题：{text}"
-        output = self.Agent.agent_safe_generate_response(prompt, input_parameter)
-        return output['entities']
 
-    # 对比两个有向图对象的差异
-    def compare_and_visualize(self, G2, output_file="diff_graph"):
-        G1 = self.current_G.to_undirected()
-        """比较两个有向图并用pyvis高亮差异"""
-        # 创建合并图（包含G1和G2的所有节点和边）
-        G_diff = nx.DiGraph()
-
-        # 记录差异
-        diff = {
-            "added_nodes": set(G2.nodes()) - set(G1.nodes()),
-            "removed_nodes": set(G1.nodes()) - set(G2.nodes()),
-            "added_edges": set(G2.edges()) - set(G1.edges()),
-            "removed_edges": set(G1.edges()) - set(G2.edges()),
-            "node_attr_changes": {},
-            "edge_attr_changes": {}
-        }
-
-        # 检查节点属性变化
-        common_nodes = set(G1.nodes()) & set(G2.nodes())
-        for node in common_nodes:
-            if G1.nodes[node] != G2.nodes[node]:
-                diff["node_attr_changes"][node] = {
-                    "old": G1.nodes[node],
-                    "new": G2.nodes[node]
-                }
-
-        # 检查边属性变化
-        common_edges = set(G1.edges()) & set(G2.edges())
-        for u, v in common_edges:
-            if G1.edges[u, v] != G2.edges[u, v]:
-                diff["edge_attr_changes"][(u, v)] = {
-                    "old": G1.edges[u, v],
-                    "new": G2.edges[u, v]
-                }
-
-        # 将差异信息添加到图
-        for node in G1.nodes() | G2.nodes():
-            G_diff.add_node(node)
-
-            # 设置节点颜色和标题（悬停显示详情）
-            if node in diff["added_nodes"]:
-                G_diff.nodes[node]["color"] = "green"
-                G_diff.nodes[node]["title"] = f"新增节点: {node}"
-            elif node in diff["removed_nodes"]:
-                G_diff.nodes[node]["color"] = "red"
-                G_diff.nodes[node]["title"] = f"删除节点: {node}"
-            elif node in diff["node_attr_changes"]:
-                G_diff.nodes[node]["color"] = "yellow"
-                changes = diff["node_attr_changes"][node]
-                G_diff.nodes[node]["title"] = (
-                    f"节点属性修改: {node}\n"
-                    f"旧值: {changes['old']}\n"
-                    f"新值: {changes['new']}"
-                )
-            else:
-                G_diff.nodes[node]["color"] = "skyblue"
-
-        for u, v in G1.edges() | G2.edges():
-            if (u, v) in diff["added_edges"]:
-                G_diff.add_edge(u, v, color="green", title=f"新增边: ({u}→{v})")
-            elif (u, v) in diff["removed_edges"]:
-                G_diff.add_edge(u, v, color="red", title=f"删除边: ({u}→{v})")
-            elif (u, v) in diff["edge_attr_changes"]:
-                changes = diff["edge_attr_changes"][(u, v)]
-                G_diff.add_edge(u, v, color="yellow",
-                                title=f"边属性修改: ({u}→{v})\n旧值: {changes['old']}\n新值: {changes['new']}")
-            else:
-                G_diff.add_edge(u, v, color="gray")
-
-        # 用pyvis绘制动态图
-        nt = Network(height="900px", width="100%", notebook=True)
-        nt.from_nx(G_diff)
-
-        # 保存并显示
-        nt.show(f"{output_file}.html")
-
-    def save_store(self):
-        """将当前状态保存到存储"""
-        if self.store:
-            self.store.save_state(self)
-
-    def load_store(self, filename):
-        """从存储加载指定文件名的状态"""
-        if self.store:
-            state = self.store.load_state(filename)
-            if state:
-                self.file = state["file"]
-                self.kg_triplet = state["kg_triplet"]
-                self.bidirectional_mapping = state["bidirectional_mapping"]
-                self.current_G = state["current_G"]
-                self.Bolts = state["Bolts"]
-                self.original_file_type = state.get('original_file_type', '.txt')
-                return True
-        return False
-
-    def delete_store(self, filenames: list):
-        return self.store.delete_states(filenames)
-
-
-    def list_files(self):
-        return self.store.list_files()
-
-
-    def select_vectors(self,query,n_results):
-        results = self.store.select_vectors(
-            query=query,
-            file=self.file,
-            n_results=n_results
-        )
-        return results["documents"]
-
-
-
-
-
-
-
+# ========== 使用示例 ==========
+if __name__ == "__main__":
+    kg_manager.load_store("result")
+    G = kg_manager.current_G.to_undirected()
+    visualizer = 知识图谱可视化(G)
+    visualizer.绘制知识图谱("result")

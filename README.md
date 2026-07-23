@@ -1,319 +1,467 @@
-# 基于知识图谱的笔记系统
+# KnowledgeMapNotes
+
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Xikcn/KnowledgeMapNotes)
 
+KnowledgeMapNotes 是一个基于知识图谱的笔记系统。它可以将 TXT、Markdown 和 PDF 文档转换为知识图谱，并结合向量检索、实体关系和图谱社区信息完成 HybridRAG 问答。
+
+项目提供 Vue 3 Web 界面和 FastAPI 后端，支持文档增量更新、分块处理进度、大规模图谱社区分页、流式问答及运行时 AI 配置。
+
 ## 项目展示
+
 https://github.com/user-attachments/assets/5e9e6ffd-4e18-4915-b3a4-85198eb8bb0f
 
+## 功能概览
 
-## 项目简介
-本系统通过将PDF等文档自动转化为知识图谱，实现高效的知识管理、智能检索与问答。系统支持关系权重机制、社区智能推荐、知识融合、可视化等多项创新功能，适用于学术笔记、知识管理、智能问答等场景。
+- **多格式文档处理**：支持 `.txt`、`.md` 和 `.pdf`，PDF 可选用视觉模型提取图片内容。
+- **知识图谱构建**：自动完成实体抽取、关系抽取、关系权重计算和知识融合。
+- **可控处理提示词**：提供通用、故事和自定义笔记类型；自定义类型可分别编辑实体抽取、关系抽取和知识融合提示词。
+- **可靠的文件更新**：已完成的同名文件可增量更新；上次处理失败的同名文件会清理残留数据并重新完整处理。
+- **处理进度跟踪**：展示上传、处理、增量更新、完成和失败状态，以及分块数、百分比、单块耗时和预计剩余时间。
+- **HybridRAG 问答**：结合向量召回、实体识别和图谱社区信息，支持普通响应、SSE 流式响应、停止生成和历史上下文。
+- **图谱可视化**：支持节点与关系检索、高亮、边权重展示，以及大图谱的 Louvain 社区总览和详情页。
+- **知识库管理**：支持文件搜索与筛选、原文预览与下载、主要实体查看、删除文件和单独清理 RAG 历史。
+- **灵活的结果工作区**：原文、知识图谱和 RAG 面板可并排查看、隐藏或拖动调整宽度。
+- **运行时 AI 配置**：后端无需预先填写文本模型 Base URL 和 API Key；启动后可在前端填写、测试连接并保存到当前进程。
+- **单进程运行**：FastAPI 可直接托管 `frontend/dist`，构建前端后只需启动后端即可使用完整 Web 应用。
 
-## 主要功能
-- **PDF/MD文档自动处理与知识抽取**
-- **知识图谱自动构建与融合**（支持多关系融合、权重计算）
-- **智能问答（HybridRAG）**，支持上下文与知识图谱结合
-- **知识图谱可视化**（实体/关系搜索、高亮、权重粗细展示）
-- **基于权重的关系筛选与社区发现**（支持阈值与TopN筛选）
-- **增量更新与知识库管理**
-- **API接口丰富，参数灵活可控**
+## 最近更新
 
-## 技术架构
-- **后端**：FastAPI、ChromaDB、SentenceTransformers、NetworkX、OpenAI/百炼大模型
-- **前端**：Vue3、Element Plus
-- **其他**：多线程/异步处理、环境变量灵活配置
+- 后端允许在未配置文本模型时启动，模型相关操作会提示先在前端完成设置。
+- AI 设置新增连通性测试，测试请求不会保存配置，并返回请求延迟。
+- 新增自定义笔记类型和三阶段处理提示词编辑器，默认载入通用提示词。
+- 修复失败文件重新上传时错误触发增量更新的问题；失败任务残留会在重试前清理。
+- 修复前端 AI 配置错误提示、设置面板滚动条及文件操作图标显示问题。
+- 加强前端内容安全：Markdown 禁止原始 HTML 并经过 DOMPurify 清理，外部链接使用安全属性，文件路径参数统一编码。
+- 更新前端依赖并替换旧 SVG 加载方案，当前 `npm audit` 无已知漏洞。
+- 后端新增前端静态资源托管、SPA 路由回退和 `/api` 前缀兼容。
 
-## 系统架构
-- 文档处理模块：负责PDF文档的解析和文本提取
-- 知识图谱模块：实现实体识别、关系抽取、权重计算和知识图谱构建
-- 检索模块：基于向量数据库的语义检索
-- 权重筛选模块：基于重要性权重筛选和排序关系
-- API服务：FastAPI实现的RESTful接口
-- 前端应用：Vue3实现的用户界面
+## 技术栈
 
-## 配置文件管理
-系统通过环境变量配置文件(.env)灵活管理模型和功能设置，关键配置参数包括：
+| 范围 | 技术 |
+| --- | --- |
+| 后端 | FastAPI、OpenAI Python SDK、ChromaDB、SentenceTransformers |
+| 图谱 | NetworkX、PyVis、Louvain Community Detection |
+| 前端 | Vue 3、Vite、Element Plus、Axios |
+| 内容渲染 | Markdown-It、DOMPurify |
+| 部署 | FastAPI 静态托管、Docker Compose、Nginx |
 
-### 基础配置
-- `UPLOAD_FOLDER`：文件上传目录
-- `TXT_FOLDER`：处理后文本存储目录
-- `RESULT_FOLDER`：结果输出目录
-- `CHROMADB_PATH`：向量数据库存储路径
+## 快速开始
 
-### 模型配置
-- `MODEL_NAME`：使用的LLM模型名称
-- `TEMPERATURE`：模型温度参数
-- `API_KEY`：LLM API密钥
-- `BASE_URL`：LLM API基础URL
-- `EMBEDDINGS`：嵌入模型名称
-- `EMBEDDINGS_PATH`：本地嵌入模型路径
-- `DEVICE`：运行设备（cuda/cpu）
-
-### 多模态配置
-- `VL_API_KEY`：视觉语言模型API密钥
-- `VL_BASE_URL`：视觉语言模型API基础URL
-
-### 功能开关
-- `IS_USE_LOCAL`：是否使用本地模型（True/False）
-- `SPLITTER_MODE`：文本分割器模式（SemanticTextSplitter/SimpleTextSplitter）
-
-### 配置示例
-```
-# 基础路径配置
-UPLOAD_FOLDER=./uploads
-TXT_FOLDER=./txt_files
-RESULT_FOLDER=./results
-CHROMADB_PATH=./chroma_data
-
-# 模型配置
-MODEL_NAME=gpt-3.5-turbo
-TEMPERATURE=0.7
-API_KEY=your_api_key
-BASE_URL=https://api.openai.com/v1
-DEVICE=cpu
-
-# 嵌入模型配置
-EMBEDDINGS=BAAI/bge-base-zh
-EMBEDDINGS_PATH=D:/Models_Home/Huggingface/hub/models--BAAI--bge-base-zh/snapshots/0e5f83d4895db7955e4cb9ed37ab73f7ded339b6
-IS_USE_LOCAL=True
-
-# 多模态配置
-VL_API_KEY=your_vl_api_key
-VL_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-
-# 功能配置
-SPLITTER_MODE=SimpleTextSplitter
-```
-
-通过修改这些配置参数，可以灵活切换不同的模型、调整性能参数和控制功能开关，无需修改代码即可适应不同的部署环境和使用场景。
-
-## 权重功能详解
-系统创新性地引入了0-1之间的关系权重机制，用于表示实体间关系的重要性：
-- 提取关系时自动计算权重，反映关系在当前语境中的重要程度
-- 知识融合过程保留权重信息，对冲突关系进行权重融合
-- 可视化时通过边的粗细直观展示关系重要性，重要关系线条更粗
-- 社区查询支持权重阈值筛选，只返回权重大于阈值的关系
-- 查询结果按权重排序，确保最重要的信息优先展示
-- API支持weight_threshold和max_relations参数，灵活控制结果
-
-## 详细使用说明
-### 文档上传与处理
-1. 访问系统首页，点击"上传文档"按钮
-2. 选择要上传的PDF文件，点击确认
-3. 系统会自动处理文档并构建知识图谱
-4. 处理完成后，可以在文档列表中查看已上传的文件
-
-### 知识图谱查询
-1. 在文档列表中选择要查询的文档
-2. 点击"查看知识图谱"按钮
-3. 系统会显示文档的知识图谱可视化结果
-4. 可以通过点击节点查看详细信息，或者使用搜索功能定位特定实体
-5. 悬停在关系线上可以查看关系详情和权重信息
-
-### 智能问答
-1. 在文档列表中选择要问答的文档
-2. 点击"开始问答"按钮
-3. 在输入框中输入问题
-4. 系统会基于文档内容和知识图谱提供回答
-5. 可以调整权重阈值，筛选更重要的知识进行回答
-
-## Docker部署安装
 ### 环境要求
-- Docker已经启动
-1. 创建并配置`.env`文件
-```bash
-# 复制配置模板（如果存在）或手动创建
-cp .env.docker .env
 
-```
-
-2. 关键配置说明
-   - 必须配置的项: API_KEY、BASE_URL
-   - 如果使用本地模型: 设置IS_USE_LOCAL=True并配置EMBEDDINGS_PATH
-   - 可选的视觉功能: 配置VL_API_KEY和VL_BASE_URL
-
-3. 启动构建
-```bash
-# 启动所有服务
-docker-compose up --build
-
-# 或在后台运行
-docker-compose up -d --build
-
-```
-
-4. 访问前端
-http://localhost:8080
-
-## 本地安装与使用
-### 环境要求
 - Python 3.10+
-- Node.js 16+
-- 推荐GPU环境（可选）
+- Node.js 18+，构建或开发前端时需要
+- 文本模型 API，使用图谱构建和 RAG 功能时需要，后端启动时可暂不配置
+- CUDA GPU，可选；CPU 环境请使用 `DEVICE=cpu`
 
-### 环境配置
-1. 创建并配置`.env`文件
-```bash
-# 进入后端目录
-cd backend
-# 复制配置模板（如果存在）或手动创建
-cp .env.example .env
+首次启动会加载嵌入和重排模型，需要一定的磁盘空间。在线加载 Hugging Face 模型时还需要网络连接。
 
-```
+### 1. 克隆项目
 
-2. 关键配置说明
-   - 必须配置的项: API_KEY、BASE_URL
-   - 如果使用本地模型: 设置IS_USE_LOCAL=True并配置EMBEDDINGS_PATH
-   - 可选的视觉功能: 配置VL_API_KEY和VL_BASE_URL
-
-## API服务申请
-### 获取视觉模型（如果不开启可以不用）
-https://bailian.console.aliyun.com/?tab=api#/api
-```pycon
-vl_client = OpenAI(
-    # 若没有配置环境变量，请用百炼API Key将下行替换为：api_key="sk-xxx"
-    api_key='sk-xx',
-    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-)
-```
-
-### 嵌入模型的使用
-建议下载到本地离线处理（Huggingface）也可以使用网络库，会自动下载到本地，第二次换成本地可以快速启动
-如果无法下载建议，去Huggingface官网下载到本地，直接使用本地模型
-* 添加镜像
-```python
-import os
-os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
-```
-
-* bge-base-zh本地模型使用
-```python
-from sentence_transformers import SentenceTransformer
-# 初始化模型和组件
-# embeddings = SentenceTransformer('BAAI/bge-base-zh').to(device)
-embeddings = SentenceTransformer(
-    r"D:\Models_Home\Huggingface\hub\models--BAAI--bge-base-zh\snapshots\0e5f83d4895db7955e4cb9ed37ab73f7ded339b6"
-    )
-```
-
-### 后端安装
-```bash
-# 进入后端目录
-# 安装依赖
-pip install -r requirements.txt
-# uv安装依赖
-# uv pip install -r requirements.txt
-# 启动服务
-python main.py
-```
-
-### 前端安装
-```bash
-# 进入前端目录
-cd frontend
-# 安装依赖
-npm install
-# 启动开发服务器
-npm run dev
-```
-
-### 完整部署流程
-1. 克隆仓库
 ```bash
 git clone https://github.com/Xikcn/KnowledgeMapNotes.git
 cd KnowledgeMapNotes
 ```
 
-2. 安装后端依赖
+### 2. 创建后端配置
+
 ```bash
-pip install -r requirements.txt
+cp backend/.env.example backend/.env
 ```
 
-3. 安装前端依赖
+不要将包含真实密钥的 `backend/.env` 提交到版本库。
+
+文本模型配置可以暂时留空，后端仍能启动。启动后进入 Web 界面的“设置 -> AI 模型设置”，填写 Base URL、API Key 和模型名称，然后先执行“测试连接”，成功后再保存。
+
+一个适合 CPU 和在线模型加载的配置示例：
+
+```dotenv
+# 提示词版本：v1 较快；v2 效果更好但处理时间更长
+PROMPTVISION=v1
+
+# OpenAI 兼容文本模型，可留空并在前端设置
+BASE_URL=
+API_KEY=
+MODEL_NAME=
+TEMPERATURE=0
+ENABLE_THINKING=False
+
+# PDF 图片内容识别，可选
+VL_API_KEY=
+VL_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+VL_MODEL=qwen-vl-max-latest
+
+# 嵌入与重排模型
+IS_USE_LOCAL=False
+EMBEDDINGS=BAAI/bge-base-zh
+EMBEDDINGS_PATH=/absolute/path/to/bge-base-zh
+RERANK_MODEL=BAAI/bge-reranker-base
+DEVICE=cpu
+
+# 文本分割器
+SIMPLE=[txt,pdf]
+SEMANTIC=[]
+CHARACTER=[md]
+
+# 运行数据目录，相对于 backend/
+CHROMADB_PATH=./chroma_data
+UPLOAD_FOLDER=uploads
+TXT_FOLDER=txt_files
+RESULT_FOLDER=results
+```
+
+`SIMPLE`、`SEMANTIC` 和 `CHARACTER` 接收逗号分隔的扩展名，可以写成 `[txt,pdf]` 或 `txt,pdf`。同一个扩展名应只配置在一种分割器中；未匹配到的扩展名会回退到默认分割器。
+
+使用本地嵌入模型时，将 `IS_USE_LOCAL=True`，并让 `EMBEDDINGS_PATH` 指向模型目录。当前 PDF 处理器使用 `qwen-vl-max-latest`；`VL_MODEL` 暂时作为预留配置，修改它不会切换视觉模型。
+
+其他可选环境变量：
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `HOST` | `0.0.0.0` | 后端监听地址 |
+| `PORT` | `8000` | 后端监听端口 |
+| `FRONTEND_DIST` | `<项目目录>/frontend/dist` | 前端构建产物目录，建议使用绝对路径覆盖 |
+| `RAG_WORKER_COUNT` | `4` | RAG 线程池大小 |
+| `CORS_ALLOW_ORIGINS` | `*` | 允许的来源，多个来源用逗号分隔 |
+
+### 3. 安装后端依赖
+
+使用标准 `venv`：
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r backend/requirements.txt
+```
+
+也可以使用 `uv`：
+
+```bash
+uv venv
+source .venv/bin/activate
+uv pip install -r backend/requirements.txt
+```
+
+Windows PowerShell 激活命令为：
+
+```powershell
+.venv\Scripts\Activate.ps1
+```
+
+### 4. 选择运行方式
+
+#### 方式一：后端托管打包前端
+
+适合日常使用和单机部署。先构建前端，再启动后端：
+
 ```bash
 cd frontend
-npm install
-```
-
-4. 构建前端（生产环境）
-```bash
+npm ci
 npm run build
+cd ../backend
+python main.py
 ```
 
-5. 启动后端服务
+访问地址：
+
+- Web 界面：http://localhost:8000
+- API 文档：http://localhost:8000/docs
+- 健康检查：http://localhost:8000/health
+
+后端会自动挂载 `frontend/dist`。如果目录不存在，后端仍会启动并提供 API，同时在日志中提示先运行 `npm run build`。
+
+#### 方式二：前后端开发模式
+
+终端一：
+
 ```bash
-# 进入后端目录
 cd backend
 python main.py
 ```
 
-6. 访问系统
-浏览器中打开 http://localhost:8080
+终端二：
 
-## 目录结构
-- `app.py`: 主应用入口
-- `OmniText/`: 文本处理模块
-- `KnowledgeGraphManager/`: 知识图谱管理模块
-- `LLM/`: 大语言模型交互
-- `TextSlicer/`: 文本分割工具
-- `embedding_tools/`: 向量嵌入工具
-- `projects/vue/`: 前端Vue项目
-- `prompt/`: 提示词模板
-- `chroma_data/`: 向量数据库存储
-- `uploads/`: 上传文件存储
-- `txt_files/`: 处理后文本存储
-- `results/`: 结果输出目录
-- `docs/`: 文档说明
-- `lib/`: 通用库函数
-- `output/`: 临时输出文件
-- `images/`: 图片资源
+```bash
+cd frontend
+npm ci
+npm run dev
+```
+
+访问 http://localhost:8080。Vite 会将浏览器的 `/api` 请求代理到 `http://127.0.0.1:8000`。
+
+如果前后端不通过同一站点代理，可以在前端环境变量中指定 API 地址：
+
+```dotenv
+VITE_API_BASE_URL=http://localhost:8000
+```
+
+## Docker 部署
+
+先创建并检查 `backend/.env`，然后在项目根目录执行：
+
+```bash
+docker compose up --build
+```
+
+后台运行：
+
+```bash
+docker compose up -d --build
+```
+
+Docker Compose 当前仍使用独立的 Nginx 前端容器：
+
+- Web 界面：http://localhost:8080
+- 后端 API：http://localhost:8000
+- API 文档：http://localhost:8000/docs
+
+后端镜像构建时会下载 `BAAI/bge-base-zh` 和 `BAAI/bge-reranker-base`，首次构建耗时较长。Compose 将 `backend/` 挂载到容器 `/app`，运行数据会保存在宿主机的 `backend/uploads`、`backend/txt_files`、`backend/results` 和 `backend/chroma_data`。
+
+使用镜像内预下载模型时，可在 `backend/.env` 中设置：
+
+```dotenv
+IS_USE_LOCAL=True
+EMBEDDINGS_PATH=/app/models/bge-base-zh
+RERANK_MODEL=/app/models/bge-reranker-base
+```
+
+## 安全建议
+
+当前项目没有内置用户登录或 API 鉴权，不应将后端端口直接暴露到不受信任的公网环境。
+
+- 仅在本机使用时，可以设置 `HOST=127.0.0.1`。
+- 局域网或公网部署时，建议通过带身份验证和 HTTPS 的反向代理访问。
+- 将 `CORS_ALLOW_ORIGINS` 限制为实际使用的前端来源，不要在公网部署中保留通配符。
+- 不要提交 `backend/.env`、运行日志、上传文件或知识库数据。
+- AI 连通性测试只发送固定的最小测试消息，不会发送已上传的文档内容。
+
+## 使用说明
+
+### 配置 AI 模型
+
+1. 启动应用并打开左侧设置面板。
+2. 填写 OpenAI 兼容服务的 Base URL、API Key 和模型名称。
+3. 根据服务能力设置温度和思考模式。
+4. 点击“测试连接”。测试会发起一个最小对话请求，但不会保存配置。
+5. 测试成功后点击“保存 AI 配置”。新配置会立即用于后续图谱抽取和 RAG 请求。
+
+运行时配置仅保存在后端内存中，重启后会重新读取 `backend/.env`。后端返回设置时只提供 API Key 是否已配置及脱敏提示，不会返回完整密钥。若不修改已有密钥，保存或测试时可以将 API Key 输入框留空。
+
+### 选择笔记类型
+
+- **通用**：使用当前提示词版本中的通用处理模板。
+- **故事**：使用面向故事内容的图谱处理方式。
+- **自定义**：可分别编辑实体抽取、关系抽取和知识融合提示词。
+
+首次选择“自定义”时会载入通用提示词作为初始值。“恢复通用提示词”会重新读取当前 `PROMPTVISION` 对应的模板。每个自定义提示词最多 30,000 个字符，并保存在当前浏览器的本地存储中；上传文件时会随请求提交，不会修改服务器上的模板文件。
+
+### 上传和重新处理文件
+
+1. 在设置中选择笔记类型；处理扫描 PDF 或图片内容时，开启“PDF 图片内容识别”。
+2. 点击或拖拽上传 `.txt`、`.md` 或 `.pdf` 文件。
+3. 在文件列表查看处理状态和分块进度。
+4. 处理完成后点击文件进入结果工作区。
+
+同名文件的处理规则：
+
+- 已有完整文本、知识库和图谱结果时，前端会询问是否执行增量更新。
+- 上次处理状态为失败时，重新上传不会执行增量更新；后端会删除可能残留的文本、图谱结果和知识库记录，然后完整重建。
+- 数据不完整时，即使文件名相同也会执行完整处理，避免在缺失结果上进行增量更新。
+
+### 查看结果
+
+结果工作区包含三个面板：
+
+- **原文件**：在 Markdown 预览和源码之间切换，并支持复制和下载。
+- **知识图谱**：浏览节点、关系和权重；大图谱会生成社区总览和详情页。
+- **RAG 问答**：针对当前文件提问，可启用流式输出和历史上下文，并可停止正在生成的回答。
+
+桌面端可以拖动文件列表边界和面板分隔条。空间不足时，非活动面板会自动隐藏，也可以通过顶部标签手动显示或隐藏。
+
+### 管理文件与问答历史
+
+选中已完成文件后，可以：
+
+- 删除文件及其上传文件、转换文本、图谱结果和知识库数据。
+- 仅清除该文件的 RAG 历史，保留文件与知识图谱。
+
+聊天历史还会保存在浏览器本地存储中。前端执行删除或清理操作时会同步清理对应的本地缓存。
+
+### 关系权重与检索参数
+
+关系权重范围为 `0` 到 `1`，表示当前语境下关系的重要程度。图谱使用边的粗细展示权重。HybridRAG 请求可以通过以下参数控制检索：
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `top_k` | `1` | 向量召回数量 |
+| `weight_threshold` | `0.3` | 参与问答的最低关系权重 |
+| `max_relations` | `20` | 最多使用的关系数量 |
+
+## API 概览
+
+完整请求和响应结构请查看启动后的 `/docs`。API 可以直接使用表中的路径；由打包前端、Vite 或 Nginx 调用时也支持 `/api` 前缀。
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/health` | 健康检查 |
+| `GET` | `/ai-settings` | 获取当前文本模型配置，不返回完整 API Key |
+| `PUT` | `/ai-settings` | 更新当前进程的文本模型配置 |
+| `POST` | `/ai-settings/test` | 测试提交的模型配置，不保存设置 |
+| `GET` | `/processing-prompts/defaults` | 获取当前版本的通用三阶段处理提示词 |
+| `POST` | `/upload` | 上传文档并开始完整处理或增量更新 |
+| `GET` | `/processing-status/{filename}` | 查询状态、分块进度和预计剩余时间 |
+| `GET` | `/list-files` | 获取知识库文件列表 |
+| `GET` | `/file-content/{filename}` | 获取转换后的文本内容 |
+| `GET` | `/file-entities/{filename}?count=5` | 获取文件的主要实体 |
+| `GET` | `/result/{filename}` | 获取知识图谱主页 |
+| `GET` | `/result-page/{graph_name}/{page_name}` | 获取图谱主页或社区详情页 |
+| `DELETE` | `/delete/{filename}` | 删除文件、图谱和相关知识库数据 |
+| `DELETE` | `/rag-history/{filename}` | 清除指定文件的 RAG 历史 |
+| `POST` | `/create_session` | 创建问答会话 |
+| `POST` | `/hybridrag` | 非流式 HybridRAG 问答 |
+| `POST` | `/hybridrag/stream` | SSE 流式 HybridRAG 问答 |
+| `GET` | `/session_status/{session_id}` | 查询会话状态和队列长度 |
+| `DELETE` | `/session/{session_id}` | 删除空闲会话 |
+
+`POST /upload` 使用 `multipart/form-data`，支持以下字段：
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| `file` | 是 | `.txt`、`.md` 或 `.pdf` 文件 |
+| `noteType` | 否 | `general`、`story` 或 `custom`，默认 `general` |
+| `use_img2txt` | 否 | 是否识别 PDF 图片内容 |
+| `entityPrompt` | 自定义类型时可选 | 实体抽取提示词，留空时使用通用模板 |
+| `relationshipPrompt` | 自定义类型时可选 | 关系抽取提示词，留空时使用通用模板 |
+| `fusionPrompt` | 自定义类型时可选 | 知识融合提示词，留空时使用通用模板 |
+
+HybridRAG 请求示例：
+
+```json
+{
+  "request": "这篇文档的核心观点是什么？",
+  "filename": "example.pdf",
+  "flow": true,
+  "top_k": 3,
+  "weight_threshold": 0.3,
+  "max_relations": 20,
+  "messages": [],
+  "session_id": null
+}
+```
+
+## 数据与目录
+
+```text
+KnowledgeMapNotes/
+├── backend/
+│   ├── main.py                    # FastAPI 应用入口
+│   ├── KnowledgeGraphManager/     # 图谱构建、融合与可视化
+│   ├── LLM/                       # 大模型调用与 RAG 输出处理
+│   ├── OmniStore/                 # ChromaDB 和知识库存储
+│   ├── OmniText/                  # PDF、Markdown 文本提取
+│   ├── TextSlicer/                # 文本分割器
+│   ├── embedding_tools/           # 嵌入和重排工具
+│   ├── prompt/                    # v1/v2 提示词模板
+│   ├── uploads/                   # 上传的原始文件
+│   ├── txt_files/                 # 转换后的文本文件
+│   ├── results/<文档名>/          # 图谱主页和社区详情页
+│   └── chroma_data/               # ChromaDB 持久化数据
+└── frontend/
+    ├── src/                       # Vue 3 应用源码
+    ├── dist/                      # npm run build 生成的前端产物
+    ├── vite.config.js             # 开发服务器与 API 代理
+    └── nginx.conf                 # Docker 前端反向代理
+```
+
+`uploads`、`txt_files`、`results` 和 `chroma_data` 是一组关联的运行时数据。迁移、恢复或备份知识库时，应保持这些目录一致。
+
+## 抖音聊天 JSON 转 TXT
+
+仓库提供了一个辅助脚本，用于处理 `douyin-chat-export` 导出的 JSON：
+
+```bash
+python "backend/validation/将抖音聊天转txt.py" chat.json chat.txt
+```
+
+省略第二个参数时，脚本会在当前目录输出 `result.txt`：
+
+```bash
+python "backend/validation/将抖音聊天转txt.py" chat.json
+```
+
+也可以从标准输入读取：
+
+```bash
+python "backend/validation/将抖音聊天转txt.py" < chat.json
+```
+
+脚本会保留普通消息（`type=0`，排除 `[系统消息]`）和 `type=24` 消息，并输出为每行 `accountName:content` 的文本。生成的 TXT 可以直接上传到系统。
 
 ## 常见问题
-### Q: 系统支持哪些类型的PDF文件？
-A: 系统支持大多数标准PDF文件，包括文本PDF和扫描PDF（需OCR）。
 
-### Q: 如何更新知识图谱？
-A: 重新上传文档或使用增量更新功能可更新知识图谱。
+### 未填写 Base URL 和 API Key，后端能否启动？
 
-### Q: 如何调整权重阈值？
-A: 在API调用时通过weight_threshold参数设置，或在前端界面通过相应控件调整。
+可以。后端会等待用户在 Web 设置中配置文本模型。上传处理、RAG 问答等需要模型的接口在配置完成前会返回 `503` 和明确提示。
 
-### Q: 权重值如何计算？
-A: 系统根据关系在文本中的重要性、出现频率和语境自动计算权重值，范围为0-1。
+### 为什么启动后只能访问 API，打不开 Web 界面？
 
-### Q: 如何切换到不同的语言模型？
-A: 在.env文件中修改MODEL_NAME和相应的API_KEY、BASE_URL参数，系统会自动加载新的模型配置。
+确认已在 `frontend/` 中运行 `npm run build`，并检查 `frontend/dist/index.html` 是否存在。使用自定义构建目录时设置 `FRONTEND_DIST`。后端启动日志会显示实际挂载目录或缺失提示。
 
-### Q: 如何优化系统性能？
-A: 对于大型文档，可以调整SPLITTER_MODE为SemanticTextSplitter获得更好的分块效果；在GPU环境中将DEVICE设置为cuda可以显著提升嵌入计算速度。
-注意：使用cuda需要安装torch的gpu版本，cpu版本不需要安装torch
+### 启动后端时找不到提示词或 `.env`
 
-## 待完成的功能
-- 对于实体可联网获取相关知识，如果当前知识图谱无法解决（待新增）
-- 文本分块进行RAG的部分有问题（有些文本丢失）
-- 生成试卷进行学生的复习（允许联网生成易错选项）
-- 对上传的笔记可以进行检查功能，如有存在公理上的错误则提示用户进行修改
-- 允许用户对问题回答生成讲解视频
+后端的提示词和多数运行目录仍使用相对路径。请从 `backend/` 目录执行：
 
-## 即将完善的功能
-- 采用更优秀的社区搜索方式
-- 隐私数据进行脱敏与还原，保证用户隐私安全
-- 文本处理构建的进度显示，就是处理分块的数量/总数
-- 知识图谱渲染方式
-- 对向量和三元组关系的融合
+```bash
+python main.py
+```
 
-## 可替换的技术栈
-* mineru 用于pdf转markdown，替换多模态2txt功能
+也可以执行：
 
-## 外部额外功能整合
-- **支持qa类型笔记，配合qa笔记工具与对于MCP服务即可使用ai完成知识的整理**
-- **详细可见：https://github.com/Xikcn/QAlite**
-![img.png](readme_img/img.png)
+```bash
+uvicorn main:app --host 0.0.0.0 --port 8000
+```
 
-##### 旧版演示视频
+### AI 连接测试成功，但重启后配置丢失
+
+前端保存的 AI 配置只应用于当前后端进程。需要持久化时，请同步填写 `backend/.env`，然后重启后端。
+
+### 重新上传失败文件时会增量更新吗？
+
+不会。前端允许直接重传失败文件，后端会识别失败状态并清理残留后完整处理。只有知识库、转换文本和图谱结果都完整存在时才允许增量更新。
+
+### 如何使用本地嵌入模型？
+
+设置 `IS_USE_LOCAL=True`，并将 `EMBEDDINGS_PATH` 指向本地模型目录。`DEVICE=cuda` 需要安装与本机 CUDA 版本匹配的 PyTorch；否则使用 `DEVICE=cpu`。
+
+### 扫描 PDF 没有识别出图片内容
+
+在前端设置中开启“PDF 图片内容识别”，并检查 `VL_API_KEY` 和 `VL_BASE_URL`。纯文本 PDF 通常不需要开启该功能。
+
+### 为什么大图谱会打开多个页面？
+
+当 Louvain 发现多个社区，且至少一个社区达到分页阈值时，系统会生成跨社区总览页和较大社区的详情页。这是大规模图谱的默认渲染策略。
+
+### 修改 `.env` 后没有生效
+
+环境变量在后端启动时加载。修改后需要重启后端；Docker 环境可以执行 `docker compose restart backend`。
+
+## 外部功能整合
+
+项目可配合 [QAlite](https://github.com/Xikcn/QAlite) 和对应 MCP 服务整理 QA 类型笔记。
+
+![QAlite](readme_img/img.png)
+
+旧版演示视频：
+
 https://github.com/user-attachments/assets/5b62e85b-1340-4b79-814c-994380a8e146
 
+## Roadmap
+
+- 当本地知识图谱无法回答时，按需联网补充相关知识。
+- 优化文本分块和向量/三元组融合策略。
+- 增加笔记事实检查、复习试卷和讲解视频生成能力。
+- 完善隐私数据脱敏与还原流程。
+
 ## 许可证
+
 MIT
-
----
-

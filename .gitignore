@@ -1,0 +1,27 @@
+# IDE and OS files
+.idea/
+.vscode/
+.DS_Store
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Local secrets and logs
+.env
+backend/.env
+*.log
+
+# Backend runtime data
+backend/chroma_data/
+backend/results/
+backend/txt_files/
+backend/uploads/
+backend/validation/result*.html
+
+# Frontend dependencies and build output
+frontend/node_modules/
+frontend/dist/

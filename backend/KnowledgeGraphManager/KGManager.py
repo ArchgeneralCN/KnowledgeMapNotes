@@ -2,14 +2,23 @@ import json
 import os
 import re
 import itertools
+import time
 from collections import defaultdict
+from pathlib import Path
 from dotenv import load_dotenv
 from pyvis.network import Network
 import networkx as nx
 import concurrent.futures
+from urllib.parse import quote
 
 load_dotenv(dotenv_path="./.env")
 prompt_vision = os.getenv("PROMPTVISION")
+
+PROCESSING_PROMPT_FILES = {
+    "entity_extraction": "entity_extraction2.txt",
+    "relationship_extraction": "relationship_extraction2.txt",
+    "knowledge_fusion": "knowledge_fusion.txt",
+}
 
 class KgManager:
     def __init__(self,agent,splitter,embedding_model,store):
@@ -35,6 +44,23 @@ class KgManager:
         self.current_G = nx.DiGraph()
         # 当前 文本分块
         self.Bolts = []
+        self.noteType = "general"
+        self.custom_prompts = {}
+
+    def configure_processing_prompts(self, note_type="general", custom_prompts=None):
+        """Use per-file custom prompts while falling back to the general templates."""
+        self.noteType = note_type
+        self.custom_prompts = {
+            stage: value.strip()
+            for stage, value in (custom_prompts or {}).items()
+            if stage in PROCESSING_PROMPT_FILES and isinstance(value, str) and value.strip()
+        }
+
+    def _processing_prompt(self, stage):
+        if self.noteType == "custom" and stage in self.custom_prompts:
+            return self.custom_prompts[stage]
+        prompt_file = PROCESSING_PROMPT_FILES[stage]
+        return Path(f"./prompt/{prompt_vision}/{prompt_file}").read_text(encoding="utf-8")
 
 
     def form_default(self,filename):
@@ -90,7 +116,7 @@ class KgManager:
 
     def 实体提取(self,input_parameter):
         entity_label = []
-        prompt = open(f"./prompt/{prompt_vision}/entity_extraction2.txt", encoding='utf-8').read()
+        prompt = self._processing_prompt("entity_extraction")
         output = self.Agent.agent_safe_generate_response(prompt, input_parameter)
         if not isinstance(output, dict):
             entity_label = []
@@ -100,10 +126,10 @@ class KgManager:
         return entity_label
 
     def 关系提取(self,input_parameter,entity):
-        prompt2 = open(f"./prompt/{prompt_vision}/relationship_extraction2.txt", encoding='utf-8').read()
+        prompt2 = self._processing_prompt("relationship_extraction")
         output2 = self.Agent.agent_safe_generate_response(
             prompt2, "笔记内容：" + input_parameter + "\n实体列表：" + json.dumps(entity))
-        print(output2,'output2')
+        print(output2)
         # 确保从输出中获取正确的relations和weight值
         if not isinstance(output2,dict):
             relations = []
@@ -118,7 +144,7 @@ class KgManager:
                 # 确保weight是浮点数类型
                 relation['weight'] = float(relation['weight'])
 
-        print("原始关系权重:", [(rel['source'], rel['target'], rel['weight']) for rel in relations])
+        # print("原始关系权重:", [(rel['source'], rel['target'], rel['weight']) for rel in relations])
         return relations
 
 
@@ -155,7 +181,7 @@ class KgManager:
                     input_text += f"- {rel['relation']['relation']}（上下文：{rel['relation']['context']}，权重：{weight}）\n"
 
                 # 读取提示词模板
-                prompt = open(f"./prompt/{prompt_vision}/knowledge_fusion.txt", encoding='utf-8').read()
+                prompt = self._processing_prompt("knowledge_fusion")
                 prompt = prompt.replace("{input_text}", input_text)
                 # print(input_text,"input_text")
                 # 使用Agent进行关系融合
@@ -221,7 +247,7 @@ class KgManager:
         return formatted_relations
 
     # 输入处理好的分割文本，输出bid与实体-关系三元集合
-    def 知识图谱的构建(self, text=None):
+    def 知识图谱的构建(self, text=None, progress_callback=None):
         if type(text) == str:
             self.Bolts = self._Txt2Bolts(text)
         elif type(text) == list:
@@ -231,12 +257,19 @@ class KgManager:
         kg_triplet = []
         entity_labels = []
         num_blocks = len(self.Bolts)
+        if num_blocks == 0:
+            self.bidirectional_mapping = self._build_bidirectional_mapping(entity_labels)
+            self.kg_triplet = kg_triplet
+            return kg_triplet
+
         # 用于存储每个块的实体识别结果
         entity_futures = [None] * num_blocks
         relation_futures = [None] * num_blocks
         results = [None] * num_blocks
+        block_started_at = [None] * num_blocks
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
             # 1. 先提交第一个块的实体提取
+            block_started_at[0] = time.monotonic()
             entity_futures[0] = executor.submit(self.实体提取, self.Bolts[0][1])
             for i in range(num_blocks):
                 # 等待当前块实体提取完成
@@ -247,10 +280,13 @@ class KgManager:
                 relation_futures[i] = executor.submit(self.关系提取, self.Bolts[i][1], entity)
                 # 如果还有下一个块，提前提交下一个块的实体提取
                 if i + 1 < num_blocks:
+                    block_started_at[i + 1] = time.monotonic()
                     entity_futures[i + 1] = executor.submit(self.实体提取, self.Bolts[i + 1][1])
                 # 等待当前块关系提取完成
                 relation = relation_futures[i].result()
                 results[i] = {"bid": self.Bolts[i][0], "relation": relation}
+                if progress_callback:
+                    progress_callback(i + 1, num_blocks, time.monotonic() - block_started_at[i])
         kg_triplet = results
         self.bidirectional_mapping = self._build_bidirectional_mapping(entity_labels)
         self.kg_triplet = kg_triplet
@@ -339,7 +375,7 @@ class KgManager:
 
         return replaced_text, deleted_blocks, added_blocks
 
-    def 增量更新(self, new_text:str):
+    def 增量更新(self, new_text: str, progress_callback=None):
         replaced_new_text, deleted_blocks, added_blocks = self._replace_blocks_and_find_changes(
             self.Bolts,
             new_text,
@@ -366,21 +402,36 @@ class KgManager:
         for bid, text in added_blocks:
             add_data.append((bid, text))
         print(f"增量更新：\n 新增的块：{add_data},\n  被删除的块：{bids_to_remove}")
-        self.kg_triplet = self.知识图谱的构建(add_data)
+        self.kg_triplet = self.知识图谱的构建(add_data, progress_callback=progress_callback)
         new_kg_triplet = self.kg_triplet + filtered_data
 
         return new_kg_triplet
 
-    def 绘制知识图谱(self, name, 聚类算法="louvain", 物理引擎="forceAtlas2Based"):
+    def 绘制知识图谱(
+        self,
+        name,
+        聚类算法="louvain",
+        物理引擎="forceAtlas2Based",
+        输出目录="results",
+        页面路由前缀=None,
+    ):
         """
         优化版知识图谱可视化（支持社区分页渲染）
 
         参数:
-            name: 输出文件名（主页面将保存为 name.html）
+            name: 图谱名称（主页面将保存为 <输出目录>/<name>/<name>.html）
             聚类算法: "louvain"(社区发现) | "kmeans" | None
             物理引擎: "forceAtlas2Based"(推荐) | "barnesHut" | "force"
+            输出目录: 图谱结果根目录；每个图谱在其中使用独立的同名目录
+            页面路由前缀: 可选的浏览器访问路由前缀。未指定时使用同目录相对链接，
+                生成的 HTML 可直接从结果目录打开。
         """
         self.file = name
+
+        图谱目录 = Path(输出目录) / name
+        图谱目录.mkdir(parents=True, exist_ok=True)
+        主页面名称 = f"{name}.html"
+        主页面路径 = 图谱目录 / 主页面名称
 
         # 1. 社区发现
         社区分配 = {}
@@ -407,16 +458,24 @@ class KgManager:
 
         if not 启用分页:
             # 原逻辑：生成单一全图页面
-            self._渲染图(self.current_G, f"{name}.html", 社区分配, 物理引擎, 导航HTML="")
-            print(f"✅ 知识图谱已生成: {name}.html")
+            self._渲染图(self.current_G, 主页面路径, 社区分配, 物理引擎, 导航HTML="")
+            print(f"✅ 知识图谱已生成: {主页面路径}")
             print(f"   节点数: {len(self.current_G.nodes())}, 边数: {len(self.current_G.edges())}")
             return self.current_G
 
         # ---------- 分页模式 ----------
         大社区 = [cid for cid, size in 社区节点计数.items() if size >= MIN_SIZE]
         # 确定文件名
-        主文件名 = f"{name}.html"
-        子文件名 = {cid: f"{name}_community_{cid}.html" for cid in 大社区}
+        子页面名称 = {cid: f"{name}_community_{cid}.html" for cid in 大社区}
+        子页面路径 = {cid: 图谱目录 / filename for cid, filename in 子页面名称.items()}
+
+        def 页面链接(page_name):
+            if 页面路由前缀:
+                return (
+                    f"{页面路由前缀.rstrip('/')}/{quote(str(name), safe='')}/"
+                    f"{quote(page_name, safe='')}"
+                )
+            return page_name
 
         # ---- 3. 构建概览图（社区间关系） ----
         # 计算每个社区的代表节点
@@ -478,7 +537,7 @@ class KgManager:
 
         # ---- 4. 生成主页面（概览图） ----
         导航链接列表 = "".join(
-            f'<a href="{子文件名[cid]}" style="margin:0 8px;color:#2196F3;">'
+            f'<a href="{页面链接(子页面名称[cid])}" style="margin:0 8px;color:#2196F3;">'
             f'{社区代表节点.get(cid, f"社区{cid}")}</a>'
             for cid in 大社区
         )
@@ -491,7 +550,7 @@ class KgManager:
             📂 <b>社区详情页：</b>{导航链接列表}
         </div>
         """
-        self._渲染图(ov_G, 主文件名, 社区分配={}, 物理引擎=物理引擎, 导航HTML=导航HTML_主)
+        self._渲染图(ov_G, 主页面路径, 社区分配={}, 物理引擎=物理引擎, 导航HTML=导航HTML_主)
 
         # ---- 5. 为每个大社区生成子页面 ----
         for cid in 大社区:
@@ -503,16 +562,16 @@ class KgManager:
             <div style="position:fixed;bottom:12px;left:50%;transform:translateX(-50%);z-index:2000;
                         background:rgba(255,255,255,0.95);padding:5px 14px;border-radius:20px;
                         box-shadow:0 2px 8px rgba(0,0,0,0.15);font-size:13px;">
-                ⬅️ <a href="{主文件名}" style="color:#2196F3;">返回总览图</a> &nbsp;|&nbsp;
+                ⬅️ <a href="{页面链接(主页面名称)}" style="color:#2196F3;">返回总览图</a> &nbsp;|&nbsp;
                 {代表名}（{len(子节点)} 个节点）
             </div>
             """
-            self._渲染图(子图, 子文件名[cid], 社区分配={}, 物理引擎=物理引擎, 导航HTML=导航HTML_子)
+            self._渲染图(子图, 子页面路径[cid], 社区分配={}, 物理引擎=物理引擎, 导航HTML=导航HTML_子)
 
         print(f"✅ 知识图谱已生成（社区分页）:")
-        print(f"   主页面（跨社区关系）: {主文件名}  ({社区数量} 个社区, {ov_G.number_of_edges()} 条跨社区边)")
+        print(f"   主页面（跨社区关系）: {主页面路径}  ({社区数量} 个社区, {ov_G.number_of_edges()} 条跨社区边)")
         for cid in 大社区:
-            print(f"   社区 {cid} 详情页: {子文件名[cid]}  ({社区节点计数[cid]} 个节点)")
+            print(f"   社区 {cid} 详情页: {子页面路径[cid]}  ({社区节点计数[cid]} 个节点)")
         return self.current_G
 
     def _渲染图(self, G, 文件名, 社区分配, 物理引擎, 导航HTML=""):
@@ -525,7 +584,7 @@ class KgManager:
 
         # 节点重要性计算
         节点度数 = dict(G.degree())
-        最大度数 = max(节点度数.values()) if 节点度数 else 1
+        最大度数 = max(节点度数.values(), default=0) or 1
         try:
             pagerank = nx.pagerank(G)
         except:
@@ -535,7 +594,7 @@ class KgManager:
         is_directed = G.is_directed()  # 根据图类型自适应
         net = Network(
             notebook=True,
-            height="750px",
+            height="700px",
             width="100%",
             bgcolor="#ffffff",
             font_color="#1a1a1a",
@@ -688,7 +747,7 @@ class KgManager:
             net.add_edge(source, target, **edge_options)
 
         # 写入HTML
-        net.write_html(文件名, notebook=False)
+        net.write_html(str(文件名), notebook=False)
 
         # 注入交互增强（含导航栏）
         self._注入交互增强(文件名, len(G.nodes()), len(G.edges()), 导航HTML)
@@ -1332,10 +1391,3 @@ class KgManager:
             n_results=n_results
         )
         return results["documents"]
-
-
-
-
-
-
-

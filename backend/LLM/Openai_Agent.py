@@ -3,16 +3,58 @@ import re
 import time
 from dotenv import load_dotenv
 import os
+from threading import Lock
 
 load_dotenv()  # 默认会加载根目录下的.env文件
-model = os.getenv("MODEL_NAME")
-temperature  =  float(os.getenv("TEMPERATURE"))
 prompt_vision = os.getenv("PROMPTVISION")
+
+
 class OpenaiAgent:
-    def __init__(self, client):
-        # 大模型
-        self.client = client
-        self.rag_client = client
+    def __init__(
+        self,
+        client,
+        model_name=None,
+        temperature=None,
+        enable_thinking=False,
+    ):
+        self._config_lock = Lock()
+        self.configure(
+            client=client,
+            model_name=model_name or os.getenv("MODEL_NAME", ""),
+            temperature=(
+                temperature
+                if temperature is not None
+                else float(os.getenv("TEMPERATURE", "0"))
+            ),
+            enable_thinking=enable_thinking,
+        )
+
+    def configure(self, client, model_name, temperature, enable_thinking):
+        """Atomically replace the client and request options used by new calls."""
+        with self._config_lock:
+            self.client = client
+            self.rag_client = client
+            self.model_name = model_name
+            self.temperature = temperature
+            self.enable_thinking = enable_thinking
+
+    def _request_config(self, rag=False):
+        with self._config_lock:
+            client = self.rag_client if rag else self.client
+            return (
+                client,
+                self.model_name,
+                self.temperature,
+                self.enable_thinking,
+            )
+
+    @staticmethod
+    def _thinking_options(enable_thinking):
+        return {
+            "thinking": {
+                "type": "enabled" if enable_thinking else "disabled"
+            }
+        }
 
     def temp_sleep(self, seconds=0.1):
         time.sleep(seconds)
@@ -38,13 +80,14 @@ class OpenaiAgent:
 
     def agent_request(self, prompt, input_parameter):
         self.temp_sleep()
-        response = self.client.chat.completions.create(
-            model=model,
+        client, model_name, temperature, enable_thinking = self._request_config()
+        response = client.chat.completions.create(
+            model=model_name,
             messages=[
                 {"role": "system", "content": prompt},
                 {'role': 'user', 'content': input_parameter}],
             temperature=temperature,
-            extra_body={"thinking": {"type": "disabled"}},
+            extra_body=self._thinking_options(enable_thinking),
 
         )
         output = response.choices[0].message.content
@@ -134,12 +177,13 @@ class OpenaiAgent:
         if messages:
             formatted_messages.extend(messages)
         formatted_messages.append({'role': 'user', 'content': input_parameter})
-        response = self.rag_client.chat.completions.create(
-            model=model,
+        client, model_name, temperature, enable_thinking = self._request_config(rag=True)
+        response = client.chat.completions.create(
+            model=model_name,
             messages=formatted_messages,
             temperature=temperature,
             stream=True,
-            extra_body={"thinking": {"type": "disabled"}}
+            extra_body=self._thinking_options(enable_thinking)
         )
         return response
 
@@ -151,12 +195,13 @@ class OpenaiAgent:
             formatted_messages.extend(messages)
         formatted_messages.append({'role': 'user', 'content': input_parameter})
 
-        response = self.rag_client.chat.completions.create(
-            model=model,
+        client, model_name, temperature, enable_thinking = self._request_config(rag=True)
+        response = client.chat.completions.create(
+            model=model_name,
             messages=formatted_messages,
             temperature=temperature,
             stream=False,
-            extra_body={"thinking": {"type": "disabled"}}
+            extra_body=self._thinking_options(enable_thinking)
         )
         output = response.choices[0].message.content
         return output

@@ -1,25 +1,32 @@
 import asyncio
-from openai import OpenAI
-from pydantic import BaseModel
-from fastapi import FastAPI, File, UploadFile, BackgroundTasks, Form
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from fastapi.middleware.cors import CORSMiddleware
-import time
-import shutil
-import logging
-from typing import Dict, List, Optional, AsyncGenerator
-from urllib.parse import quote
-from OmniStore.storeManager import storeManager
-from OmniText.PDFProcessor import PDFProcessor
-from OmniText.MDProcessor import MDProcessor
-from concurrent.futures import ThreadPoolExecutor
-import threading
 import json
+import logging
+import os
+import shutil
+import time
 import uuid
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from pathlib import Path
+from threading import Lock
+from typing import Any, AsyncGenerator, Deque, Dict, List, Optional
+
 from dotenv import load_dotenv
-import os
-os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from openai import OpenAI
+from pydantic import BaseModel, Field
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from urllib.parse import quote
+
+from OmniStore.storeManager import storeManager
+from OmniText.MDProcessor import MDProcessor
+from OmniText.PDFProcessor import PDFProcessor
+
+os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
 load_dotenv(dotenv_path="./.env")
 
@@ -35,34 +42,143 @@ logging.basicConfig(
 logger = logging.getLogger("文件处理服务")
 
 
-class rag_item(BaseModel):
+class RAGRequest(BaseModel):
+    """A request to answer a question against a processed knowledge graph."""
+
     request: str
-    model: str
+    model: Optional[str] = None
     flow: bool = False
     top_k: int = 1
-    weight_threshold: float = 0.3  # 添加权重阈值参数
-    max_relations: int = 20  # 添加最大关系数量参数
+    weight_threshold: float = 0.3
+    max_relations: int = 20
     filename: Optional[str] = None
-    messages: Optional[List[Dict[str, str]]] = None  # 确保消息格式正确
-    session_id: Optional[str] = None  # 会话ID，用于跟踪特定文件的对话
+    messages: Optional[List[Dict[str, str]]] = None
+    session_id: Optional[str] = None
+
+
+class AISettingsUpdate(BaseModel):
+    """Runtime settings for the OpenAI-compatible text model."""
+
+    base_url: str
+    api_key: Optional[str] = None
+    model_name: str
+    temperature: float = Field(ge=0, le=2)
+    enable_thinking: bool = False
 
 
 app = FastAPI(title="图谱笔记", description="大模型知识图谱笔记软件")
 
-UPLOAD_FOLDER = os.getenv("UPLOAD_FOLDER")
-TXT_FOLDER = os.getenv("TXT_FOLDER")
-RESULT_FOLDER = os.getenv("RESULT_FOLDER")
 
-PROCESS_STATUS: Dict[str, str] = {}
+class SPAStaticFiles(StaticFiles):
+    """Serve static assets and fall back to index.html for frontend routes."""
 
-# 确保目录存在
+    async def get_response(self, path, scope):
+        if scope.get("frontend_api_request"):
+            raise StarletteHTTPException(status_code=404)
+
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if (
+                exc.status_code != 404
+                or scope.get("method") not in {"GET", "HEAD"}
+                or Path(path).suffix
+            ):
+                raise
+            return await super().get_response("index.html", scope)
+
+
+@app.middleware("http")
+async def support_frontend_api_prefix(request: Request, call_next):
+    """Allow the bundled frontend's /api requests to reach the API routes.
+
+    The Vite development server strips this prefix through its proxy. When the
+    built frontend is served directly by FastAPI, the same compatibility is
+    provided here so one build works in both environments.
+    """
+    path = request.scope.get("path", "")
+    if path == "/api" or path.startswith("/api/"):
+        request.scope["frontend_api_request"] = True
+        request.scope["path"] = path[4:] or "/"
+    return await call_next(request)
+
+UPLOAD_FOLDER = Path(os.getenv("UPLOAD_FOLDER", "uploads"))
+TXT_FOLDER = Path(os.getenv("TXT_FOLDER", "txt_files"))
+RESULT_FOLDER = Path(os.getenv("RESULT_FOLDER", "results"))
+
+PROCESS_STATUS: Dict[str, Dict[str, Any]] = {}
+process_status_lock = Lock()
+
+
+def set_process_status(base_name: str, status: str, **updates: Any) -> None:
+    """Atomically update the status and chunk-level progress for one file."""
+    with process_status_lock:
+        current = PROCESS_STATUS.get(base_name, {})
+        next_status = {**current, **updates, "status": status}
+        PROCESS_STATUS[base_name] = next_status
+
+
+def get_process_status(base_name: str) -> Optional[Dict[str, Any]]:
+    """Return a copy so responses cannot observe a partially changed status."""
+    with process_status_lock:
+        status = PROCESS_STATUS.get(base_name)
+        return status.copy() if status else None
+
+
+def create_chunk_progress_callback(base_name: str, status: str = "processing"):
+    """Record a completed chunk and estimate remaining work from its duration."""
+    def update_progress(completed_chunks: int, total_chunks: int, chunk_seconds: float) -> None:
+        remaining_chunks = max(total_chunks - completed_chunks, 0)
+        set_process_status(
+            base_name,
+            status,
+            completed_chunks=completed_chunks,
+            total_chunks=total_chunks,
+            percentage=round(completed_chunks * 100 / total_chunks) if total_chunks else 0,
+            latest_chunk_seconds=round(chunk_seconds, 1),
+            estimated_remaining_seconds=(
+                max(1, round(remaining_chunks * chunk_seconds)) if remaining_chunks else 0
+            ),
+        )
+
+    return update_progress
+
+# Ensure configured runtime directories exist before accepting requests.
 for folder in [UPLOAD_FOLDER, TXT_FOLDER, RESULT_FOLDER]:
-    os.makedirs(folder, exist_ok=True)
+    folder.mkdir(parents=True, exist_ok=True)
+
+
+def parse_file_extensions(value: str) -> set[str]:
+    """Normalize comma-separated extensions from environment configuration."""
+    configured_extensions = value.strip().strip("[]")
+    if not configured_extensions:
+        return set()
+    return {
+        f".{extension.strip().lstrip('.').lower()}"
+        for extension in configured_extensions.split(",")
+        if extension.strip()
+    }
+
+
+def get_safe_filename(filename: str) -> str:
+    """Reject path-like upload names before they are used to build local paths."""
+    if not filename or filename != Path(filename).name or "\\" in filename:
+        raise HTTPException(status_code=400, detail="文件名不合法")
+    if filename in {".", ".."}:
+        raise HTTPException(status_code=400, detail="文件名不合法")
+    return filename
+
+
+def get_base_name(filename: str) -> str:
+    base_name = Path(get_safe_filename(filename)).stem
+    if not base_name:
+        raise HTTPException(status_code=400, detail="文件名不合法")
+    return base_name
 
 # 初始化知识图谱组件
 from OmniStore.chromadb_store import StoreTool
 from sentence_transformers import SentenceTransformer
-from KnowledgeGraphManager.KGManager import KgManager
+from KnowledgeGraphManager.KGManager import KgManager, PROCESSING_PROMPT_FILES
 
 
 
@@ -81,74 +197,315 @@ else:
 # 创建两个独立的存储工具
 chromadb_store = StoreTool(storage_path= os.getenv("CHROMADB_PATH"), embedding_function=embeddings)
 
-client = OpenAI(
-    api_key=os.getenv("API_KEY"),
-    base_url=os.getenv("BASE_URL")
+MAX_CUSTOM_PROMPT_LENGTH = 30_000
+
+
+def get_default_processing_prompts() -> Dict[str, str]:
+    """Load the general processing prompts for the active prompt version."""
+    prompt_folder = Path("prompt") / os.getenv("PROMPTVISION", "v1")
+    return {
+        stage: (prompt_folder / filename).read_text(encoding="utf-8")
+        for stage, filename in PROCESSING_PROMPT_FILES.items()
+    }
+
+
+def normalize_processing_prompts(
+    note_type: str,
+    entity_prompt: Optional[str],
+    relationship_prompt: Optional[str],
+    fusion_prompt: Optional[str],
+) -> Dict[str, str]:
+    if note_type not in {"general", "story", "custom"}:
+        raise HTTPException(status_code=422, detail="不支持的笔记类型")
+    if note_type != "custom":
+        return {}
+
+    submitted_prompts = {
+        "entity_extraction": entity_prompt,
+        "relationship_extraction": relationship_prompt,
+        "knowledge_fusion": fusion_prompt,
+    }
+    normalized_prompts = {}
+    for stage, value in submitted_prompts.items():
+        prompt = (value or "").strip()
+        if len(prompt) > MAX_CUSTOM_PROMPT_LENGTH:
+            raise HTTPException(status_code=422, detail="单个自定义提示词不能超过 30000 个字符")
+        if prompt:
+            normalized_prompts[stage] = prompt
+    return normalized_prompts
+
+def parse_boolean(value: Optional[str], default: bool = False) -> bool:
+    if value is None:
+        return default
+    return value.strip().lower() in {"true", "1", "yes", "on", "enabled"}
+
+
+ai_settings_lock = Lock()
+AI_SETTINGS: Dict[str, Any] = {
+    "base_url": os.getenv("BASE_URL", "").strip(),
+    "api_key": os.getenv("API_KEY", "").strip(),
+    "model_name": os.getenv("MODEL_NAME", "").strip(),
+    "temperature": float(os.getenv("TEMPERATURE", "0")),
+    "enable_thinking": parse_boolean(os.getenv("ENABLE_THINKING")),
+}
+
+
+def create_openai_client(api_key: str, base_url: str) -> Optional[OpenAI]:
+    """Create a client only after the user has supplied both required values."""
+    if not api_key or not base_url:
+        return None
+    return OpenAI(api_key=api_key, base_url=base_url)
+
+
+client = create_openai_client(
+    api_key=AI_SETTINGS["api_key"],
+    base_url=AI_SETTINGS["base_url"],
 )
+if client is None:
+    logger.info("未在环境变量中配置 AI 服务，等待用户在前端完成设置")
 
 # 多模态模型
-vl_client = OpenAI(
-    # 若没有配置环境变量，请用百炼API Key将下行替换为：api_key="sk-xxx"
-    api_key=os.getenv("VL_API_KEY"),
-    base_url=os.getenv("VL_BASE_URL")
+vl_client = create_openai_client(
+    api_key=os.getenv("VL_API_KEY", "").strip(),
+    base_url=os.getenv("VL_BASE_URL", "").strip(),
 )
 from LLM.Openai_Agent import OpenaiAgent
 # 创建两个独立的agent
-rag_agent = OpenaiAgent(client)
-kg_agent = OpenaiAgent(client)
+rag_agent = OpenaiAgent(
+    client,
+    model_name=AI_SETTINGS["model_name"],
+    temperature=AI_SETTINGS["temperature"],
+    enable_thinking=AI_SETTINGS["enable_thinking"],
+)
+kg_agent = OpenaiAgent(
+    client,
+    model_name=AI_SETTINGS["model_name"],
+    temperature=AI_SETTINGS["temperature"],
+    enable_thinking=AI_SETTINGS["enable_thinking"],
+)
 
-# 创建两个独立的splitter
-simple_files = os.getenv("SIMPLE", "").split(",")
-semantic_files = os.getenv("SEMANTIC", "").split(",")
-character_files = os.getenv("CHARACTER", "").split(",")
+
+def mask_api_key(api_key: str) -> str:
+    if not api_key:
+        return ""
+    if len(api_key) <= 7:
+        return "****"
+    return f"{api_key[:3]}...{api_key[-4:]}"
+
+
+def get_public_ai_settings() -> Dict[str, Any]:
+    with ai_settings_lock:
+        settings = AI_SETTINGS.copy()
+    return {
+        "base_url": settings["base_url"],
+        "model_name": settings["model_name"],
+        "temperature": settings["temperature"],
+        "enable_thinking": settings["enable_thinking"],
+        "api_key_configured": bool(settings["api_key"]),
+        "api_key_hint": mask_api_key(settings["api_key"]),
+    }
+
+
+def require_ai_settings() -> None:
+    """Reject model-dependent requests until runtime settings are complete."""
+    with ai_settings_lock:
+        is_configured = client is not None and bool(AI_SETTINGS["model_name"])
+    if not is_configured:
+        raise HTTPException(status_code=503, detail="请先在前端设置 AI 服务")
+
+
+def prepare_ai_settings(settings: AISettingsUpdate) -> tuple[OpenAI, Dict[str, Any]]:
+    """Validate settings and build a client without changing runtime state."""
+    base_url = settings.base_url.strip().rstrip("/")
+    model_name = settings.model_name.strip()
+    submitted_api_key = (settings.api_key or "").strip()
+
+    if not base_url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=422, detail="Base URL 必须以 http:// 或 https:// 开头")
+    if not model_name:
+        raise HTTPException(status_code=422, detail="模型名称不能为空")
+
+    with ai_settings_lock:
+        api_key = submitted_api_key or AI_SETTINGS["api_key"]
+    if not api_key:
+        raise HTTPException(status_code=422, detail="API Key 不能为空")
+
+    try:
+        next_client = create_openai_client(api_key=api_key, base_url=base_url)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"AI 配置无效: {exc}") from exc
+    if next_client is None:
+        raise HTTPException(status_code=422, detail="Base URL 和 API Key 不能为空")
+
+    return next_client, {
+        "base_url": base_url,
+        "api_key": api_key,
+        "model_name": model_name,
+        "temperature": settings.temperature,
+        "enable_thinking": settings.enable_thinking,
+    }
+
+
+@app.get("/ai-settings")
+async def get_ai_settings():
+    """Return runtime model settings without exposing the API key."""
+    return get_public_ai_settings()
+
+
+@app.put("/ai-settings")
+async def update_ai_settings(settings: AISettingsUpdate):
+    """Apply model settings to subsequent graph extraction and RAG calls."""
+    global client
+
+    next_client, next_settings = prepare_ai_settings(settings)
+
+    with ai_settings_lock:
+        rag_agent.configure(
+            next_client,
+            model_name=next_settings["model_name"],
+            temperature=next_settings["temperature"],
+            enable_thinking=next_settings["enable_thinking"],
+        )
+        kg_agent.configure(
+            next_client,
+            model_name=next_settings["model_name"],
+            temperature=next_settings["temperature"],
+            enable_thinking=next_settings["enable_thinking"],
+        )
+        client = next_client
+        AI_SETTINGS.update(next_settings)
+
+    logger.info(
+        "AI 配置已更新: base_url=%s model=%s temperature=%s thinking=%s",
+        next_settings["base_url"],
+        next_settings["model_name"],
+        settings.temperature,
+        settings.enable_thinking,
+    )
+    return {"message": "AI 配置已更新", **get_public_ai_settings()}
+
+
+@app.post("/ai-settings/test")
+async def test_ai_settings(settings: AISettingsUpdate):
+    """Test submitted settings with a minimal request without saving them."""
+    test_client, test_settings = prepare_ai_settings(settings)
+
+    def request_test_completion() -> None:
+        test_client.with_options(timeout=20.0, max_retries=0).chat.completions.create(
+            model=test_settings["model_name"],
+            messages=[{"role": "user", "content": "Reply with OK."}],
+            temperature=test_settings["temperature"],
+            max_tokens=8,
+            extra_body={
+                "thinking": {
+                    "type": "enabled" if test_settings["enable_thinking"] else "disabled"
+                }
+            },
+        )
+
+    started_at = time.monotonic()
+    try:
+        await asyncio.wait_for(asyncio.to_thread(request_test_completion), timeout=25.0)
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="AI 连接测试超时，请检查服务地址或网络") from exc
+    except Exception as exc:
+        logger.warning(
+            "AI 连接测试失败: base_url=%s model=%s error=%s",
+            test_settings["base_url"],
+            test_settings["model_name"],
+            exc,
+        )
+        raise HTTPException(status_code=502, detail=f"AI 连接测试失败: {exc}") from exc
+
+    latency_ms = round((time.monotonic() - started_at) * 1000)
+    return {"message": "AI 连接测试成功", "latency_ms": latency_ms}
+
+
+@app.get("/processing-prompts/defaults")
+async def get_processing_prompt_defaults():
+    """Return the general templates used to initialize custom processing prompts."""
+    try:
+        return get_default_processing_prompts()
+    except OSError as exc:
+        logger.exception("读取通用处理提示词失败")
+        raise HTTPException(status_code=500, detail="读取通用处理提示词失败") from exc
+
+# File extensions are configured as `[txt,pdf]` in the example environment file.
+simple_files = parse_file_extensions(os.getenv("SIMPLE", ""))
+semantic_files = parse_file_extensions(os.getenv("SEMANTIC", ""))
+character_files = parse_file_extensions(os.getenv("CHARACTER", ""))
 
 # 初始化默认分割器
 kg_splitter = None
 
 # 创建默认分割器
-if len(simple_files) > 0:
+if simple_files:
     from TextSlicer.SimpleTextSplitter import SimpleTextSplitter
     kg_splitter = SimpleTextSplitter(2048, 1024)
-elif len(semantic_files) > 0:
+elif semantic_files:
     from TextSlicer.SemanticTextSplitter import SemanticTextSplitter
     kg_splitter = SemanticTextSplitter(2048, 1024)
-elif len(character_files) > 0:
+elif character_files:
     from TextSlicer.CharacterTextSplitter import CharacterTextSplitter
     kg_splitter = CharacterTextSplitter(separator="</end>", keep_separator=False, max_tokens=2048, min_tokens=1024)
+
+
+def get_splitter_for_extension(file_extension: str):
+    """Build the configured splitter for a file type, with a default fallback."""
+    if file_extension in simple_files:
+        return SimpleTextSplitter(2048, 1024)
+    if file_extension in semantic_files:
+        return SemanticTextSplitter(2048, 1024)
+    if file_extension in character_files:
+        return CharacterTextSplitter(
+            separator="</end>", keep_separator=False, max_tokens=2048, min_tokens=1024
+        )
+    return kg_splitter
+
 
 # 创建两个独立的kg_manager
 kg_manager = KgManager(agent=kg_agent, splitter=kg_splitter, embedding_model=embeddings, store=chromadb_store)
 
 FILE_PROCESSORS = {
-    '.pdf': PDFProcessor,
-    '.md': MDProcessor,
-    # 可扩展，不想写了。。。
+    ".pdf": PDFProcessor,
+    ".md": MDProcessor,
 }
-# 添加CORS支持
+
+cors_origins = [origin.strip() for origin in os.getenv("CORS_ALLOW_ORIGINS", "*").split(",") if origin.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=cors_origins,
+    # Wildcard origins cannot be used with credentials by browsers. This API does
+    # not use cookie-based authentication, so leave credentials disabled.
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 添加线程池
-executor = ThreadPoolExecutor(max_workers=16)  # 增加线程池大小以处理更多并发请求
-# 添加专用于RAG的线程池
-rag_executor = ThreadPoolExecutor(max_workers=16)  # RAG专用线程池
-# 添加文件处理锁
-file_locks = {}
-# 添加RAG问答锁
-rag_locks = {}
+rag_executor = ThreadPoolExecutor(max_workers=int(os.getenv("RAG_WORKER_COUNT", "4")))
+file_locks: Dict[str, Lock] = {}
+rag_locks: Dict[str, asyncio.Lock] = {}
 
 # 消息队列系统
 # 存储结构: {session_id: deque([消息1, 消息2, ...]), ...}
-message_queues = {}
-# 每个会话的事件: {session_id: Event(), ...}
-session_events = {}
-# 每个会话的响应状态: {session_id: {"status": "processing/completed/error", "response": [..]}, ...}
-session_responses = {}
+message_queues: Dict[str, Deque["PendingRAGRequest"]] = {}
+# 每个会话的响应状态: {session_id: {"status": "processing/idle/error"}, ...}
+session_responses: Dict[str, Dict[str, object]] = {}
+
+
+@dataclass
+class PendingRAGRequest:
+    request: RAGRequest
+    completion: asyncio.Future[Dict[str, str]]
+
+
+def initialize_session(session_id: Optional[str] = None) -> str:
+    """Return an existing session or initialize state for a new one."""
+    session_id = session_id or str(uuid.uuid4())
+    if session_id not in message_queues:
+        message_queues[session_id] = deque()
+        session_responses[session_id] = {"status": "idle"}
+    return session_id
 
 
 @app.post("/create_session")
@@ -168,15 +525,12 @@ async def create_session():
     异常：
         无
     """
-    session_id = str(uuid.uuid4())
-    message_queues[session_id] = deque()
-    session_events[session_id] = asyncio.Event()
-    session_responses[session_id] = {"status": "idle", "response": None}
+    session_id = initialize_session()
     return {"session_id": session_id}
 
 
 @app.post("/hybridrag")
-async def hybridrag(item: rag_item):
+async def hybridrag(item: RAGRequest):
     """
     处理混合RAG请求。
     
@@ -184,7 +538,7 @@ async def hybridrag(item: rag_item):
         结合知识图谱和RAG检索，生成问答结果。
     
     参数：
-        item (rag_item): 包含请求内容、模型、会话ID、历史消息等。
+        item (RAGRequest): 包含请求内容、模型、会话ID、历史消息等。
     
     返回：
         JSONResponse: {"result": {"answer": str, "material": str}} 或错误信息。
@@ -192,290 +546,189 @@ async def hybridrag(item: rag_item):
     异常：
         处理失败时返回500。
     """
+    require_ai_settings()
+    if not item.filename:
+        raise HTTPException(status_code=422, detail="filename 为必填项")
+
+    item.filename = get_safe_filename(item.filename)
+    session_id = initialize_session(item.session_id)
+    item.session_id = session_id
+    completion = asyncio.get_running_loop().create_future()
+    message_queues[session_id].append(PendingRAGRequest(item, completion))
+
+    if session_responses[session_id]["status"] == "idle":
+        asyncio.create_task(process_session_queue(session_id))
+    session_responses[session_id]["status"] = "processing"
+
     try:
-        # 如果没有提供session_id则创建新的
-        if not item.session_id:
-            item.session_id = str(uuid.uuid4())
-            message_queues[item.session_id] = deque()
-            session_events[item.session_id] = asyncio.Event()
-            session_responses[item.session_id] = {"status": "idle", "response": None}
-
-        # 确保会话存在
-        if item.session_id not in message_queues:
-            message_queues[item.session_id] = deque()
-            session_events[item.session_id] = asyncio.Event()
-            session_responses[item.session_id] = {"status": "idle", "response": None}
-
-        # 将请求放入队列
-        message_queues[item.session_id].append(item)
-
-        # 如果当前没有进行中的处理，启动处理任务
-        if session_responses[item.session_id]["status"] == "idle":
-            # 启动后台任务处理这个会话的消息
-            asyncio.create_task(process_session_queue(item.session_id))
-
-        # 设置状态为处理中
-        session_responses[item.session_id]["status"] = "processing"
-
-        # 等待处理完成
-        await session_events[item.session_id].wait()
-        session_events[item.session_id].clear()
-
-        # 检查处理结果
-        response_data = session_responses[item.session_id]["response"]
-
-        # 如果状态为错误，返回错误信息
-        if session_responses[item.session_id]["status"] == "error":
-            return JSONResponse(
-                status_code=500,
-                content={"error": response_data or "处理失败"}
-            )
-
-        # 返回结果
-        return JSONResponse({"result": response_data})
-
-    except Exception as e:
-        logger.error(f"处理出错: {str(e)}")
-        return JSONResponse(status_code=500, content={"error": str(e)})
+        return JSONResponse({"result": await completion})
+    except Exception as exc:
+        logger.exception("处理知识图谱查询失败: session_id=%s", session_id)
+        return JSONResponse(status_code=500, content={"error": str(exc)})
 
 
 @app.post("/hybridrag/stream")
-async def hybridrag_stream(item: rag_item):
-    """
-    处理混合RAG请求并以流式方式返回结果。
-    
-    用途：
-        支持大模型流式输出，适合前端实时展示生成内容。
-    
-    参数：
-        item (rag_item): 包含请求内容、模型、会话ID、历史消息等。
-    
-    返回：
-        StreamingResponse: SSE流式返回生成内容。
-    
-    异常：
-        处理失败时流中返回error类型消息。
-    """
-    # 生成唯一的请求ID
-    request_id = str(uuid.uuid4())
+async def hybridrag_stream(item: RAGRequest):
+    """Process a RAG request and return server-sent events."""
+    require_ai_settings()
+    if not item.filename:
+        raise HTTPException(status_code=422, detail="filename 为必填项")
 
-    # 如果没有提供session_id则创建新的
-    if not item.session_id:
-        item.session_id = str(uuid.uuid4())
-        message_queues[item.session_id] = deque()
-        session_events[item.session_id] = asyncio.Event()
-        session_responses[item.session_id] = {"status": "idle", "response": None}
+    item.filename = get_safe_filename(item.filename)
+    item.session_id = initialize_session(item.session_id)
+    request_id = str(uuid.uuid4())
 
     async def stream_generator() -> AsyncGenerator[str, None]:
         try:
-            loop = asyncio.get_event_loop()
-            if item.filename:
-                base_name = os.path.splitext(item.filename)[0]
+            loop = asyncio.get_running_loop()
+            base_name = get_base_name(item.filename or "")
+            rag_locks.setdefault(base_name, asyncio.Lock())
 
-                # 不再检查文件状态，直接尝试获取RAG锁
-                if base_name not in rag_locks:
-                    rag_locks[base_name] = asyncio.Lock()
+            async with rag_locks[base_name]:
+                logger.info("开始流式知识图谱查询: filename=%s request_id=%s", item.filename, request_id)
+                yield "data: " + json.dumps(
+                    {"type": "status", "content": "开始处理", "request_id": request_id}
+                ) + "\n\n"
 
-                # 获取锁但不阻塞，如果锁被占用则生成一个等待消息
-                if not rag_locks[base_name].locked():
-                    async with rag_locks[base_name]:
-                        logger.info(f"开始处理知识图谱查询: {item.filename}")
+                store_manager = storeManager(store=chromadb_store, agent=kg_agent)
+                rag_entity = await loop.run_in_executor(
+                    rag_executor, store_manager.text2entity, item.request, base_name
+                ) or []
+                yield "data: " + json.dumps(
+                    {"type": "status", "content": "实体识别完成", "request_id": request_id}
+                ) + "\n\n"
 
-                        # 流式输出准备
-                        yield "data: " + json.dumps(
-                            {"type": "status", "content": "开始处理", "request_id": request_id}) + "\n\n"
+                community_info = await loop.run_in_executor(
+                    rag_executor,
+                    store_manager.community_louvain_G,
+                    base_name,
+                    rag_entity,
+                    item.weight_threshold,
+                    item.max_relations,
+                ) or []
+                yield "data: " + json.dumps(
+                    {"type": "status", "content": "社区检测完成", "request_id": request_id}
+                ) + "\n\n"
 
-                        # 为每次查询创建新的storeManager实例
-                        store_manager = storeManager(store=chromadb_store, agent=kg_agent)
+                results = await loop.run_in_executor(
+                    rag_executor, store_manager.select_vectors, item.request, base_name, item.top_k
+                ) or []
+                yield "data: " + json.dumps(
+                    {"type": "status", "content": "生成中...", "request_id": request_id}
+                ) + "\n\n"
 
-                        # 执行RAG流程 - 实体识别，使用RAG专用线程池
-                        rag_entity = await loop.run_in_executor(rag_executor, store_manager.text2entity, item.request,
-                                                                base_name)
-                        if not rag_entity:  # 如果返回空列表
-                            logger.warning(f"未能识别实体: {item.filename}")
-                            rag_entity = []  # 确保是空列表而不是None
-                        yield "data: " + json.dumps(
-                            {"type": "status", "content": "实体识别完成", "request_id": request_id}) + "\n\n"
+                response_stream = await loop.run_in_executor(
+                    rag_executor,
+                    rag_agent.hybrid_rag_stream,
+                    item.request,
+                    community_info,
+                    results,
+                    item.messages,
+                )
+                if response_stream is None:
+                    raise RuntimeError("响应流生成失败")
 
-                        # 执行RAG流程 - 社区检测，使用RAG专用线程池
-                        community_info = await loop.run_in_executor(rag_executor, store_manager.community_louvain_G,
-                                                                    base_name, rag_entity, item.weight_threshold, 
-                                                                    item.max_relations)
-                        if not community_info:  # 如果返回空列表
-                            logger.warning(f"未能进行社区检测: {item.filename}")
-                            community_info = []  # 确保是空列表而不是None
-                        yield "data: " + json.dumps(
-                            {"type": "status", "content": "社区检测完成", "request_id": request_id}) + "\n\n"
+                full_text = ""
+                for chunk in response_stream:
+                    if chunk is None:
+                        continue
+                    content = rag_agent.process_hybrid_rag_stream_chunk(chunk)
+                    if content:
+                        full_text += content
+                        yield "data: " + json.dumps({
+                            "type": "content",
+                            "chunk": content,
+                            "full": full_text,
+                            "request_id": request_id,
+                        }) + "\n\n"
 
-                        # 执行RAG流程 - 向量选择，使用RAG专用线程池
-                        results = await loop.run_in_executor(rag_executor, store_manager.select_vectors, item.request,
-                                                             base_name,
-                                                             item.top_k)
-                        if not results:  # 如果返回空列表
-                            logger.warning(f"未能选择向量: {item.filename}")
-                            results = []  # 确保是空列表而不是None
-                        yield "data: " + json.dumps(
-                            {"type": "status", "content": "生成中...", "request_id": request_id}) + "\n\n"
-
-                        # 准备流式输出
-                        logger.info(f"使用流式输出模式: {item.request}")
-
-                        # 创建响应流 - 使用hybrid_rag_stream函数，使用RAG专用线程池
-                        try:
-                            response_stream = await loop.run_in_executor(
-                                rag_executor,
-                                rag_agent.hybrid_rag_stream,
-                                item.request,
-                                community_info,
-                                results,
-                                item.messages
-                            )
-
-                            # 确保response_stream不为None
-                            if response_stream is None:
-                                raise ValueError("响应流生成失败")
-
-                            # 处理流式响应
-                            full_text = ""
-                            for chunk in response_stream:
-                                # 检查chunk是否为None
-                                if chunk is None:
-                                    continue
-
-                                content = rag_agent.process_hybrid_rag_stream_chunk(chunk)
-                                if content:
-                                    full_text += content
-                                    yield "data: " + json.dumps({
-                                        "type": "content",
-                                        "chunk": content,
-                                        "full": full_text,
-                                        "request_id": request_id
-                                    }) + "\n\n"
-                            # 处理最终结果
-                            answer, material = rag_agent.extract_material_from_text(full_text)
-                            # 发送最终结果
-                            yield "data: " + json.dumps({
-                                "type": "final",
-                                "answer": answer,
-                                "material": material,
-                                "request_id": request_id
-                            }) + "\n\n"
-                        except Exception as e:
-                            logger.error(f"处理响应流时出错: {str(e)}")
-                            yield "data: " + json.dumps({
-                                "type": "error",
-                                "content": f"处理响应失败: {str(e)}",
-                                "request_id": request_id
-                            }) + "\n\n"
-                else:
-                    # 如果锁被占用，将请求入队
-                    if item.session_id not in message_queues:
-                        message_queues[item.session_id] = deque()
-
-                    message_queues[item.session_id].append(item)
-
-                    # 通知前端请求已入队
-                    yield "data: " + json.dumps({
-                        "type": "status",
-                        "content": "请求已入队，等待处理",
-                        "request_id": request_id
-                    }) + "\n\n"
-
-                    # 等待其他请求处理完成
-                    yield "data: " + json.dumps({
-                        "type": "queued",
-                        "session_id": item.session_id,
-                        "request_id": request_id
-                    }) + "\n\n"
-
-        except Exception as e:
-            logger.error(f"流式处理出错: {str(e)}", exc_info=True)  # 添加详细错误堆栈
+                answer, material = rag_agent.extract_material_from_text(full_text)
+                yield "data: " + json.dumps({
+                    "type": "final",
+                    "answer": answer,
+                    "material": material,
+                    "request_id": request_id,
+                }) + "\n\n"
+        except Exception as exc:
+            logger.exception("流式知识图谱查询失败: request_id=%s", request_id)
             yield "data: " + json.dumps({
                 "type": "error",
-                "content": str(e),
-                "request_id": request_id
+                "content": str(exc),
+                "request_id": request_id,
             }) + "\n\n"
         finally:
             yield "data: " + json.dumps({
                 "type": "done",
-                "request_id": request_id
+                "request_id": request_id,
             }) + "\n\n"
 
-    return StreamingResponse(stream_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        stream_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # 处理会话队列的后台任务
 async def process_session_queue(session_id: str):
-    """处理特定会话的消息队列"""
-    loop = asyncio.get_event_loop()
+    """Process a session sequentially and resolve the matching HTTP request."""
+    loop = asyncio.get_running_loop()
 
     try:
-        # 只要队列不为空，就继续处理
-        while message_queues[session_id]:
-            # 获取下一个待处理的请求
-            item = message_queues[session_id].popleft()
+        while message_queues.get(session_id):
+            pending_request = message_queues[session_id].popleft()
+            item = pending_request.request
+            base_name = get_base_name(item.filename or "")
+            rag_locks.setdefault(base_name, asyncio.Lock())
 
-            if item.filename:
-                base_name = os.path.splitext(item.filename)[0]
-
-                # 确保锁存在
-                if base_name not in rag_locks:
-                    rag_locks[base_name] = asyncio.Lock()
-
+            try:
                 async with rag_locks[base_name]:
-                    logger.info(f"开始处理队列中的知识图谱查询: {item.filename}")
-
-                    # 为每次查询创建新的storeManager实例
+                    logger.info("开始处理知识图谱查询: filename=%s session_id=%s", item.filename, session_id)
                     store_manager = storeManager(store=chromadb_store, agent=kg_agent)
+                    rag_entity = await loop.run_in_executor(
+                        rag_executor, store_manager.text2entity, item.request, base_name
+                    )
+                    community_info = await loop.run_in_executor(
+                        rag_executor,
+                        store_manager.community_louvain_G,
+                        base_name,
+                        rag_entity,
+                        item.weight_threshold,
+                        item.max_relations,
+                    )
+                    results = await loop.run_in_executor(
+                        rag_executor, store_manager.select_vectors, item.request, base_name, item.top_k
+                    )
+                    result = await loop.run_in_executor(
+                        rag_executor,
+                        rag_agent.hybrid_rag,
+                        item.request,
+                        community_info,
+                        results,
+                        item.messages,
+                        item.flow,
+                    )
 
-                    # 执行RAG流程，使用RAG专用线程池
-                    flow = item.flow
-                    rag_entity = await loop.run_in_executor(rag_executor, store_manager.text2entity, item.request,
-                                                            base_name)
-                    community_info = await loop.run_in_executor(rag_executor, store_manager.community_louvain_G,
-                                                                base_name, rag_entity, item.weight_threshold, 
-                                                                item.max_relations)
-                    results = await loop.run_in_executor(rag_executor, store_manager.select_vectors, item.request,
-                                                         base_name, item.top_k)
+                if not result or result == -1:
+                    raise RuntimeError("生成回答失败")
 
-                    try:
-                        # 使用hybrid_rag函数，使用RAG专用线程池
-                        result = await loop.run_in_executor(
-                            rag_executor,
-                            rag_agent.hybrid_rag,
-                            item.request,
-                            community_info,
-                            results,
-                            item.messages,
-                            flow
-                        )
+                response_data = {
+                    "answer": result.get("answer", ""),
+                    "material": result.get("material", ""),
+                }
+                if not pending_request.completion.done():
+                    pending_request.completion.set_result(response_data)
+            except Exception as exc:
+                logger.exception("处理队列中的知识图谱查询失败: session_id=%s", session_id)
+                if not pending_request.completion.done():
+                    pending_request.completion.set_exception(exc)
 
-                        # 确保结果有效
-                        if not result or result == -1:
-                            session_responses[session_id]["status"] = "error"
-                            session_responses[session_id]["response"] = "生成回答失败"
-                        else:
-                            session_responses[session_id]["status"] = "completed"
-                            session_responses[session_id]["response"] = {
-                                "answer": result.get('answer', ''),
-                                "material": result.get('material', '')
-                            }
-                    except Exception as e:
-                        logger.error(f"处理队列中的响应时出错: {str(e)}", exc_info=True)
-                        session_responses[session_id]["status"] = "error"
-                        session_responses[session_id]["response"] = f"处理失败: {str(e)}"
-
-            # 通知等待的请求处理已完成
-            session_events[session_id].set()
-
-        # 队列处理完毕，将状态设为空闲
-        session_responses[session_id]["status"] = "idle"
-
-    except Exception as e:
-        logger.error(f"处理会话队列出错: {str(e)}", exc_info=True)
-        session_responses[session_id]["status"] = "error"
-        session_responses[session_id]["response"] = str(e)
-        session_events[session_id].set()
+        if session_id in session_responses:
+            session_responses[session_id]["status"] = "idle"
+    except Exception:
+        logger.exception("处理会话队列失败: session_id=%s", session_id)
+        if session_id in session_responses:
+            session_responses[session_id]["status"] = "error"
 
 
 @app.get("/session_status/{session_id}")
@@ -515,7 +768,7 @@ async def delete_session(session_id: str):
     清除会话数据。
     
     用途：
-        删除指定session_id的所有队列、事件和响应数据。
+        删除指定session_id的队列和状态数据。
     
     参数：
         session_id (str): 会话ID。
@@ -526,41 +779,61 @@ async def delete_session(session_id: str):
     异常：
         无
     """
-    if session_id in message_queues:
-        del message_queues[session_id]
+    if session_responses.get(session_id, {}).get("status") == "processing":
+        raise HTTPException(status_code=409, detail="会话仍在处理中，暂不能删除")
 
-    if session_id in session_events:
-        del session_events[session_id]
-
-    if session_id in session_responses:
-        del session_responses[session_id]
+    message_queues.pop(session_id, None)
+    session_responses.pop(session_id, None)
 
     return {"message": f"会话 {session_id} 已清除"}
 
 
-def process_knowledge_graph(base_name: str, text_content: str, original_filename: str, noteType: str = "general"):
+def process_knowledge_graph(
+    base_name: str,
+    text_content: str,
+    original_filename: str,
+    note_type: str = "general",
+    splitter=None,
+    custom_prompts: Optional[Dict[str, str]] = None,
+):
     """处理文本内容生成知识图谱"""
     try:
         # 获取文件处理锁
         if base_name not in file_locks:
-            file_locks[base_name] = threading.Lock()
+            file_locks[base_name] = Lock()
 
         with file_locks[base_name]:
             logger.info(f"开始处理文件 {base_name} 的知识图谱...")
             start_time = time.time()
 
             # 更新状态为处理中
-            PROCESS_STATUS[base_name] = "processing"
+            set_process_status(
+                base_name,
+                "processing",
+                completed_chunks=0,
+                total_chunks=0,
+                percentage=0,
+                latest_chunk_seconds=None,
+                estimated_remaining_seconds=None,
+            )
 
             # 新建独立的KgManager实例
-            kg_manager = KgManager(agent=kg_agent, splitter=kg_splitter, embedding_model=embeddings, store=chromadb_store)
+            kg_manager = KgManager(
+                agent=kg_agent,
+                splitter=splitter or kg_splitter,
+                embedding_model=embeddings,
+                store=chromadb_store,
+            )
 
-            # 设置笔记类型
-            kg_manager.noteType = noteType
-            logger.info(f"设置笔记类型为: {noteType}")
+            # 设置笔记类型以及本次文件专用的处理提示词
+            kg_manager.configure_processing_prompts(note_type, custom_prompts)
+            logger.info("设置笔记类型为: %s", note_type)
 
             # 知识图谱构建过程
-            r = kg_manager.知识图谱的构建(text_content)
+            r = kg_manager.知识图谱的构建(
+                text_content,
+                progress_callback=create_chunk_progress_callback(base_name),
+            )
             kg_manager.知识融合(r)
             logger.info(f"知识图谱构建完成，耗时: {time.time() - start_time:.2f}秒")
 
@@ -569,31 +842,38 @@ def process_knowledge_graph(base_name: str, text_content: str, original_filename
 
             # 绘制知识图谱
             start_time = time.time()
-            kg_manager.绘制知识图谱(base_name)
+            kg_manager.绘制知识图谱(
+                base_name,
+                输出目录=RESULT_FOLDER,
+            )
             kg_manager.original_file_type = original_filename  # 使用原始文件名
 
             kg_manager.save_store()
             logger.info(f"知识图谱绘制完成，耗时: {time.time() - start_time:.2f}秒")
 
-            # 保存并移动结果文件
-            result_file = f"{base_name}.html"
-            if os.path.exists(result_file):
-                shutil.move(result_file, os.path.join(RESULT_FOLDER, result_file))
-            else:
+            # 图谱首页和所有社区子页由 KgManager 直接写入同一个结果目录。
+            result_file = RESULT_FOLDER / base_name / f"{base_name}.html"
+            if not result_file.exists():
                 raise FileNotFoundError("未生成结果HTML文件")
 
             # 更新处理状态为已完成
-            PROCESS_STATUS[base_name] = "completed"
+            set_process_status(base_name, "completed", percentage=100, estimated_remaining_seconds=0)
             logger.info(f"知识图谱处理完成: {base_name}")
 
     except Exception as e:
         error_msg = str(e)
-        PROCESS_STATUS[base_name] = "error"
+        set_process_status(base_name, "error", estimated_remaining_seconds=None)
         logger.error(f"处理文件 {base_name} 出错: {error_msg}", exc_info=True)
         raise
 
 
-def process_uploaded_file(original_path: str, filename: str, noteType: str = "general", use_img2txt: bool = False):
+def process_uploaded_file(
+    original_path: str,
+    filename: str,
+    note_type: str = "general",
+    use_img2txt: bool = False,
+    custom_prompts: Optional[Dict[str, str]] = None,
+):
     """后台处理任务（包含文件转换）"""
     try:
         # 获取文件信息
@@ -603,14 +883,16 @@ def process_uploaded_file(original_path: str, filename: str, noteType: str = "ge
         txt_path = os.path.join(TXT_FOLDER, txt_filename)
 
         # 在开始处理前将状态设置为processing
-        PROCESS_STATUS[base_name] = "processing"
+        set_process_status(
+            base_name,
+            "processing",
+            completed_chunks=0,
+            total_chunks=0,
+            percentage=0,
+            latest_chunk_seconds=None,
+            estimated_remaining_seconds=None,
+        )
         logger.info(f"开始处理文件: {filename}, 状态已设置为processing")
-
-        # 新建独立的KgManager实例
-        kg_manager = KgManager(agent=kg_agent, splitter=kg_splitter, embedding_model=embeddings, store=chromadb_store)
-
-        # 设置原始文件名
-        kg_manager.original_file_type = filename  # 使用完整文件名
 
         # 文件转换处理
         conversion_success = False
@@ -642,32 +924,34 @@ def process_uploaded_file(original_path: str, filename: str, noteType: str = "ge
 
         logger.info(f"文件 {filename} 转换完成，开始处理知识图谱")
 
-        # 根据文件类型选择不同的文本分块器
-        if len(simple_files) > 0 and file_ext in simple_files:
-            from TextSlicer.SimpleTextSplitter import SimpleTextSplitter
-            kg_manager.splitter = SimpleTextSplitter(2045, 1024)
-        elif len(semantic_files) > 0 and file_ext in semantic_files:
-            from TextSlicer.SemanticTextSplitter import SemanticTextSplitter
-            kg_manager.splitter = SemanticTextSplitter(2045, 1024)
-        elif len(character_files) > 0 and file_ext in character_files:
-            from TextSlicer.CharacterTextSplitter import CharacterTextSplitter
-            kg_manager.splitter = CharacterTextSplitter(separator="</end>", keep_separator=False, max_tokens=2045, min_tokens=1024)
-
-        # 处理知识图谱（传入独立kg_manager）
-        process_knowledge_graph(base_name, text_content, filename, noteType)
+        process_knowledge_graph(
+            base_name,
+            text_content,
+            filename,
+            note_type,
+            get_splitter_for_extension(file_ext),
+            custom_prompts,
+        )
 
         # 处理完成后更新状态
-        PROCESS_STATUS[base_name] = "completed"
+        set_process_status(base_name, "completed", percentage=100, estimated_remaining_seconds=0)
         logger.info(f"文件 {filename} 处理完成，状态已设置为completed")
 
     except Exception as e:
         error_msg = f"文件处理失败: {str(e)}"
         if 'base_name' in locals():  # 确保base_name已定义
-            PROCESS_STATUS[base_name] = "error"
+            set_process_status(base_name, "error", estimated_remaining_seconds=None)
         logger.error(error_msg, exc_info=True)
 
 
-def process_update_file(original_path: str, filename: str, txt_path: str, use_img2txt: bool = False):
+def process_update_file(
+    original_path: str,
+    filename: str,
+    txt_path: str,
+    use_img2txt: bool = False,
+    note_type: str = "general",
+    custom_prompts: Optional[Dict[str, str]] = None,
+):
     """处理文件增量更新"""
     try:
         # 获取文件信息
@@ -677,11 +961,25 @@ def process_update_file(original_path: str, filename: str, txt_path: str, use_im
         new_txt_path = os.path.join(TXT_FOLDER, new_txt_filename)
 
         # 在开始处理前将状态设置为updating
-        PROCESS_STATUS[base_name] = "updating"
+        set_process_status(
+            base_name,
+            "updating",
+            completed_chunks=0,
+            total_chunks=0,
+            percentage=0,
+            latest_chunk_seconds=None,
+            estimated_remaining_seconds=None,
+        )
         logger.info(f"开始处理文件更新: {filename}, 状态已设置为updating")
 
         # 新建独立的KgManager实例
-        kg_manager = KgManager(agent=kg_agent, splitter=kg_splitter, embedding_model=embeddings, store=chromadb_store)
+        kg_manager = KgManager(
+            agent=kg_agent,
+            splitter=get_splitter_for_extension(file_ext),
+            embedding_model=embeddings,
+            store=chromadb_store,
+        )
+        kg_manager.configure_processing_prompts(note_type, custom_prompts)
 
         # 设置原始文件名
         kg_manager.original_file_type = filename  # 使用完整文件名
@@ -728,7 +1026,7 @@ def process_update_file(original_path: str, filename: str, txt_path: str, use_im
             os.remove(new_txt_path)
 
             # 更新处理状态为已完成
-            PROCESS_STATUS[base_name] = "completed"
+            set_process_status(base_name, "completed", percentage=100, estimated_remaining_seconds=0)
             return
 
         # 增量更新前，先加载原有知识图谱
@@ -740,7 +1038,10 @@ def process_update_file(original_path: str, filename: str, txt_path: str, use_im
         start_time = time.time()
 
         # 执行增量更新
-        new_kg_triplet = kg_manager.增量更新(new_text_content)
+        new_kg_triplet = kg_manager.增量更新(
+            new_text_content,
+            progress_callback=create_chunk_progress_callback(base_name, status="updating"),
+        )
         new_kg_triplet = kg_manager.知识融合(new_kg_triplet)
 
         # 检查更新结果是否为空
@@ -752,14 +1053,17 @@ def process_update_file(original_path: str, filename: str, txt_path: str, use_im
             os.remove(new_txt_path)  # 删除临时文件
 
             # 更新处理状态为已完成
-            PROCESS_STATUS[base_name] = "completed"
+            set_process_status(base_name, "completed", percentage=100, estimated_remaining_seconds=0)
             return
 
         # 转换为有向图
         kg_manager.三元组转有向图nx(new_kg_triplet)
 
         # 绘制更新后的知识图谱
-        kg_manager.绘制知识图谱(base_name)
+        kg_manager.绘制知识图谱(
+            base_name,
+            输出目录=RESULT_FOLDER,
+        )
 
         # 更新完成后，用新文件替换旧文件
         shutil.copy(new_txt_path, txt_path)
@@ -779,37 +1083,38 @@ def process_update_file(original_path: str, filename: str, txt_path: str, use_im
         else:
             logger.warning(f"知识图谱增量更新没有生成有效的节点，跳过保存步骤")
 
-        # 保存并移动结果文件
-        result_file = f"{base_name}.html"
-        if os.path.exists(result_file):
-            shutil.move(result_file, os.path.join(RESULT_FOLDER, result_file))
-        else:
+        # 图谱首页和所有社区子页由 KgManager 直接写入同一个结果目录。
+        result_file = RESULT_FOLDER / base_name / f"{base_name}.html"
+        if not result_file.exists():
             raise FileNotFoundError("未生成结果HTML文件")
 
         # 更新处理状态为已完成
-        PROCESS_STATUS[base_name] = "completed"
+        set_process_status(base_name, "completed", percentage=100, estimated_remaining_seconds=0)
         logger.info(f"知识图谱增量更新完成: {base_name}")
 
     except Exception as e:
         error_msg = f"文件增量更新失败: {str(e)}"
         if 'base_name' in locals():  # 确保base_name已定义
-            PROCESS_STATUS[base_name] = "error"
+            set_process_status(base_name, "error", estimated_remaining_seconds=None)
         logger.error(error_msg, exc_info=True)
 
         # 清理临时文件
         if 'new_txt_path' in locals() and os.path.exists(new_txt_path):
             try:
                 os.remove(new_txt_path)
-            except:
-                pass
+            except OSError:
+                logger.warning("清理临时文件失败: %s", new_txt_path, exc_info=True)
 
 
 @app.post("/upload")
 async def upload_file(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    noteType: str = Form("general"),
+    note_type: str = Form("general", alias="noteType"),
     use_img2txt: str = Form("true"),
-    background_tasks: BackgroundTasks = None
+    entity_prompt: Optional[str] = Form(None, alias="entityPrompt"),
+    relationship_prompt: Optional[str] = Form(None, alias="relationshipPrompt"),
+    fusion_prompt: Optional[str] = Form(None, alias="fusionPrompt"),
 ):
     """
     支持多种格式的文件上传接口，支持增量更新。
@@ -820,7 +1125,7 @@ async def upload_file(
     
     参数：
         file (UploadFile): 上传的文件。
-        noteType (str): 笔记类型，默认为general。
+        note_type (str): 笔记类型，默认为general。
         use_img2txt (str): 是否启用图片转文本，"true"/"false"。
         background_tasks (BackgroundTasks): FastAPI后台任务对象。
     
@@ -830,18 +1135,28 @@ async def upload_file(
     异常：
         上传或处理失败时返回500。
     """
+    require_ai_settings()
     try:
-        # 将字符串类型的use_img2txt参数转换为布尔值
-        use_img2txt_bool = use_img2txt == "true"
+        use_img2txt_bool = use_img2txt.strip().lower() in {"true", "1", "yes", "open"}
+        custom_prompts = normalize_processing_prompts(
+            note_type,
+            entity_prompt,
+            relationship_prompt,
+            fusion_prompt,
+        )
 
         logger.info(f"收到图片文本识别参数: {use_img2txt} -> {use_img2txt_bool}")
 
         # 保存原始文件
-        filename = file.filename
-        base_name = os.path.splitext(filename)[0]
-        original_path = os.path.join(UPLOAD_FOLDER, filename)
+        filename = get_safe_filename(file.filename or "")
+        base_name = get_base_name(filename)
+        file_ext = Path(filename).suffix.lower()
+        if file_ext not in FILE_PROCESSORS and file_ext != ".txt":
+            raise HTTPException(status_code=415, detail=f"不支持的文件类型: {file_ext or '无扩展名'}")
+
+        original_path = UPLOAD_FOLDER / filename
         txt_filename = f"{base_name}.txt"
-        txt_path = os.path.join(TXT_FOLDER, txt_filename)
+        txt_path = TXT_FOLDER / txt_filename
 
         # 检查数据库中是否已有该文件
         file_exists = False
@@ -859,20 +1174,53 @@ async def upload_file(
             if os.path.exists(txt_path):
                 existing_txt = True
 
+        previous_progress = get_process_status(base_name)
+        failed_retry = previous_progress is not None and previous_progress.get("status") == "error"
+        result_file = RESULT_FOLDER / base_name / f"{base_name}.html"
+
+        if failed_retry:
+            # A failed run may leave a partial graph and converted text behind.
+            # Discard them so this upload is rebuilt from the source file.
+            if file_exists:
+                kg_manager.delete_store([base_name])
+            shutil.rmtree(RESULT_FOLDER / base_name, ignore_errors=True)
+            txt_path.unlink(missing_ok=True)
+            file_exists = False
+            existing_txt = False
+            logger.info("文件 %s 上次处理失败，本次将重新完整处理", filename)
+
+        can_incrementally_update = file_exists and existing_txt and result_file.is_file()
+
         # 保存上传的文件
-        with open(original_path, "wb") as f:
-            contents = await file.read()
-            f.write(contents)
+        with original_path.open("wb") as output_file:
+            while chunk := await file.read(1024 * 1024):
+                output_file.write(chunk)
 
         logger.info(f"文件 {filename} 上传成功，存储为 {original_path}")
         logger.info(f"使用图片文本识别参数: {use_img2txt} -> {use_img2txt_bool}")
 
         # 设置状态和后台处理任务
-        if file_exists and existing_txt:
+        if can_incrementally_update:
             # 文件在数据库中已存在，执行增量更新
-            PROCESS_STATUS[base_name] = "updating"
+            set_process_status(
+                base_name,
+                "updating",
+                completed_chunks=0,
+                total_chunks=0,
+                percentage=0,
+                latest_chunk_seconds=None,
+                estimated_remaining_seconds=None,
+            )
             logger.info(f"文件 {filename} 已存在，将进行增量更新")
-            background_tasks.add_task(process_update_file, original_path, filename, txt_path, use_img2txt_bool)
+            background_tasks.add_task(
+                process_update_file,
+                original_path,
+                filename,
+                txt_path,
+                use_img2txt_bool,
+                note_type,
+                custom_prompts,
+            )
 
             return JSONResponse({
                 "status": "updating",
@@ -882,16 +1230,34 @@ async def upload_file(
             })
         else:
             # 新文件上传，执行常规处理
-            PROCESS_STATUS[base_name] = "uploading"
-            background_tasks.add_task(process_uploaded_file, original_path, filename, noteType, use_img2txt_bool)
+            set_process_status(
+                base_name,
+                "uploading",
+                completed_chunks=0,
+                total_chunks=0,
+                percentage=0,
+                latest_chunk_seconds=None,
+                estimated_remaining_seconds=None,
+            )
+            background_tasks.add_task(
+                process_uploaded_file,
+                original_path,
+                filename,
+                note_type,
+                use_img2txt_bool,
+                custom_prompts,
+            )
 
             return JSONResponse({
                 "status": "uploading",
                 "message": "文件已上传，正在转换处理中",
                 "filename": filename,
-                "noteType": noteType
+                "noteType": note_type,
+                "is_update": False
             })
 
+    except HTTPException:
+        raise
     except Exception as e:
         error_msg = f"文件上传失败: {str(e)}"
         logger.error(error_msg, exc_info=True)
@@ -918,8 +1284,9 @@ async def get_processing_status(filename: str):
     异常：
         文件不存在时返回404。
     """
-    base_name = os.path.splitext(filename)[0]
-    status = PROCESS_STATUS.get(base_name)
+    filename = get_safe_filename(filename)
+    base_name = get_base_name(filename)
+    progress = get_process_status(base_name)
 
     # 状态映射，用于前端展示
     status_map = {
@@ -930,15 +1297,21 @@ async def get_processing_status(filename: str):
         "error": "失败"
     }
 
-    if status:
-        result_exists = os.path.exists(os.path.join(RESULT_FOLDER, f'{base_name}.html'))
+    if progress:
+        status = progress["status"]
+        result_exists = (RESULT_FOLDER / base_name / f'{base_name}.html').exists()
         display_status = status_map.get(status, status)
 
         return JSONResponse({
             "status": status,
             "display_status": display_status,
             "result_exists": result_exists,
-            "filename": filename
+            "filename": filename,
+            "completed_chunks": progress.get("completed_chunks", 0),
+            "total_chunks": progress.get("total_chunks", 0),
+            "percentage": progress.get("percentage", 0),
+            "latest_chunk_seconds": progress.get("latest_chunk_seconds"),
+            "estimated_remaining_seconds": progress.get("estimated_remaining_seconds"),
         })
     else:
         return JSONResponse(
@@ -964,7 +1337,8 @@ async def get_file_content(filename: str):
     异常：
         文件不存在或读取失败时返回404/500。
     """
-    txt_filename = f"{os.path.splitext(filename)[0]}.txt"
+    filename = get_safe_filename(filename)
+    txt_filename = f"{get_base_name(filename)}.txt"
     txt_path = os.path.join(TXT_FOLDER, txt_filename)
 
     if os.path.exists(txt_path):
@@ -986,6 +1360,54 @@ async def get_file_content(filename: str):
         )
 
 
+@app.get("/result-page/{graph_name}/{page_name}")
+async def get_result_page(graph_name: str, page_name: str):
+    """Serve the main graph page or one of its generated community pages."""
+    graph_name = get_safe_filename(graph_name)
+    page_name = get_safe_filename(page_name)
+    main_page_name = f"{graph_name}.html"
+    child_page_prefix = f"{graph_name}_community_"
+    is_community_page = (
+        page_name.startswith(child_page_prefix)
+        and page_name.endswith(".html")
+    )
+    if page_name != main_page_name and not is_community_page:
+        raise HTTPException(status_code=404, detail="图谱页面不存在")
+
+    result_path = RESULT_FOLDER / graph_name / page_name
+    if not result_path.is_file():
+        raise HTTPException(status_code=404, detail="图谱页面不存在")
+
+    return get_graph_html_response(result_path, graph_name, page_name)
+
+
+def get_graph_html_response(result_path: Path, graph_name: str, page_name: str) -> HTMLResponse:
+    """Serve graph HTML with a stable base for relative page navigation."""
+    html_content = result_path.read_text(encoding="utf-8")
+    if "<head>" in html_content:
+        html_content = html_content.replace(
+            "<head>", '<head><base href="./">', 1
+        )
+
+    # Results produced by earlier versions may contain either of these absolute
+    # prefixes. Convert only this graph's navigation links so the injected base
+    # above also fixes old files without changing their on-disk contents.
+    for legacy_prefix in (
+        f'href="/api/result-page/{quote(graph_name, safe="")}/',
+        f'href="/KnowledgeMapNotes/results/{graph_name}/',
+        f'href="/KnowledgeMapNotes/results/{quote(graph_name, safe="")}/',
+    ):
+        html_content = html_content.replace(legacy_prefix, 'href="')
+
+    return HTMLResponse(
+        content=html_content,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Content-Disposition": f"inline; filename*=utf-8''{quote(page_name, safe='')}",
+        },
+    )
+
+
 @app.get("/result/{filename}")
 async def get_result(filename: str):
     """
@@ -998,36 +1420,37 @@ async def get_result(filename: str):
         filename (str): 文件名。
     
     返回：
-        FileResponse: HTML文件。
+        HTMLResponse: HTML文件。
         JSONResponse: 错误时返回错误信息。
     
     异常：
         结果文件不存在时返回404。
     """
-    base_name = os.path.splitext(filename)[0]
+    filename = get_safe_filename(filename)
+    base_name = get_base_name(filename)
     result_file = f"{base_name}.html"
-    result_path = os.path.join(RESULT_FOLDER, result_file)
+    result_path = RESULT_FOLDER / base_name / result_file
 
-    if os.path.exists(result_path):
-        safe_filename = quote(result_file, safe='')
-        return FileResponse(
-            result_path,
-            media_type="text/html",
-            headers={
-                "Access-Control-Allow-Origin": "*",
-                "Content-Disposition": f"inline; filename*=utf-8''{safe_filename}"
-            }
-        )
-    else:
-        status = PROCESS_STATUS.get(base_name, "unknown")
-        return JSONResponse(
-            status_code=404,
-            content={
-                "error": "结果文件不存在",
-                "status": status,
-                "filename": filename
-            }
-        )
+    if result_path.exists():
+        return get_graph_html_response(result_path, base_name, result_file)
+
+    # Compatibility for graph pages opened from an older response whose empty
+    # <base> resolves links beside /result/{upload-name}.
+    graph_name, marker, community_suffix = filename.rpartition("_community_")
+    if marker and community_suffix.endswith(".html"):
+        community_path = RESULT_FOLDER / graph_name / filename
+        if community_path.is_file():
+            return get_graph_html_response(community_path, graph_name, filename)
+
+    status = (get_process_status(base_name) or {"status": "unknown"})["status"]
+    return JSONResponse(
+        status_code=404,
+        content={
+            "error": "结果文件不存在",
+            "status": status,
+            "filename": filename
+        }
+    )
 
 
 @app.get("/health")
@@ -1077,14 +1500,19 @@ async def list_files():
         db_metadatas = db_files.get('metadatas', [])
 
         # 获取当前正在处理的文件（从PROCESS_STATUS获取）
-        processing_statuses = ["uploading", "processing"]
-        processing_files = {base_name: status for base_name, status in PROCESS_STATUS.items()
-                            if status in processing_statuses}
+        processing_statuses = ["uploading", "processing", "updating"]
+        with process_status_lock:
+            processing_files = {
+                base_name: progress.copy()
+                for base_name, progress in PROCESS_STATUS.items()
+                if progress["status"] in processing_statuses
+            }
 
         # 状态映射，用于前端展示
         status_map = {
             "uploading": "上传中",
             "processing": "处理中",
+            "updating": "增量更新中",
             "completed": "已完成",
             "error": "失败"
         }
@@ -1099,24 +1527,34 @@ async def list_files():
             original_filename = db_metadatas[i].get('original_file_type', file_id)
 
             # 获取状态：优先从PROCESS_STATUS获取
-            status = PROCESS_STATUS.get(base_name, "completed")
+            progress = get_process_status(base_name) or {"status": "completed", "percentage": 100}
+            status = progress["status"]
             display_status = status_map.get(status, status)
 
             processed_files.append({
                 "filename": original_filename,
                 "status": status,
-                "display_status": display_status
+                "display_status": display_status,
+                "percentage": progress.get("percentage", 0),
+                "completed_chunks": progress.get("completed_chunks", 0),
+                "total_chunks": progress.get("total_chunks", 0),
+                "estimated_remaining_seconds": progress.get("estimated_remaining_seconds"),
             })
 
         # 再添加仅在PROCESS_STATUS中的文件（正在处理但尚未添加到数据库的文件）
         db_base_names = [os.path.splitext(file_id)[0] for file_id in db_file_ids]
-        for base_name, status in processing_files.items():
+        for base_name, progress in processing_files.items():
             if base_name not in db_base_names:
+                status = progress["status"]
                 display_status = status_map.get(status, status)
                 processed_files.append({
                     "filename": f"{base_name}.txt",  # 默认使用txt扩展名
                     "status": status,
-                    "display_status": display_status
+                    "display_status": display_status,
+                    "percentage": progress.get("percentage", 0),
+                    "completed_chunks": progress.get("completed_chunks", 0),
+                    "total_chunks": progress.get("total_chunks", 0),
+                    "estimated_remaining_seconds": progress.get("estimated_remaining_seconds"),
                 })
 
         return JSONResponse({"files": processed_files})
@@ -1146,9 +1584,22 @@ async def delete_file(filename: str):
         删除失败时返回500。
     """
     try:
-        base_name = os.path.splitext(filename)[0]
+        filename = get_safe_filename(filename)
+        base_name = get_base_name(filename)
         kg_manager.delete_store([base_name])
+        shutil.rmtree(RESULT_FOLDER / base_name, ignore_errors=True)
+        for file_path in (
+            UPLOAD_FOLDER / filename,
+            TXT_FOLDER / f"{base_name}.txt",
+            # Clean up a flat result produced by earlier versions as well.
+            RESULT_FOLDER / f"{base_name}.html",
+        ):
+            file_path.unlink(missing_ok=True)
+        with process_status_lock:
+            PROCESS_STATUS.pop(base_name, None)
         return JSONResponse({"message": f"文件 {filename} 已成功删除"})
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"删除文件失败: {str(e)}")
         return JSONResponse(
@@ -1175,12 +1626,15 @@ async def delete_rag_history(filename: str):
         删除失败时返回500。
     """
     try:
-        base_name = os.path.splitext(filename)[0]
+        filename = get_safe_filename(filename)
+        base_name = get_base_name(filename)
         # 使用chromadb_store删除RAG历史
         chromadb_store.delete_rag_history([base_name])
         return JSONResponse({
             "message": f"文件 {filename} 的RAG历史记录已成功删除"
         })
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"删除RAG历史记录失败: {str(e)}")
         return JSONResponse(
@@ -1208,7 +1662,8 @@ async def get_file_entities(filename: str, count: int = 5):
         获取失败时返回404/500。
     """
     try:
-        base_name = os.path.splitext(filename)[0]
+        filename = get_safe_filename(filename)
+        base_name = get_base_name(filename)
 
         # 创建一个存储管理器实例
         manager = storeManager(store=chromadb_store, agent=kg_agent)
@@ -1229,6 +1684,8 @@ async def get_file_entities(filename: str, count: int = 5):
         return JSONResponse({
             "entities": entities
         })
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"获取文件实体失败: {str(e)}")
         return JSONResponse(
@@ -1237,7 +1694,33 @@ async def get_file_entities(filename: str, count: int = 5):
         )
 
 
+# Serve the production frontend from the same process when it has been built.
+# API routes are declared above, so this catch-all mount does not shadow them.
+FRONTEND_DIST_FOLDER = Path(
+    os.getenv(
+        "FRONTEND_DIST",
+        str(Path(__file__).resolve().parent.parent / "frontend" / "dist"),
+    )
+).expanduser()
+if FRONTEND_DIST_FOLDER.is_dir():
+    app.mount(
+        "/",
+        SPAStaticFiles(directory=FRONTEND_DIST_FOLDER, html=True),
+        name="frontend",
+    )
+    logger.info("已挂载前端打包目录: %s", FRONTEND_DIST_FOLDER)
+else:
+    logger.warning(
+        "未找到前端打包目录: %s，后端仍将仅提供 API；请先运行 npm run build",
+        FRONTEND_DIST_FOLDER,
+    )
+
+
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(
+        app,
+        host=os.getenv("HOST", "0.0.0.0"),
+        port=int(os.getenv("PORT", "8000")),
+    )

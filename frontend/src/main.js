@@ -6,7 +6,6 @@ import "@/styles/element/index.scss";
 import {zhCn} from "element-plus/es/locale/index";
 import App from "@/App.vue";
 import router from '@/router'
-import 'virtual:svg-icons-register';
 import SvgIcon from '@/components/SvgIcon/index.vue'
 
 const app = createApp(App)

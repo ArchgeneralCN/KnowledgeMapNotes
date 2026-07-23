@@ -1,11 +1,38 @@
 <script setup>
 import SideBar from "./components/SideBar.vue";
-import {ref, reactive, onMounted, watch, nextTick} from "vue";
+import {computed, ref, reactive, onMounted, onUnmounted, watch, nextTick} from "vue";
 import SvgIcon from "@/components/SvgIcon/index.vue";
-import {Link, Document, Loading, SuccessFilled, Download, ChatDotRound, Tickets, View, Hide, ArrowDown} from '@element-plus/icons-vue';
+import {
+  ArrowDown,
+  ChatDotRound,
+  Connection,
+  CopyDocument,
+  Document,
+  Download,
+  Hide,
+  Loading,
+  SuccessFilled,
+  View
+} from '@element-plus/icons-vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import axios from 'axios';
+import DOMPurify from 'dompurify';
+import MarkdownIt from 'markdown-it';
+import api, { apiUrl, encodePathSegment, getApiErrorMessage } from '@/api/client';
 import { themes, applyTheme } from '@/styles/theme';
+
+const markdownRenderer = new MarkdownIt({
+  breaks: true,
+  html: false,
+  linkify: true,
+  typographer: true
+});
+const defaultLinkOpen = markdownRenderer.renderer.rules.link_open
+  || ((tokens, index, options, env, self) => self.renderToken(tokens, index, options));
+markdownRenderer.renderer.rules.link_open = (tokens, index, options, env, self) => {
+  tokens[index].attrSet('target', '_blank');
+  tokens[index].attrSet('rel', 'noopener noreferrer');
+  return defaultLinkOpen(tokens, index, options, env, self);
+};
 
 const sideBarRef = ref();
 const fileListExpand = ref(false);
@@ -13,6 +40,12 @@ const isSearch = ref(false);
 const searchValue = ref('');
 const uploadFileList = ref([]);
 const filteredFileList = ref([]);
+const currentPage = ref(1);
+const pageSize = 10;
+const paginatedFileList = computed(() => {
+  const start = (currentPage.value - 1) * pageSize;
+  return filteredFileList.value.slice(start, start + pageSize);
+});
 
 // 新增顶部导航和视图控制
 const activeView = ref('upload'); // 'upload', 'result'
@@ -26,6 +59,180 @@ const panelVisible = reactive({
   rag: true
 });
 
+const PANEL_ORDER = ['original', 'knowledge-graph', 'rag'];
+const PANEL_LABELS = {
+  original: '原文件',
+  'knowledge-graph': '知识图谱',
+  rag: 'RAG 问答'
+};
+const PANEL_MIN_WIDTH = 280;
+const PANEL_RESIZER_WIDTH = 8;
+const FILE_LIST_MIN_WIDTH = 260;
+const FILE_LIST_MAX_WIDTH = 560;
+const RESULT_AREA_MIN_WIDTH = 420;
+const fileListWidth = ref(280);
+const contentPanelsRef = ref(null);
+const resizeMode = ref(null);
+const panelWeights = reactive({
+  original: 1,
+  'knowledge-graph': 1,
+  rag: 1
+});
+const visiblePanelKeys = computed(() => PANEL_ORDER.filter(panel => panelVisible[panel]));
+const contentStyle = computed(() => ({
+  marginLeft: fileListExpand.value ? `${fileListWidth.value}px` : '0'
+}));
+
+let activeResizeCleanup = null;
+let panelResizeObserver = null;
+
+const getPanelLabel = (panel) => PANEL_LABELS[panel] || panel;
+
+const getNextVisiblePanel = (panel) => {
+  const panelIndex = visiblePanelKeys.value.indexOf(panel);
+  return panelIndex >= 0 ? visiblePanelKeys.value[panelIndex + 1] : null;
+};
+
+const getPanelStyle = (panel) => ({
+  flex: `${panelWeights[panel]} 1 0px`,
+  minWidth: `${PANEL_MIN_WIDTH}px`
+});
+
+const snapshotPanelWidths = () => {
+  if (!contentPanelsRef.value) return;
+
+  visiblePanelKeys.value.forEach(panel => {
+    const panelElement = contentPanelsRef.value.querySelector(`[data-panel="${panel}"]`);
+    if (panelElement) panelWeights[panel] = panelElement.getBoundingClientRect().width;
+  });
+};
+
+const finishResizeSession = () => {
+  activeResizeCleanup?.();
+};
+
+const startResizeSession = (mode, onMove, onEnd = () => {}) => {
+  finishResizeSession();
+  resizeMode.value = mode;
+  document.body.style.cursor = 'col-resize';
+  document.body.style.userSelect = 'none';
+
+  const finish = () => {
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', finish);
+    window.removeEventListener('pointercancel', finish);
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    resizeMode.value = null;
+    activeResizeCleanup = null;
+    onEnd();
+  };
+
+  activeResizeCleanup = finish;
+  window.addEventListener('pointermove', onMove);
+  window.addEventListener('pointerup', finish);
+  window.addEventListener('pointercancel', finish);
+};
+
+const getFileListMaxWidth = () => Math.max(
+  FILE_LIST_MIN_WIDTH,
+  Math.min(FILE_LIST_MAX_WIDTH, window.innerWidth - RESULT_AREA_MIN_WIDTH - 72)
+);
+
+const startFileListResize = (event) => {
+  if (window.innerWidth <= 820) return;
+
+  event.preventDefault();
+  const startX = event.clientX;
+  const startWidth = fileListWidth.value;
+
+  startResizeSession('file-list', moveEvent => {
+    const nextWidth = startWidth + moveEvent.clientX - startX;
+    fileListWidth.value = Math.min(
+      getFileListMaxWidth(),
+      Math.max(FILE_LIST_MIN_WIDTH, nextWidth)
+    );
+  }, () => {
+    localStorage.setItem('file-list-width', String(Math.round(fileListWidth.value)));
+  });
+};
+
+const collapsePanel = (panel, notify = false) => {
+  if (!panelVisible[panel] || visiblePanelKeys.value.length <= 1) return false;
+
+  panelVisible[panel] = false;
+  if (activeTab.value === panel) {
+    activeTab.value = visiblePanelKeys.value[0];
+  }
+  if (notify) {
+    ElMessage.info(`${getPanelLabel(panel)}宽度低于 ${PANEL_MIN_WIDTH}px，已自动隐藏`);
+  }
+
+  nextTick(snapshotPanelWidths);
+  return true;
+};
+
+const ensurePanelsFit = () => {
+  const container = contentPanelsRef.value;
+  if (!container || window.innerWidth <= 820 || resizeMode.value === 'panel') return;
+
+  const visiblePanels = visiblePanelKeys.value;
+  const requiredWidth = visiblePanels.length * PANEL_MIN_WIDTH
+    + Math.max(0, visiblePanels.length - 1) * PANEL_RESIZER_WIDTH;
+  if (visiblePanels.length <= 1 || container.clientWidth >= requiredWidth) return;
+
+  const panelToHide = [...visiblePanels].reverse().find(panel => panel !== activeTab.value)
+    || visiblePanels[visiblePanels.length - 1];
+  if (collapsePanel(panelToHide)) nextTick(ensurePanelsFit);
+};
+
+const startPanelResize = (event, leftPanel) => {
+  const rightPanel = getNextVisiblePanel(leftPanel);
+  const container = contentPanelsRef.value;
+  if (!rightPanel || !container || window.innerWidth <= 820) return;
+
+  const leftElement = container.querySelector(`[data-panel="${leftPanel}"]`);
+  const rightElement = container.querySelector(`[data-panel="${rightPanel}"]`);
+  if (!leftElement || !rightElement) return;
+
+  event.preventDefault();
+  snapshotPanelWidths();
+  const startX = event.clientX;
+  const startLeftWidth = leftElement.getBoundingClientRect().width;
+  const startRightWidth = rightElement.getBoundingClientRect().width;
+
+  startResizeSession('panel', moveEvent => {
+    const delta = moveEvent.clientX - startX;
+    const leftWidth = startLeftWidth + delta;
+    const rightWidth = startRightWidth - delta;
+
+    if (leftWidth < PANEL_MIN_WIDTH) {
+      collapsePanel(leftPanel, true);
+      finishResizeSession();
+      return;
+    }
+    if (rightWidth < PANEL_MIN_WIDTH) {
+      collapsePanel(rightPanel, true);
+      finishResizeSession();
+      return;
+    }
+
+    panelWeights[leftPanel] = leftWidth;
+    panelWeights[rightPanel] = rightWidth;
+  });
+};
+
+watch(contentPanelsRef, container => {
+  panelResizeObserver?.disconnect();
+  panelResizeObserver = null;
+
+  if (container && typeof ResizeObserver !== 'undefined') {
+    panelResizeObserver = new ResizeObserver(ensurePanelsFit);
+    panelResizeObserver.observe(container);
+    nextTick(ensurePanelsFit);
+  }
+});
+
 // RAG聊天相关
 const chatMessages = ref([
 ]);
@@ -34,13 +241,30 @@ const chatLoading = ref(false);
 const currentChatFile = ref(null); // 当前正在聊天的文件
 const abortController = ref(null); // 用于取消请求的控制器
 const fileChatStates = ref({}); // 存储每个文件的聊天状态
+const processingTimers = new Map();
+let knowledgeGraphRequestId = 0;
 
 // 添加文件内容相关状态
 const fileContent = ref('');
 const fileContentLoading = ref(false);
+const contentViewMode = ref('preview');
+const contentViewOptions = [
+  { label: '预览', value: 'preview' },
+  { label: '源码', value: 'source' }
+];
+const renderedFileContent = computed(() => DOMPurify.sanitize(
+  markdownRenderer.render(fileContent.value || ''),
+  { ADD_ATTR: ['target'] }
+));
+const fileContentStats = computed(() => {
+  if (!fileContent.value) return '';
+  const characters = fileContent.value.replace(/\s/g, '').length;
+  const lines = fileContent.value.split(/\r?\n/).length;
+  return `${characters.toLocaleString()} 字 · ${lines.toLocaleString()} 行`;
+});
 
 // 在 script setup 部分添加
-const knowledgeGraphData = ref(null);
+const knowledgeGraphUrl = ref(null);
 const knowledgeGraphLoading = ref(false);
 
 // 修改主题相关状态
@@ -58,6 +282,28 @@ const enableStreamOutput = ref(false);
 const useImg2txt = ref(false);
 // 添加笔记类型设置
 const noteType = ref('general');
+const emptyCustomPrompts = {
+  entityExtraction: '',
+  relationshipExtraction: '',
+  knowledgeFusion: ''
+};
+const loadCustomPrompts = () => {
+  try {
+    const saved = JSON.parse(localStorage.getItem('custom-processing-prompts') || '{}');
+    return {
+      entityExtraction: typeof saved.entityExtraction === 'string' ? saved.entityExtraction : '',
+      relationshipExtraction: typeof saved.relationshipExtraction === 'string' ? saved.relationshipExtraction : '',
+      knowledgeFusion: typeof saved.knowledgeFusion === 'string' ? saved.knowledgeFusion : ''
+    };
+  } catch {
+    return { ...emptyCustomPrompts };
+  }
+};
+const customPrompts = ref(loadCustomPrompts());
+
+watch(customPrompts, value => {
+  localStorage.setItem('custom-processing-prompts', JSON.stringify(value));
+}, { deep: true });
 
 // 保存和获取流式输出设置
 const saveStreamSetting = () => {
@@ -119,28 +365,31 @@ const fetchKnowledgeGraph = async (filename) => {
     return;
   }
 
+  const requestId = ++knowledgeGraphRequestId;
+
   try {
     knowledgeGraphLoading.value = true;
 
-    // 检查本地缓存
-    const cachedData = localStorage.getItem(`kg_${filename}`);
-    if (cachedData) {
-      knowledgeGraphData.value = JSON.parse(cachedData);
-      return;
-    }
-
-    // 从服务器获取数据
-    const response = await axios.get(`http://localhost:8000/result/${filename}`);
-    if (response.data) {
-      knowledgeGraphData.value = response.data;
-      // 缓存数据
-      localStorage.setItem(`kg_${filename}`, JSON.stringify(response.data));
+    // Use the directory-shaped page URL as the iframe document URL. Community
+    // links remain valid even when an older backend returns an empty <base>.
+    localStorage.removeItem(`kg_${filename}`);
+    if (requestId === knowledgeGraphRequestId) {
+      const lastDot = filename.lastIndexOf('.');
+      const graphName = lastDot > 0 && lastDot < filename.length - 1
+        ? filename.slice(0, lastDot)
+        : filename;
+      const mainPageName = `${graphName}.html`;
+      knowledgeGraphUrl.value = apiUrl(
+        `/result-page/${encodePathSegment(graphName)}/${encodePathSegment(mainPageName)}`
+      );
     }
   } catch (error) {
     console.error('获取知识图谱失败:', error);
     ElMessage.error('获取知识图谱失败');
   } finally {
-    knowledgeGraphLoading.value = false;
+    if (requestId === knowledgeGraphRequestId) {
+      knowledgeGraphLoading.value = false;
+    }
   }
 };
 
@@ -153,10 +402,40 @@ const formatTextWithLineBreaks = (text) => {
   return text;
 };
 
+const copyFileContent = async () => {
+  if (!fileContent.value) return;
+  try {
+    await navigator.clipboard.writeText(fileContent.value);
+    ElMessage.success('内容已复制');
+  } catch (error) {
+    console.error('复制文件内容失败:', error);
+    ElMessage.error('复制失败，请切换到源码后手动复制');
+  }
+};
+
+const downloadFileContent = () => {
+  if (!fileContent.value) return;
+
+  const currentName = currentFile.value?.name || 'document.md';
+  const lastDot = currentName.lastIndexOf('.');
+  const extension = lastDot > -1 ? currentName.slice(lastDot).toLowerCase() : '';
+  const baseName = lastDot > 0 ? currentName.slice(0, lastDot) : currentName;
+  const downloadName = ['.md', '.markdown', '.txt'].includes(extension)
+    ? currentName
+    : `${baseName}.md`;
+  const blob = new Blob([fileContent.value], { type: 'text/markdown;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = downloadName;
+  link.click();
+  URL.revokeObjectURL(url);
+};
+
 // 从localStorage加载聊天历史
 const loadChatHistory = (filename) => {
   if (!filename) return;
-  
+
   try {
     const savedChat = localStorage.getItem(`chat_${filename}`);
     if (savedChat) {
@@ -185,6 +464,14 @@ const loadChatHistory = (filename) => {
 
 // 页面加载时获取历史文件列表
 onMounted(async () => {
+  const savedFileListWidth = Number(localStorage.getItem('file-list-width'));
+  if (Number.isFinite(savedFileListWidth)) {
+    fileListWidth.value = Math.min(
+      getFileListMaxWidth(),
+      Math.max(FILE_LIST_MIN_WIDTH, savedFileListWidth)
+    );
+  }
+
   try {
     // 初始化主题
     const savedTheme = localStorage.getItem('app-theme') || 'default';
@@ -197,8 +484,8 @@ onMounted(async () => {
     // 加载图片文本识别设置
     const savedImg2txtSetting = localStorage.getItem('use-img2txt');
     useImg2txt.value = savedImg2txtSetting === 'true';
-    
-    const response = await axios.get('http://localhost:8000/list-files');
+
+    const response = await api.get('/list-files');
     if (response.data && Array.isArray(response.data.files)) {
       // 将历史文件添加到文件列表，保持原始文件名和状态
       uploadFileList.value = response.data.files.map(file => ({
@@ -206,7 +493,11 @@ onMounted(async () => {
         status: file.status || 'completed',
         display_status: file.display_status || (file.status ? getStatusText(file.status) : '已完成'),
         size: file.size || 0,
-        percentage: 100
+        percentage: file.percentage ?? (file.status === 'completed' ? 100 : 0),
+        completedChunks: file.completed_chunks || 0,
+        totalChunks: file.total_chunks || 0,
+        latestChunkSeconds: file.latest_chunk_seconds,
+        estimatedRemainingSeconds: file.estimated_remaining_seconds
       }));
 
       // 初始化过滤后的文件列表
@@ -216,7 +507,7 @@ onMounted(async () => {
       uploadFileList.value.forEach(file => {
         // 包括所有处理中状态
         const processingStatuses = [
-          'uploading', 'processing'
+          'uploading', 'processing', 'updating'
         ];
 
         if (processingStatuses.includes(file.status)) {
@@ -244,14 +535,15 @@ const deleteFile = async (file) => {
         }
     );
 
-    await axios.delete(`http://localhost:8000/delete/${file.name}`);
+    await api.delete(`/delete/${encodePathSegment(file.name)}`);
+    stopFileStatusPolling(file.name);
 
     // 从列表中移除文件
     const index = uploadFileList.value.findIndex(item => item.name === file.name);
     if (index !== -1) {
       uploadFileList.value.splice(index, 1);
     }
-    
+
     // 清理本地缓存
     localStorage.removeItem(`kg_${file.name}`);  // 删除知识图谱数据
     localStorage.removeItem(`chat_${file.name}`);  // 删除聊天记录
@@ -279,7 +571,7 @@ const deleteFile = async (file) => {
 const deleteRagHistory = async (file, event) => {
   // 阻止事件冒泡，防止触发文件查看
   event.stopPropagation();
-  
+
   try {
     // 添加确认弹窗
     await ElMessageBox.confirm(
@@ -293,8 +585,8 @@ const deleteRagHistory = async (file, event) => {
     );
 
     // 调用后端API删除RAG历史
-    await axios.delete(`http://localhost:8000/rag-history/${file.name}`);
-    
+    await api.delete(`/rag-history/${encodePathSegment(file.name)}`);
+
     // 清理本地缓存
     localStorage.removeItem(`chat_${file.name}`);  // 删除本地聊天记录
 
@@ -323,8 +615,8 @@ const stopRagResponse = () => {
     abortController.value.abort();
     abortController.value = null;
     chatLoading.value = false;
-    // 移除正在思考的消息
-    chatMessages.value = chatMessages.value.filter(msg => !msg.thinking);
+    // 移除未完成的回答，避免将半截内容保存为历史记录。
+    chatMessages.value = chatMessages.value.filter(msg => !msg.thinking && !msg.streaming);
     ElMessage.info('已停止回答');
   }
 };
@@ -369,14 +661,19 @@ const processStreamResponse = async (url, data, messageIndex) => {
       buffer += decoder.decode(value, { stream: true });
 
       // 处理SSE格式的数据
-      const lines = buffer.split('\n\n');
+      const lines = buffer.split(/\r?\n\r?\n/);
       buffer = lines.pop() || ''; // 最后一行可能不完整，保留到下一次处理
 
       for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
+        const payload = line
+          .split(/\r?\n/)
+          .filter(item => item.startsWith('data:'))
+          .map(item => item.slice(5).trimStart())
+          .join('\n');
+        if (!payload) continue;
 
         try {
-          const eventData = JSON.parse(line.substring(6));
+          const eventData = JSON.parse(payload);
 
           // 根据不同类型的消息进行处理
           if (eventData.type === 'status') {
@@ -406,11 +703,11 @@ const processStreamResponse = async (url, data, messageIndex) => {
               // 检查响应内容是否为JSON格式
               let finalAnswer = eventData.answer;
               let finalMaterial = eventData.material;
-              
+
               // 使用正则表达式匹配```json和```之间的内容
               const jsonRegex = /```json\s*([\s\S]*?)\s*```/;
-              
-              
+
+
               if (typeof finalAnswer === 'string') {
                 const jsonMatch = finalAnswer.match(jsonRegex);
                 if (jsonMatch && jsonMatch[1]) {
@@ -424,7 +721,7 @@ const processStreamResponse = async (url, data, messageIndex) => {
                         finalAnswer = jsonContent.answer;
                       }
                     }
-                    
+
                     // 检查material是否存在且非空
                     if (jsonContent.material) {
                       if (Array.isArray(jsonContent.material) && jsonContent.material.length > 0) {
@@ -451,7 +748,7 @@ const processStreamResponse = async (url, data, messageIndex) => {
                         finalAnswer = jsonContent.answer;
                       }
                     }
-                    
+
                     if (jsonContent.material) {
                       if (Array.isArray(jsonContent.material) && jsonContent.material.length > 0) {
                         finalMaterial = jsonContent.material.join('\n');
@@ -468,7 +765,7 @@ const processStreamResponse = async (url, data, messageIndex) => {
                   }
                 }
               }
-              
+
               // 更新聊天消息
               chatMessages.value[messageIndex].content.answer = finalAnswer;
               if (finalMaterial && finalMaterial.trim() !== '') {
@@ -593,9 +890,8 @@ const sendMessage = async () => {
 
     // 使用流式处理函数，连接到新的流式端点
     const streamingIndex = chatMessages.value.length - 1;
-    await processStreamResponse('http://localhost:8000/hybridrag/stream', {
+    await processStreamResponse(apiUrl('/hybridrag/stream'), {
       request: currentQuestion,
-      model: 'deepseek',
       flow: true,
       filename: currentFile.value.name,
       messages: enableHistoryContext.value ? historyMessages : null
@@ -611,9 +907,8 @@ const sendMessage = async () => {
     scrollToBottom();
 
     try {
-      const response = await axios.post('http://localhost:8000/hybridrag', {
+      const response = await api.post('/hybridrag', {
         request: currentQuestion,
-        model: 'deepseek',
         flow: false,
         filename: currentFile.value.name,
         messages: enableHistoryContext.value ? historyMessages : null
@@ -671,17 +966,7 @@ const sendMessage = async () => {
       }
       console.error('获取RAG回复失败:', error);
       chatMessages.value = chatMessages.value.filter(msg => !msg.thinking && !msg.streaming);
-      if (error.response) {
-        if (error.response.status === 422) {
-          ElMessage.error('请求参数错误：' + (error.response.data.detail?.[0]?.msg || '未知错误'));
-        } else {
-          ElMessage.error(`服务器错误: ${error.response.status} - ${error.response.data?.message || '未知错误'}`);
-        }
-      } else if (error.message) {
-        ElMessage.error(error.message);
-      } else {
-        ElMessage.error('获取回复失败，请稍后重试');
-      }
+      ElMessage.error(getApiErrorMessage(error, '获取回复失败，请稍后重试'));
     } finally {
       chatLoading.value = false;
       abortController.value = null;
@@ -714,8 +999,21 @@ const closeFileList = () => {
 const beforeUpload = async (file) => {
   // 检查文件是否已存在
   const existingFile = uploadFileList.value.find(item => item.name === file.name);
-  
+
   if (existingFile) {
+    if (existingFile.status === 'error') {
+      existingFile.status = 'uploading';
+      existingFile.display_status = '上传中';
+      existingFile.percentage = 0;
+      existingFile.completedChunks = 0;
+      existingFile.totalChunks = 0;
+      existingFile.latestChunkSeconds = null;
+      existingFile.estimatedRemainingSeconds = null;
+      existingFile.isUpdate = false;
+      fileListExpand.value = true;
+      return true;
+    }
+
     // 询问用户是否要覆盖已存在的文件
     try {
       await ElMessageBox.confirm(
@@ -727,11 +1025,15 @@ const beforeUpload = async (file) => {
           type: 'warning',
         }
       );
-      
+
       // 用户确认更新，修改原文件状态为更新中
       existingFile.status = 'updating';
       existingFile.display_status = '增量更新中';
       existingFile.percentage = 0;
+      existingFile.completedChunks = 0;
+      existingFile.totalChunks = 0;
+      existingFile.latestChunkSeconds = null;
+      existingFile.estimatedRemainingSeconds = null;
       existingFile.isUpdate = true; // 标记为增量更新
       return true;
     } catch (e) {
@@ -739,14 +1041,18 @@ const beforeUpload = async (file) => {
       return false;
     }
   }
-  
+
   // 新文件，正常上传
   const fileObj = {
     uid: Date.now(),
     name: file.name,  // 保持原始文件名（包含后缀）
     status: 'uploading',
     size: file.size,
-    percentage: 0
+    percentage: 0,
+    completedChunks: 0,
+    totalChunks: 0,
+    latestChunkSeconds: null,
+    estimatedRemainingSeconds: null
   }
   uploadFileList.value.push(fileObj);
   fileListExpand.value = true;
@@ -763,18 +1069,19 @@ const onUploadProgress = (event, file) => {
 const onUploadSuccess = (response, file) => {
   const targetFile = uploadFileList.value.find(item => item.name === file.name);
   if (targetFile) {
-    // 判断是否为增量更新
+    // 后端会根据处理状态和结果完整性决定是否允许增量更新。
+    targetFile.isUpdate = Boolean(response?.is_update);
     if (targetFile.isUpdate) {
       // 更新状态为增量更新处理中
       targetFile.status = 'updating';
       targetFile.display_status = '增量更新中';
-      targetFile.percentage = 100;
+      targetFile.percentage = 0;
       targetFile.resultId = response.resultId || Date.now();
     } else {
       // 新文件，修改状态为处理中
       targetFile.status = 'processing';
       targetFile.display_status = '处理中';
-      targetFile.percentage = 100;
+      targetFile.percentage = 0;
       targetFile.resultId = response.resultId || Date.now();
     }
 
@@ -783,53 +1090,59 @@ const onUploadSuccess = (response, file) => {
   }
 }
 
-// 添加检查文件处理状态的函数
+const stopFileStatusPolling = (filename) => {
+  const timer = processingTimers.get(filename);
+  if (timer) clearTimeout(timer);
+  processingTimers.delete(filename);
+};
+
+// 轮询在上次请求完成后再安排下一次，避免网络慢时重叠请求。
 const checkFileProcessingStatus = async (file) => {
-  try {
-    // 文件名
-    const filename = file.name;
-    const checkInterval = 3000; // 检查间隔（毫秒）
+  if (!file?.name) return;
 
-    // 第一次立即检查
+  const filename = file.name;
+  const startedAt = Date.now();
+  const timeout = 10 * 60 * 1000;
+  stopFileStatusPolling(filename);
+
+  const poll = async () => {
     await updateFileStatus(file);
+    const finished = file.status === 'completed' || file.status === 'error';
 
-    // 持续检查直到处理完成或失败
-    const intervalId = setInterval(async () => {
-      const updated = await updateFileStatus(file);
+    if (finished || Date.now() - startedAt >= timeout) {
+      stopFileStatusPolling(filename);
+      return;
+    }
 
-      // 如果状态是completed或error，停止检查
-      if (updated && (file.status === 'completed' || file.status === 'error')) {
-        clearInterval(intervalId);
-      }
-    }, checkInterval);
+    processingTimers.set(filename, setTimeout(poll, 3000));
+  };
 
-    // 10分钟后强制停止检查
-    setTimeout(() => {
-      clearInterval(intervalId);
-    }, 10 * 60 * 1000);
-  } catch (error) {
-    console.error('检查文件处理状态失败:', error);
-  }
+  await poll();
 };
 
 // 添加一个更新文件状态的函数
 const updateFileStatus = async (file) => {
   try {
-    const response = await axios.get(`http://localhost:8000/processing-status/${file.name}`);
+    const response = await api.get(`/processing-status/${encodePathSegment(file.name)}`);
     if (response.data) {
       // 更新文件状态
       file.status = response.data.status;
+      file.percentage = Math.min(100, Math.max(0, response.data.percentage ?? 0));
+      file.completedChunks = response.data.completed_chunks || 0;
+      file.totalChunks = response.data.total_chunks || 0;
+      file.latestChunkSeconds = response.data.latest_chunk_seconds;
+      file.estimatedRemainingSeconds = response.data.estimated_remaining_seconds;
       if (response.data.display_status) {
         file.display_status = response.data.display_status;
       } else {
         file.display_status = getStatusText(response.data.status);
       }
-      
+
       // 如果文件存在增量更新标记并且状态已变为completed，清除更新标记
       if (file.isUpdate && response.data.status === 'completed') {
         file.isUpdate = false;
       }
-      
+
       return true;
     }
     return false;
@@ -843,7 +1156,10 @@ const onUploadError = (error, file) => {
   const targetFile = uploadFileList.value.find(item => item.name === file.name);
   if (targetFile) {
     targetFile.status = 'error';
-    ElMessage.error(`文件 ${file.name} 上传失败`);
+    targetFile.display_status = '上传失败';
+    targetFile.isUpdate = false;
+    stopFileStatusPolling(file.name);
+    ElMessage.error(getApiErrorMessage(error, `文件 ${file.name} 上传失败`));
   }
 }
 
@@ -872,6 +1188,9 @@ const viewFileResult = async (file) => {
       activeView.value = 'result';
       currentFile.value = file;
       currentChatFile.value = file.name;
+      if (window.innerWidth <= 820) {
+        fileListExpand.value = false;
+      }
 
       fileContentLoading.value = true;
       fileContent.value = '';
@@ -884,7 +1203,7 @@ const viewFileResult = async (file) => {
       try {
         const [contentResponse] = await Promise.all([
           // 使用原始文件名获取内容
-          axios.get(`http://localhost:8000/file-content/${file.name}`).catch(error => {
+          api.get(`/file-content/${encodePathSegment(file.name)}`).catch(error => {
             console.error('获取文件内容失败:', error);
             return { data: { content: '' } };
           }),
@@ -906,10 +1225,10 @@ const viewFileResult = async (file) => {
 
       // 启用自动滚动
       autoScroll.value = true;
-      
+
       // 不管当前是什么标签，先切换到RAG标签
       activeTab.value = 'rag';
-      
+
       // 使用nextTick确保DOM已更新
       nextTick(() => {
         scrollToBottom();
@@ -919,83 +1238,10 @@ const viewFileResult = async (file) => {
       ElMessage.error('查看文件结果失败');
     }
   } else if (file.status === 'error') {
-    // 处理错误状态的文件，提示用户是否重新构建
-    try {
-      await ElMessageBox.confirm(
-        `文件 ${file.name} 处理失败，是否重新开始构建知识图谱？`,
-        '重新构建',
-        {
-          confirmButtonText: '确定',
-          cancelButtonText: '取消',
-          type: 'warning',
-        }
-      );
-      
-      // 重新上传文件
-      rebuildKnowledgeGraph(file);
-    } catch (error) {
-      if (error !== 'cancel') {
-        console.error('操作被取消或发生错误:', error);
-      }
-    }
+    ElMessage.warning(`文件 ${file.name} 处理失败，请重新上传原文件后重试`);
   } else {
     // 对于uploading、processing等状态，只显示提示
     ElMessage.info(`文件 ${file.name} 正在${file.display_status || getStatusText(file.status)}，请稍后查看`);
-  }
-};
-
-// 添加重新构建知识图谱函数
-const rebuildKnowledgeGraph = async (file) => {
-  try {
-    // 更新文件状态为正在上传
-    const targetFile = uploadFileList.value.find(item => item.name === file.name);
-    if (targetFile) {
-      targetFile.status = 'uploading';
-      targetFile.display_status = '重新上传中';
-      targetFile.percentage = 0;
-    }
-    
-    // 使用新的rebuild API端点
-    const formData = new FormData();
-    formData.append('filename', file.name);
-    formData.append('noteType', noteType.value);
-    // 显式使用字符串值
-    const img2txtValue = useImg2txt.value ? 'true' : 'false';
-    formData.append('use_img2txt', img2txtValue);
-    
-    console.log('重建使用的参数:', {
-      filename: file.name,
-      noteType: noteType.value, 
-      use_img2txt: img2txtValue,
-      useImg2txt原始值: useImg2txt.value
-    });
-    
-    // 发送重新构建请求
-    const response = await axios.post('http://localhost:8000/rebuild', formData);
-    
-    // 处理响应
-    if (response.data) {
-      if (targetFile) {
-        targetFile.status = 'processing';
-        targetFile.display_status = '处理中';
-        targetFile.percentage = 100;
-      }
-      
-      // 开始检查处理状态
-      checkFileProcessingStatus(targetFile);
-      
-      ElMessage.success(`文件 ${file.name} 重新构建已开始`);
-    }
-  } catch (error) {
-    console.error('重新构建失败:', error);
-    ElMessage.error(`重新构建失败: ${error.message || '未知错误'}`);
-    
-    // 恢复文件状态为错误
-    const targetFile = uploadFileList.value.find(item => item.name === file.name);
-    if (targetFile) {
-      targetFile.status = 'error';
-      targetFile.display_status = '失败';
-    }
   }
 };
 
@@ -1014,7 +1260,7 @@ const closeResultView = () => {
     localStorage.setItem(`chat_${currentChatFile.value}`, JSON.stringify(chatHistory));
   }
   activeView.value = 'upload';
-  knowledgeGraphData.value = null;
+  knowledgeGraphUrl.value = null;
   currentChatFile.value = null;
   chatMessages.value = [];
 }
@@ -1040,6 +1286,10 @@ const togglePanelVisibility = (panel) => {
     // 如果知识图谱面板从隐藏变为显示，则重新加载
     if (panel === 'knowledge-graph' && !previousState && panelVisible[panel]) {
       reloadKnowledgeGraph();
+    }
+
+    if (!previousState && panelVisible[panel]) {
+      nextTick(ensurePanelsFit);
     }
   } else {
     ElMessage.warning('至少保留一个面板');
@@ -1076,6 +1326,43 @@ const getStatusText = (status) => {
     default:
       return status;
   }
+};
+
+const isFileProcessing = (status) => {
+  return ['uploading', 'processing', 'updating'].includes(status);
+};
+
+const formatRemainingTime = (seconds) => {
+  if (seconds == null || !Number.isFinite(Number(seconds))) return '';
+
+  const totalSeconds = Math.max(0, Math.round(Number(seconds)));
+  if (totalSeconds < 60) return `${totalSeconds}秒`;
+
+  const minutes = Math.floor(totalSeconds / 60);
+  const remainingSeconds = totalSeconds % 60;
+  if (minutes < 60) return remainingSeconds ? `${minutes}分${remainingSeconds}秒` : `${minutes}分钟`;
+
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return remainingMinutes ? `${hours}小时${remainingMinutes}分钟` : `${hours}小时`;
+};
+
+const getFileProgressSummary = (file) => {
+  if (file.status === 'uploading') return `上传 ${file.percentage || 0}%`;
+  if (!file.totalChunks) return '正在准备分块';
+
+  const chunkProgress = `${file.completedChunks || 0}/${file.totalChunks} 块`;
+  const latestChunkSeconds = Number(file.latestChunkSeconds);
+  const speed = Number.isFinite(latestChunkSeconds) && latestChunkSeconds > 0
+    ? ` · 速度 ${latestChunkSeconds.toFixed(1).replace(/\.0$/, '')}秒/块`
+    : ` · ${file.percentage || 0}%`;
+  return `${chunkProgress}${speed}`;
+};
+
+const getFileEstimatedTime = (file) => {
+  if (file.status === 'uploading') return '';
+  const remainingTime = formatRemainingTime(file.estimatedRemainingSeconds);
+  return remainingTime ? `预计剩余 ${remainingTime}` : '';
 };
 
 // 获取文件状态对应的图标
@@ -1118,6 +1405,7 @@ const statusOptions = [
   { value: 'all', label: '全部' },
   { value: 'uploading', label: '上传中' },
   { value: 'processing', label: '处理中' },
+  { value: 'updating', label: '增量更新中' },
   { value: 'completed', label: '已完成' },
   { value: 'error', label: '失败' }
 ];
@@ -1163,6 +1451,7 @@ const handleFilter = () => {
 const confirmFilter = () => {
   fileTypeFilter.value = tempFileTypeFilter.value;
   statusFilter.value = tempStatusFilter.value;
+  currentPage.value = 1;
   handleFilter();
   filterVisible.value = false;  // 关闭筛选框
 };
@@ -1173,12 +1462,14 @@ const resetFilter = () => {
   tempStatusFilter.value = 'all';
   fileTypeFilter.value = 'all';
   statusFilter.value = 'all';
+  currentPage.value = 1;
   handleFilter();
   filterVisible.value = false;  // 关闭筛选框
 };
 
 // 监听筛选条件变化
 watch([searchValue, fileTypeFilter, statusFilter], () => {
+  currentPage.value = 1;
   handleFilter();
 }, { deep: true });
 
@@ -1186,6 +1477,11 @@ watch([searchValue, fileTypeFilter, statusFilter], () => {
 watch(uploadFileList, () => {
   handleFilter();
 }, { deep: true });
+
+watch(filteredFileList, (files) => {
+  const lastPage = Math.max(1, Math.ceil(files.length / pageSize));
+  if (currentPage.value > lastPage) currentPage.value = lastPage;
+});
 
 // 添加关闭所有视图的处理函数
 const handleCloseAll = () => {
@@ -1199,14 +1495,14 @@ const currentFileId = ref(null);
 // 查看文件内容
 const viewFile = (file) => {
   if (!file || !file.name || file.status !== 'completed') return;
-  
+
   currentFile.value = file;
   activeView.value = 'result';
   activeTab.value = 'original';
-  
+
   // 使用新的函数加载聊天历史
   loadChatHistory(file.name);
-  
+
   // ...其他代码
 };
 
@@ -1214,11 +1510,11 @@ const viewFile = (file) => {
 const prepareChatState = (file) => {
   // 首先尝试从localStorage加载聊天记录
   const savedChat = localStorage.getItem(`chat_${file.name}`);
-  
+
   if (savedChat) {
     // 如果localStorage中有聊天记录，使用它
     chatMessages.value = JSON.parse(savedChat);
-    
+
     // 同时更新fileChatStates中的记录
     if (!fileChatStates.value[file.name]) {
       fileChatStates.value[file.name] = {
@@ -1239,7 +1535,7 @@ const prepareChatState = (file) => {
         ],
         lastActive: new Date().getTime()
       };
-      
+
       // 更新聊天消息
       chatMessages.value = [...fileChatStates.value[file.name].messages];
     } else {
@@ -1250,7 +1546,7 @@ const prepareChatState = (file) => {
   }
 
   // 设置当前聊天文件
-  currentChatFile.value = file;
+  currentChatFile.value = file.name;
 
   // 如果切换到RAG标签，自动滚动到底部
   if (activeTab.value === 'rag') {
@@ -1266,7 +1562,7 @@ const loadFileContent = async (file) => {
   fileContent.value = '';
 
   try {
-    const response = await axios.get(`http://localhost:8000/file-content/${file.name}`);
+    const response = await api.get(`/file-content/${encodePathSegment(file.name)}`);
     if (response.data && response.data.content) {
       fileContent.value = response.data.content;
     }
@@ -1296,67 +1592,14 @@ const loadKnowledgeGraph = async (file) => {
 // 添加历史上下文相关状态
 const enableHistoryContext = ref(true);
 
-const onUploadClick = () => {
-  const formData = new FormData();
-  formData.append('file', uploadRef.value.files[0]);
-  formData.append('noteType', noteType.value);
-  
-  axios.post('/api/upload', formData, {
-    onUploadProgress: (e) => {
-      onUploadProgress(e, uploadRef.value.files[0]);
-    }
-  }).then(response => {
-    onUploadSuccess(response.data, uploadRef.value.files[0]);
-  }).catch(error => {
-    onUploadError(error, uploadRef.value.files[0]);
-  });
-}
-
-// 修改onUploadSuccess函数，处理noteType参数
-// ... existing code ...
-
-// 修改onBeforeUpload函数，添加调试信息
-const onBeforeUpload = async (file) => {
-  try {
-    // 创建FormData对象
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('noteType', noteType.value);
-    
-    // 使用open/off字符串表示开关状态
-    const img2txtValue = useImg2txt.value ? 'open' : 'off';
-    formData.append('use_img2txt', img2txtValue);
-    
-    console.log('上传参数:', {
-      file: file.name,
-      noteType: noteType.value,
-      use_img2txt: img2txtValue
-    });
-
-    // 在上传前先检查文件是否已经存在，如果存在则执行更新操作
-    const existingFile = uploadFileList.value.find(item => item.name === file.name);
-    
-    // 开始上传过程
-    const response = await axios.post('http://localhost:8000/upload', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data'
-      },
-      onUploadProgress: (progressEvent) => {
-        // 计算上传进度
-        const percentage = Math.round((progressEvent.loaded * 100) / progressEvent.total);
-        
-        // 更新上传进度
-        const uploadingFile = uploadFileList.value.find(item => item.name === file.name);
-        if (uploadingFile) {
-          uploadingFile.percentage = percentage;
-        }
-      }
-    });
-  } catch (error) {
-    console.error('上传文件失败:', error);
-    ElMessage.error('上传文件失败');
-  }
-}
+onUnmounted(() => {
+  abortController.value?.abort();
+  processingTimers.forEach(timer => clearTimeout(timer));
+  processingTimers.clear();
+  finishResizeSession();
+  panelResizeObserver?.disconnect();
+  panelResizeObserver = null;
+});
 </script>
 
 <template>
@@ -1367,13 +1610,20 @@ const onBeforeUpload = async (file) => {
         v-model:enableStreamOutput="enableStreamOutput"
         v-model:enableHistoryContext="enableHistoryContext"
         v-model:noteType="noteType"
+        v-model:customPrompts="customPrompts"
         v-model:useImg2txt="useImg2txt"
         @update:enableStreamOutput="saveStreamSetting"
         @update:useImg2txt="saveImg2txtSetting"
         @closeAll="handleCloseAll"
     />
     <div class="main-content">
-      <el-drawer v-model="fileListExpand" direction="ltr" :modal="false" :show-close="false" :size="280">
+      <el-drawer
+          v-model="fileListExpand"
+          direction="ltr"
+          :modal="false"
+          :show-close="false"
+          :size="fileListWidth"
+      >
         <template #header>
           <div class="drawer-manu-header">
             <div class="header">
@@ -1443,7 +1693,7 @@ const onBeforeUpload = async (file) => {
           <div class="file-list">
             <template v-if="filteredFileList.length > 0">
               <div
-                  v-for="file in filteredFileList"
+                  v-for="file in paginatedFileList"
                   :key="file.name"
                   class="file-item"
                   :class="{
@@ -1452,7 +1702,7 @@ const onBeforeUpload = async (file) => {
                   'expanded': sideBarRef?.expandedFileId === file.name
                 }"
               >
-                <div class="file-header" 
+                <div class="file-header"
                      @dblclick="viewFileResult(file)"
                      @click="sideBarRef?.toggleFileExpand(file)"
                      @mouseenter="currentFileId = file.name"
@@ -1470,9 +1720,6 @@ const onBeforeUpload = async (file) => {
                       >
                         <div class="file-name">{{ file.name }}</div>
                       </el-tooltip>
-                      <div v-if="file.status === 'uploading'" class="file-progress">
-                        <el-progress :percentage="file.percentage" :show-text="false" :stroke-width="2" />
-                      </div>
                     </div>
                   </div>
                   <div class="file-actions">
@@ -1482,18 +1729,18 @@ const onBeforeUpload = async (file) => {
                     <transition name="fade">
                       <div v-if="currentFileId === file.name && file.status === 'completed'" class="delete-action">
                         <el-tooltip content="清除RAG历史" placement="top">
-                          <img
-                              src="@/assets/icons/svg/clear.svg"
-                              alt="清除RAG历史"
-                              class="clear-icon"
+                          <svg-icon
+                              icon-name="clear"
+                              icon-class="clear-icon"
+                              size="16px"
                               @click.stop="deleteRagHistory(file, $event)"
                           />
                         </el-tooltip>
                         <el-tooltip content="删除文件" placement="top">
-                          <img
-                              src="@/assets/icons/svg/delete.svg"
-                              alt="删除"
-                              class="delete-icon"
+                          <svg-icon
+                              icon-name="delete"
+                              icon-class="delete-icon"
+                              size="16px"
                               @click.stop="deleteFile(file)"
                           />
                         </el-tooltip>
@@ -1501,7 +1748,17 @@ const onBeforeUpload = async (file) => {
                     </transition>
                   </div>
                 </div>
-                
+
+                <div v-if="isFileProcessing(file.status)" class="file-progress">
+                  <el-progress :percentage="file.percentage" :show-text="false" :stroke-width="2" />
+                  <div class="file-progress-detail">
+                    <div class="progress-summary">{{ getFileProgressSummary(file) }}</div>
+                    <div v-if="getFileEstimatedTime(file)" class="progress-estimate">
+                      {{ getFileEstimatedTime(file) }}
+                    </div>
+                  </div>
+                </div>
+
                 <!-- 展开的实体卡片 -->
                 <div v-if="sideBarRef?.expandedFileId === file.name" class="file-entities-card">
                   <div v-if="sideBarRef?.loadingEntities[file.name]" class="loading-entities">
@@ -1539,22 +1796,46 @@ const onBeforeUpload = async (file) => {
             </template>
             <el-empty v-else description="暂无文件" />
           </div>
-          <div class="pagination" v-if="filteredFileList.length > 0">
-            <el-pagination :total="filteredFileList.length" size="small" layout="prev, pager, next" background />
+          <div class="pagination" v-if="filteredFileList.length > pageSize">
+            <el-pagination
+                v-model:current-page="currentPage"
+                :page-size="pageSize"
+                :total="filteredFileList.length"
+                size="small"
+                layout="prev, pager, next"
+              background
+            />
           </div>
+          <div
+              class="file-list-resizer"
+              role="separator"
+              aria-label="调整文件列表宽度"
+              aria-orientation="vertical"
+              title="拖动调整文件列表宽度"
+              @pointerdown.stop="startFileListResize"
+          ></div>
         </template>
       </el-drawer>
-      <div class="content" :style="{marginLeft:fileListExpand?'280px':'auto'}">
+      <div
+          class="content"
+          :class="{ 'is-resizing': resizeMode === 'file-list' }"
+          :style="contentStyle"
+      >
         <div v-if="activeView === 'upload'" class="upload-view">
           <div class="background"></div>
           <div class="upload">
             <h1>智能图谱笔记系统! 🎉</h1>
             <el-upload
                 drag
-                action="http://localhost:8000/upload"
-                :data="() => ({ 
-                  noteType: noteType, 
-                  use_img2txt: useImg2txt ? 'true' : 'false'
+                :action="apiUrl('/upload')"
+                :data="() => ({
+                  noteType: noteType,
+                  use_img2txt: useImg2txt ? 'true' : 'false',
+                  ...(noteType === 'custom' ? {
+                    entityPrompt: customPrompts.entityExtraction,
+                    relationshipPrompt: customPrompts.relationshipExtraction,
+                    fusionPrompt: customPrompts.knowledgeFusion
+                  } : {})
                 })"
                 multiple
                 :show-file-list="false"
@@ -1581,7 +1862,11 @@ const onBeforeUpload = async (file) => {
           <!-- 顶部导航标签 -->
           <div class="file-tabs">
             <div class="file-info">
-              <span v-if="currentFile" class="filename">{{ currentFile.name }}</span>
+              <div class="file-mark"><Document /></div>
+              <div class="file-identity">
+                <span class="file-context">当前文档</span>
+                <span v-if="currentFile" class="filename">{{ currentFile.name }}</span>
+              </div>
             </div>
             <div class="tabs-container">
               <div
@@ -1592,13 +1877,16 @@ const onBeforeUpload = async (file) => {
                 <el-icon><Document /></el-icon>
                 <span>原文件</span>
                 <div class="tab-actions">
-                  <div
-                      class="panel-toggle"
-                      :class="{ 'is-active': panelVisible['original'] }"
-                      @click.stop="togglePanelVisibility('original')"
-                  >
-                    <el-icon><span>{{ panelVisible['original'] ? '✓' : '✕' }}</span></el-icon>
-                  </div>
+                  <el-tooltip :content="panelVisible['original'] ? '隐藏原文件' : '显示原文件'" placement="bottom">
+                    <button
+                        type="button"
+                        class="panel-toggle"
+                        :class="{ 'is-active': panelVisible['original'] }"
+                        @click.stop="togglePanelVisibility('original')"
+                    >
+                      <el-icon><View v-if="panelVisible['original']" /><Hide v-else /></el-icon>
+                    </button>
+                  </el-tooltip>
                 </div>
               </div>
               <div
@@ -1606,16 +1894,19 @@ const onBeforeUpload = async (file) => {
                   :class="{ active: activeTab === 'knowledge-graph', disabled: !panelVisible['knowledge-graph'] }"
                   @click="switchTab('knowledge-graph')"
               >
-                <el-icon><Document /></el-icon>
+                <el-icon><Connection /></el-icon>
                 <span>知识图谱</span>
                 <div class="tab-actions">
-                  <div
-                      class="panel-toggle"
-                      :class="{ 'is-active': panelVisible['knowledge-graph'] }"
-                      @click.stop="togglePanelVisibility('knowledge-graph')"
-                  >
-                    <el-icon><span>{{ panelVisible['knowledge-graph'] ? '✓' : '✕' }}</span></el-icon>
-                  </div>
+                  <el-tooltip :content="panelVisible['knowledge-graph'] ? '隐藏知识图谱' : '显示知识图谱'" placement="bottom">
+                    <button
+                        type="button"
+                        class="panel-toggle"
+                        :class="{ 'is-active': panelVisible['knowledge-graph'] }"
+                        @click.stop="togglePanelVisibility('knowledge-graph')"
+                    >
+                      <el-icon><View v-if="panelVisible['knowledge-graph']" /><Hide v-else /></el-icon>
+                    </button>
+                  </el-tooltip>
                 </div>
               </div>
               <div
@@ -1626,28 +1917,64 @@ const onBeforeUpload = async (file) => {
                 <el-icon><ChatDotRound /></el-icon>
                 <span>RAG 问答</span>
                 <div class="tab-actions">
-                  <div
-                      class="panel-toggle"
-                      :class="{ 'is-active': panelVisible['rag'] }"
-                      @click.stop="togglePanelVisibility('rag')"
-                  >
-                    <el-icon><span>{{ panelVisible['rag'] ? '✓' : '✕' }}</span></el-icon>
-                  </div>
+                  <el-tooltip :content="panelVisible['rag'] ? '隐藏 RAG 问答' : '显示 RAG 问答'" placement="bottom">
+                    <button
+                        type="button"
+                        class="panel-toggle"
+                        :class="{ 'is-active': panelVisible['rag'] }"
+                        @click.stop="togglePanelVisibility('rag')"
+                    >
+                      <el-icon><View v-if="panelVisible['rag']" /><Hide v-else /></el-icon>
+                    </button>
+                  </el-tooltip>
                 </div>
               </div>
             </div>
           </div>
 
           <!-- 内容区域 -->
-          <div class="content-panels">
+          <div
+              ref="contentPanelsRef"
+              class="content-panels"
+              :class="{ 'is-resizing': resizeMode === 'panel' }"
+          >
             <div
                 v-if="panelVisible['original']"
                 class="panel original-panel"
                 :class="{ active: activeTab === 'original' }"
+                :style="getPanelStyle('original')"
+                data-panel="original"
             >
               <div class="panel-header">
-                <h3>原文件内容</h3>
-                <el-button :icon="Download" circle size="small"></el-button>
+                <div class="panel-title">
+                  <h3>文档内容</h3>
+                  <span v-if="fileContentStats" class="content-stats">{{ fileContentStats }}</span>
+                </div>
+                <div class="document-tools">
+                  <el-segmented
+                      v-model="contentViewMode"
+                      :options="contentViewOptions"
+                      size="small"
+                  />
+                  <el-tooltip content="复制内容" placement="bottom">
+                    <el-button
+                        :icon="CopyDocument"
+                        circle
+                        size="small"
+                        :disabled="!fileContent"
+                        @click="copyFileContent"
+                    />
+                  </el-tooltip>
+                  <el-tooltip content="下载 Markdown" placement="bottom">
+                    <el-button
+                        :icon="Download"
+                        circle
+                        size="small"
+                        :disabled="!fileContent"
+                        @click="downloadFileContent"
+                    />
+                  </el-tooltip>
+                </div>
               </div>
               <div class="panel-content">
                 <div class="original-content">
@@ -1656,7 +1983,12 @@ const onBeforeUpload = async (file) => {
                     <span>加载文件内容中...</span>
                   </div>
                   <div v-else-if="fileContent" class="document-content">
-                    <pre class="file-text-content">{{ fileContent }}</pre>
+                    <article
+                        v-if="contentViewMode === 'preview'"
+                        class="markdown-body"
+                        v-html="renderedFileContent"
+                    ></article>
+                    <pre v-else class="file-text-content"><code>{{ fileContent }}</code></pre>
                   </div>
                   <div v-else class="empty-content">
                     <el-empty description="无法加载文件内容" />
@@ -1666,9 +1998,21 @@ const onBeforeUpload = async (file) => {
             </div>
 
             <div
+                v-if="panelVisible['original'] && getNextVisiblePanel('original')"
+                class="panel-resizer"
+                role="separator"
+                aria-label="调整相邻内容面板宽度"
+                aria-orientation="vertical"
+                title="拖动调整相邻面板宽度"
+                @pointerdown="startPanelResize($event, 'original')"
+            ></div>
+
+            <div
                 v-if="panelVisible['knowledge-graph']"
                 class="panel knowledge-graph-panel"
                 :class="{ active: activeTab === 'knowledge-graph' }"
+                :style="getPanelStyle('knowledge-graph')"
+                data-panel="knowledge-graph"
             >
               <div class="panel-header">
                 <h3>知识图谱</h3>
@@ -1678,9 +2022,10 @@ const onBeforeUpload = async (file) => {
                   <el-icon class="is-loading"><Loading /></el-icon>
                   <span>加载知识图谱中...</span>
                 </div>
-                <div v-else-if="knowledgeGraphData" class="knowledge-graph-content">
+                <div v-else-if="knowledgeGraphUrl" class="knowledge-graph-content">
                   <iframe
-                      :srcdoc="knowledgeGraphData"
+                      :src="knowledgeGraphUrl"
+                      sandbox="allow-scripts"
                       class="result-iframe"
                       frameborder="0"
                   ></iframe>
@@ -1692,9 +2037,21 @@ const onBeforeUpload = async (file) => {
             </div>
 
             <div
+                v-if="panelVisible['knowledge-graph'] && getNextVisiblePanel('knowledge-graph')"
+                class="panel-resizer"
+                role="separator"
+                aria-label="调整相邻内容面板宽度"
+                aria-orientation="vertical"
+                title="拖动调整相邻面板宽度"
+                @pointerdown="startPanelResize($event, 'knowledge-graph')"
+            ></div>
+
+            <div
                 v-if="panelVisible['rag']"
                 class="panel rag-panel"
                 :class="{ active: activeTab === 'rag' }"
+                :style="getPanelStyle('rag')"
+                data-panel="rag"
             >
               <div class="panel-header">
                 <h3>RAG 问答</h3>
@@ -1715,13 +2072,13 @@ const onBeforeUpload = async (file) => {
                           <span></span><span></span><span></span>
                         </div>
                         <div v-else-if="message.streaming" class="streaming-content">
-                          <div class="answer" v-html="Array.isArray(message.content.answer) ? message.content.answer.join('\n') : message.content.answer"></div>
+                          <div class="answer">{{ formatTextWithLineBreaks(message.content.answer) }}</div>
                           <div class="cursor-blink"></div>
                           <div v-if="streamingStatus" class="streaming-status">{{ streamingStatus }}</div>
                         </div>
                         <div v-else>
                           <template v-if="typeof message.content === 'object'">
-                            <div class="answer" v-html="Array.isArray(message.content.answer) ? message.content.answer.join('\n') : message.content.answer"></div>
+                            <div class="answer">{{ formatTextWithLineBreaks(message.content.answer) }}</div>
                             <div v-if="message.content.material && message.content.material.length > 0" class="material">
                               <div class="material-title">参考资料：</div>
                               <div class="material-content">{{ message.content.material }}</div>
@@ -1797,6 +2154,7 @@ const onBeforeUpload = async (file) => {
         </el-popover>
       </div>
     </div>
+    <div v-if="resizeMode" class="resize-shield" aria-hidden="true"></div>
   </div>
 </template>
 
@@ -1810,8 +2168,10 @@ const onBeforeUpload = async (file) => {
 
   .main-content {
     position: relative;
+    flex: 1;
+    min-width: 0;
     height: 100%;
-    width: 100%;
+    width: auto;
     background-color: var(--el-bg-color);
     border-radius: 10px;
     box-shadow: 0 0 #0000, 0 0 #0000, 0 1px 2px 0 rgb(0 0 0 / .05);
@@ -1855,6 +2215,7 @@ const onBeforeUpload = async (file) => {
       }
 
       .el-drawer__body {
+        position: relative;
         display: flex;
         flex-direction: column;
         padding: 0;
@@ -1935,7 +2296,7 @@ const onBeforeUpload = async (file) => {
             transition: all 0.3s ease;
             border-radius: 8px;
             border: 1px solid transparent;
-            
+
             &.expanded {
               background-color: var(--el-fill-color-light);
             }
@@ -1962,7 +2323,7 @@ const onBeforeUpload = async (file) => {
                 border-color: var(--el-color-primary-light-3);
               }
             }
-            
+
             .file-header {
               display: flex;
               align-items: center;
@@ -1970,7 +2331,7 @@ const onBeforeUpload = async (file) => {
               padding: 12px 16px;
               cursor: pointer;
               transition: background-color 0.3s;
-              
+
               .file-actions {
                 display: flex;
                 align-items: center;
@@ -1980,7 +2341,7 @@ const onBeforeUpload = async (file) => {
                   display: flex;
                   align-items: center;
                   gap: 8px;
-                  
+
                   .delete-icon, .clear-icon {
                     cursor: pointer;
                     width: 16px;
@@ -1994,11 +2355,11 @@ const onBeforeUpload = async (file) => {
                       opacity: 1;
                     }
                   }
-                  
+
                   .delete-icon:hover {
                     background-color: var(--el-color-danger-light-9);
                   }
-                  
+
                   .clear-icon:hover {
                     background-color: var(--el-color-warning-light-9);
                   }
@@ -2016,7 +2377,7 @@ const onBeforeUpload = async (file) => {
                   font-size: 20px;
                   flex-shrink: 0;
 
-                  &.uploading, &.processing {
+                  &.uploading, &.processing, &.updating {
                     color: var(--el-color-primary);
                     animation: spin 1.5s infinite linear;
                   }
@@ -2043,10 +2404,6 @@ const onBeforeUpload = async (file) => {
                     font-weight: 500;
                     max-width: 100%;
                   }
-
-                  .file-progress {
-                    width: 100%;
-                  }
                 }
               }
 
@@ -2055,7 +2412,7 @@ const onBeforeUpload = async (file) => {
                 white-space: nowrap;
                 flex-shrink: 0;
 
-                &.uploading, &.processing {
+                &.uploading, &.processing, &.updating {
                   color: var(--el-color-primary);
                 }
 
@@ -2068,49 +2425,71 @@ const onBeforeUpload = async (file) => {
                 }
               }
             }
-            
+
+            .file-progress {
+              margin: -5px 16px 12px;
+
+              .file-progress-detail {
+                margin-top: 5px;
+                color: var(--el-text-color-secondary);
+                font-size: 11px;
+                line-height: 1.35;
+              }
+
+              .progress-summary,
+              .progress-estimate {
+                white-space: normal;
+                overflow-wrap: anywhere;
+              }
+
+              .progress-estimate {
+                margin-top: 2px;
+                color: var(--el-text-color-placeholder);
+              }
+            }
+
             .file-entities-card {
               padding: 12px 16px;
               border-top: 1px dashed var(--el-border-color-light);
               background-color: var(--el-bg-color-page);
               overflow: hidden;
               transition: max-height 0.3s ease-in-out;
-              
+
               .loading-entities {
                 display: flex;
                 align-items: center;
                 justify-content: center;
                 padding: 12px 0;
                 color: var(--el-text-color-secondary);
-                
+
                 .el-icon {
                   margin-right: 8px;
                   font-size: 18px;
                 }
               }
-              
+
               .entities-error {
                 padding: 8px 0;
               }
-              
+
               .entities-title {
                 font-size: 14px;
                 font-weight: 600;
                 margin-bottom: 8px;
                 color: var(--el-text-color-primary);
               }
-              
+
               .entities-content {
                 display: flex;
                 flex-wrap: wrap;
                 gap: 8px;
-                
+
                 .entity-tag {
                   margin-right: 0;
                   cursor: default;
                 }
               }
-              
+
               .no-entities {
                 padding: 8px 0;
               }
@@ -2146,6 +2525,34 @@ const onBeforeUpload = async (file) => {
           }
         }
       }
+
+      .file-list-resizer {
+        position: absolute;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 3;
+        width: 8px;
+        cursor: col-resize;
+        touch-action: none;
+
+        &::after {
+          content: '';
+          position: absolute;
+          top: 0;
+          right: 0;
+          bottom: 0;
+          width: 1px;
+          background-color: var(--el-border-color-lighter);
+          transition: width 0.15s ease, background-color 0.15s ease;
+        }
+
+        &:hover::after,
+        &:active::after {
+          width: 3px;
+          background-color: var(--el-color-primary);
+        }
+      }
     }
 
     .content {
@@ -2154,6 +2561,10 @@ const onBeforeUpload = async (file) => {
       align-items: center;
       height: 100%;
       transition: margin-left 0.3s;
+
+      &.is-resizing {
+        transition: none;
+      }
 
       .upload-view {
         display: flex;
@@ -2233,71 +2644,128 @@ const onBeforeUpload = async (file) => {
         height: 100%;
         display: flex;
         flex-direction: column;
+        min-width: 0;
+        background-color: var(--el-bg-color-page);
 
         .file-tabs {
           display: flex;
           align-items: center;
-          padding: 0 16px;
-          height: 48px;
-          border-bottom: 1px solid var(--el-border-color-light);
-          background-color: var(--el-bg-color-page);
+          flex-shrink: 0;
+          gap: 18px;
+          box-sizing: border-box;
+          padding: 0 18px;
+          height: 60px;
+          border-bottom: 1px solid var(--el-border-color-lighter);
+          background-color: var(--el-bg-color);
 
           .file-info {
-            min-width: 100px;
-            max-width: 200px;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-            margin-right: 20px;
-            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-width: 180px;
+            max-width: 240px;
+
+            .file-mark {
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              width: 32px;
+              height: 32px;
+              flex: 0 0 32px;
+              border-radius: 6px;
+              color: #087f5b;
+              background-color: #e6fcf5;
+
+              svg {
+                width: 17px;
+                height: 17px;
+              }
+            }
+
+            .file-identity {
+              display: flex;
+              flex-direction: column;
+              min-width: 0;
+              gap: 2px;
+            }
+
+            .file-context {
+              color: var(--el-text-color-secondary);
+              font-size: 10px;
+              line-height: 1.2;
+            }
 
             .filename {
+              display: block;
+              overflow: hidden;
+              text-overflow: ellipsis;
+              white-space: nowrap;
               color: var(--el-text-color-primary);
+              font-size: 13px;
+              font-weight: 600;
             }
           }
 
           .tabs-container {
             display: flex;
+            align-items: center;
             flex: 1;
             height: 100%;
+            min-width: 0;
+            gap: 4px;
+            overflow-x: auto;
+            overflow-y: hidden;
 
             .tab-item {
               display: flex;
               align-items: center;
-              height: 100%;
-              padding: 0 16px;
+              box-sizing: border-box;
+              height: 38px;
+              padding: 0 12px;
+              flex-shrink: 0;
               cursor: pointer;
               position: relative;
-              border-right: 1px solid var(--el-border-color-light);
+              border: 1px solid transparent;
+              border-radius: 6px;
+              color: var(--el-text-color-regular);
+              font-size: 13px;
+              transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
 
               .el-icon {
                 margin-right: 8px;
+                font-size: 16px;
               }
 
               .tab-actions {
-                margin-left: 8px;
+                display: flex;
+                margin-left: 6px;
 
                 .panel-toggle {
                   display: flex;
                   align-items: center;
                   justify-content: center;
-                  width: 24px;
-                  height: 24px;
-                  border-radius: 50%;
+                  box-sizing: border-box;
+                  width: 22px;
+                  height: 22px;
+                  padding: 0;
+                  border-radius: 4px;
                   cursor: pointer;
-                  border: 1px solid var(--el-border-color);
-                  background-color: var(--el-fill-color-light);
+                  border: 0;
+                  background-color: transparent;
                   color: var(--el-text-color-secondary);
                   transition: all 0.2s ease;
 
                   &.is-active {
-                    background-color: var(--el-color-primary);
-                    color: white;
-                    border-color: var(--el-color-primary);
+                    color: var(--el-color-primary);
                   }
 
                   &:hover {
-                    opacity: 0.8;
+                    background-color: var(--el-fill-color-dark);
+                  }
+
+                  .el-icon {
+                    margin: 0;
+                    font-size: 14px;
                   }
                 }
               }
@@ -2308,14 +2776,17 @@ const onBeforeUpload = async (file) => {
 
               &.active {
                 color: var(--el-color-primary);
+                border-color: var(--el-color-primary-light-7);
+                background-color: var(--el-color-primary-light-9);
 
                 &::after {
                   content: '';
                   position: absolute;
-                  bottom: 0;
-                  left: 0;
-                  width: 100%;
-                  height: 2px;
+                  bottom: -12px;
+                  left: 12px;
+                  right: 12px;
+                  height: 3px;
+                  border-radius: 3px 3px 0 0;
                   background-color: var(--el-color-primary);
                 }
               }
@@ -2334,35 +2805,67 @@ const onBeforeUpload = async (file) => {
         }
 
         .content-panels {
+          position: relative;
           display: flex;
           flex: 1;
+          min-height: 0;
           overflow: hidden;
+          background-color: var(--el-bg-color-page);
 
           .panel {
             display: flex;
             flex-direction: column;
             flex: 1;
-            border-right: 1px solid var(--el-border-color-light);
-            transition: flex 0.3s;
-
-            &:last-child {
-              border-right: none;
-            }
+            min-width: 0;
+            background-color: var(--el-bg-color);
+            transition: flex 0.15s ease;
 
             .panel-header {
               display: flex;
               align-items: center;
               justify-content: space-between;
-              height: 40px;
+              box-sizing: border-box;
+              min-height: 52px;
               padding: 0 16px;
-              border-bottom: 1px solid var(--el-border-color-light);
-              background-color: var(--el-fill-color-lighter);
+              gap: 12px;
+              border-bottom: 1px solid var(--el-border-color-lighter);
+              background-color: var(--el-bg-color);
+
+              .panel-title {
+                display: flex;
+                align-items: baseline;
+                gap: 8px;
+                min-width: 0;
+              }
 
               h3 {
                 margin: 0;
                 font-size: 14px;
                 font-weight: 600;
                 color: var(--el-text-color-primary);
+                white-space: nowrap;
+              }
+
+              .content-stats {
+                color: var(--el-text-color-secondary);
+                font-size: 11px;
+                white-space: nowrap;
+              }
+
+              .document-tools {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                flex-shrink: 0;
+
+                :deep(.el-segmented) {
+                  --el-segmented-item-selected-bg-color: var(--el-bg-color);
+                  min-width: 108px;
+                }
+
+                .el-button + .el-button {
+                  margin-left: 0;
+                }
               }
 
               .el-button {
@@ -2401,15 +2904,19 @@ const onBeforeUpload = async (file) => {
               position: relative;
 
               .original-content {
-                padding: 20px;
+                box-sizing: border-box;
+                height: 100%;
+                padding: 24px;
+                overflow-y: auto;
                 font-family: system-ui, -apple-system, sans-serif;
+                background-color: var(--el-bg-color-page);
 
                 .loading-content {
                   display: flex;
                   flex-direction: column;
                   align-items: center;
                   justify-content: center;
-                  height: 200px;
+                  height: 100%;
                   color: var(--el-text-color-secondary);
 
                   .el-icon {
@@ -2418,16 +2925,207 @@ const onBeforeUpload = async (file) => {
                   }
                 }
 
+                .document-content {
+                  box-sizing: border-box;
+                  width: min(100%, 920px);
+                  min-height: 100%;
+                  margin: 0 auto;
+                  padding: 40px 48px 56px;
+                  border: 1px solid var(--el-border-color-lighter);
+                  border-radius: 6px;
+                  background-color: var(--el-bg-color);
+                  box-shadow: 0 8px 28px rgb(0 0 0 / 5%);
+                }
+
                 .file-text-content {
-                  white-space: pre-wrap;
-                  word-break: break-word;
-                  line-height: 1.6;
-                  padding: 16px;
-                  background-color: var(--el-fill-color-light);
-                  border-radius: 8px;
+                  box-sizing: border-box;
+                  width: 100%;
+                  min-height: 100%;
+                  margin: 0;
+                  padding: 20px;
                   overflow: auto;
-                  max-height: calc(100vh - 200px);
+                  white-space: pre;
+                  word-break: normal;
+                  line-height: 1.7;
+                  border: 1px solid var(--el-border-color-lighter);
+                  border-radius: 6px;
+                  background-color: var(--el-fill-color-lighter);
                   color: var(--el-text-color-primary);
+                  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+                  font-size: 13px;
+                }
+
+                :deep(.markdown-body) {
+                  color: var(--el-text-color-primary);
+                  font-size: 15px;
+                  line-height: 1.8;
+                  overflow-wrap: anywhere;
+
+                  > :first-child {
+                    margin-top: 0;
+                  }
+
+                  > :last-child {
+                    margin-bottom: 0;
+                  }
+
+                  h1,
+                  h2,
+                  h3,
+                  h4,
+                  h5,
+                  h6 {
+                    color: var(--el-text-color-primary);
+                    line-height: 1.35;
+                    letter-spacing: 0;
+                  }
+
+                  h1 {
+                    margin: 0 0 24px;
+                    padding-bottom: 14px;
+                    border-bottom: 1px solid var(--el-border-color-lighter);
+                    font-size: 28px;
+                    font-weight: 700;
+                  }
+
+                  h2 {
+                    margin: 36px 0 16px;
+                    padding-bottom: 8px;
+                    border-bottom: 1px solid var(--el-border-color-lighter);
+                    font-size: 22px;
+                    font-weight: 650;
+                  }
+
+                  h3 {
+                    margin: 28px 0 12px;
+                    font-size: 18px;
+                    font-weight: 650;
+                  }
+
+                  h4,
+                  h5,
+                  h6 {
+                    margin: 24px 0 10px;
+                    font-size: 15px;
+                    font-weight: 650;
+                  }
+
+                  p {
+                    margin: 0 0 16px;
+                  }
+
+                  ul,
+                  ol {
+                    margin: 0 0 18px;
+                    padding-left: 1.6em;
+                  }
+
+                  li {
+                    margin: 5px 0;
+                  }
+
+                  li > ul,
+                  li > ol {
+                    margin: 4px 0 0;
+                  }
+
+                  a {
+                    color: var(--el-color-primary);
+                    text-decoration: none;
+                    border-bottom: 1px solid var(--el-color-primary-light-7);
+                  }
+
+                  a:hover {
+                    border-bottom-color: var(--el-color-primary);
+                  }
+
+                  strong {
+                    font-weight: 650;
+                  }
+
+                  blockquote {
+                    margin: 20px 0;
+                    padding: 12px 16px;
+                    border-left: 4px solid #20a67a;
+                    background-color: var(--el-fill-color-lighter);
+                    color: var(--el-text-color-regular);
+                  }
+
+                  blockquote > :last-child {
+                    margin-bottom: 0;
+                  }
+
+                  code {
+                    padding: 2px 6px;
+                    border-radius: 4px;
+                    background-color: var(--el-fill-color-dark);
+                    color: #c2415d;
+                    font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+                    font-size: 0.9em;
+                  }
+
+                  pre {
+                    margin: 20px 0;
+                    padding: 16px 18px;
+                    overflow: auto;
+                    border: 1px solid var(--el-border-color-lighter);
+                    border-radius: 6px;
+                    background-color: #171a21;
+                    line-height: 1.65;
+                  }
+
+                  pre code {
+                    padding: 0;
+                    background: transparent;
+                    color: #e6edf3;
+                    font-size: 13px;
+                  }
+
+                  table {
+                    display: block;
+                    width: 100%;
+                    margin: 20px 0;
+                    overflow-x: auto;
+                    border-collapse: collapse;
+                    font-size: 14px;
+                  }
+
+                  th,
+                  td {
+                    padding: 10px 12px;
+                    border: 1px solid var(--el-border-color-lighter);
+                    text-align: left;
+                    white-space: nowrap;
+                  }
+
+                  th {
+                    background-color: var(--el-fill-color-light);
+                    font-weight: 650;
+                  }
+
+                  tr:nth-child(even) td {
+                    background-color: var(--el-fill-color-lighter);
+                  }
+
+                  hr {
+                    height: 1px;
+                    margin: 32px 0;
+                    border: 0;
+                    background-color: var(--el-border-color-lighter);
+                  }
+
+                  img {
+                    display: block;
+                    max-width: 100%;
+                    height: auto;
+                    margin: 22px auto;
+                    border-radius: 6px;
+                  }
+
+                  input[type="checkbox"] {
+                    margin-right: 7px;
+                    accent-color: var(--el-color-primary);
+                  }
                 }
               }
 
@@ -2446,10 +3144,11 @@ const onBeforeUpload = async (file) => {
                 .chat-messages {
                   flex: 1;
                   overflow-y: auto;
-                  padding: 16px;
+                  padding: 20px 16px;
                   display: flex;
                   flex-direction: column;
                   gap: 16px;
+                  background-color: var(--el-bg-color-page);
 
                   .message {
                     display: flex;
@@ -2468,9 +3167,10 @@ const onBeforeUpload = async (file) => {
                       justify-content: flex-start;
 
                       .message-content {
-                        background-color: var(--chat-assistant-bubble-bg, var(--el-fill-color-light));
+                        background-color: var(--chat-assistant-bubble-bg, var(--el-bg-color));
                         color: var(--chat-assistant-bubble-text, var(--el-text-color-primary));
-                        border-radius: 12px 12px 12px 0;
+                        border: 1px solid var(--el-border-color-lighter);
+                        border-radius: 8px;
 
                         &.thinking {
                           padding: 12px 20px;
@@ -2483,9 +3183,10 @@ const onBeforeUpload = async (file) => {
                     }
 
                     .avatar {
-                      width: 36px;
-                      height: 36px;
-                      border-radius: 50%;
+                      width: 32px;
+                      height: 32px;
+                      flex: 0 0 32px;
+                      border-radius: 7px;
                       display: flex;
                       align-items: center;
                       justify-content: center;
@@ -2497,7 +3198,7 @@ const onBeforeUpload = async (file) => {
                       }
 
                       &.assistant-avatar {
-                        background-color: var(--el-color-success);
+                        background-color: #087f5b;
                         color: white;
                       }
                     }
@@ -2560,7 +3261,8 @@ const onBeforeUpload = async (file) => {
 
                 .chat-input {
                   padding: 16px;
-                  border-top: 1px solid var(--el-border-color-light);
+                  border-top: 1px solid var(--el-border-color-lighter);
+                  background-color: var(--el-bg-color);
 
                   .input-actions {
                     display: flex;
@@ -2602,6 +3304,45 @@ const onBeforeUpload = async (file) => {
               }
             }
           }
+
+          .panel-resizer {
+            position: relative;
+            z-index: 2;
+            flex: 0 0 8px;
+            align-self: stretch;
+            cursor: col-resize;
+            background-color: var(--el-bg-color-page);
+            touch-action: none;
+
+            &::after {
+              content: '';
+              position: absolute;
+              top: 0;
+              bottom: 0;
+              left: 50%;
+              width: 1px;
+              background-color: var(--el-border-color-lighter);
+              transform: translateX(-50%);
+              transition: width 0.15s ease, background-color 0.15s ease;
+            }
+
+            &:hover::after,
+            &:active::after {
+              width: 3px;
+              background-color: var(--el-color-primary);
+            }
+          }
+
+          &.is-resizing {
+            .panel {
+              transition: none;
+            }
+
+            .panel-resizer::after {
+              width: 3px;
+              background-color: var(--el-color-primary);
+            }
+          }
         }
       }
 
@@ -2625,6 +3366,14 @@ const onBeforeUpload = async (file) => {
     position: absolute !important;
     z-index: 0 !important;
   }
+}
+
+.resize-shield {
+  position: fixed;
+  inset: 0;
+  z-index: 5000;
+  cursor: col-resize;
+  touch-action: none;
 }
 
 .history-header {
@@ -3157,5 +3906,121 @@ const onBeforeUpload = async (file) => {
   word-break: break-word;
   line-height: 1.6;
   width: 100%;
+}
+
+@media (max-width: 1100px) {
+  .main-container .main-content .content .result-view {
+    .file-tabs {
+      gap: 10px;
+
+      .file-info {
+        min-width: 150px;
+        max-width: 180px;
+      }
+    }
+
+    .content-panels .panel .panel-content .original-content {
+      padding: 16px;
+
+      .document-content {
+        padding: 30px 28px 42px;
+      }
+    }
+  }
+}
+
+@media (max-width: 820px) {
+  .main-container {
+    padding-right: 0;
+
+    .main-content {
+      border-radius: 0;
+
+      :deep(.el-drawer) {
+        width: min(86vw, 320px) !important;
+
+        .file-list-resizer {
+          display: none;
+        }
+      }
+
+      .content {
+        margin-left: 0 !important;
+
+        .result-view {
+        .file-tabs {
+          align-items: stretch;
+          flex-direction: column;
+          gap: 0;
+          height: auto;
+          padding: 8px 12px 0;
+
+          .file-info {
+            min-width: 0;
+            max-width: 100%;
+            height: 38px;
+          }
+
+          .tabs-container {
+            height: 44px;
+
+            .tab-item.active::after {
+              bottom: 0;
+            }
+          }
+        }
+
+        .content-panels {
+          .panel-resizer {
+            display: none;
+          }
+
+          .panel {
+            display: none;
+            min-width: 0 !important;
+            border-right: 0;
+
+            &.active {
+              display: flex;
+            }
+
+            .panel-header {
+              flex-wrap: wrap;
+              min-height: 58px;
+              height: auto;
+              padding: 8px 12px;
+
+              .content-stats {
+                display: none;
+              }
+            }
+
+            .panel-content .original-content {
+              padding: 0;
+
+              .document-content {
+                width: 100%;
+                min-height: 100%;
+                padding: 26px 20px 40px;
+                border: 0;
+                border-radius: 0;
+                box-shadow: none;
+              }
+            }
+          }
+        }
+      }
+      }
+    }
+  }
+
+  .history-icon {
+    top: auto !important;
+    right: 16px !important;
+    bottom: 16px;
+    z-index: 20;
+    border: 1px solid var(--el-border-color-lighter);
+    box-shadow: 0 4px 16px rgb(0 0 0 / 10%);
+  }
 }
 </style>

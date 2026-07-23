@@ -1,7 +1,9 @@
 <script setup>
-import {computed, ref} from 'vue'
+import {computed, ref, watch} from 'vue'
 import SvgIcon from "@/components/SvgIcon/index.vue";
-import axios from "axios";
+import api, { encodePathSegment, getApiErrorMessage } from "@/api/client";
+import { Connection, RefreshLeft } from '@element-plus/icons-vue';
+import { ElMessage } from 'element-plus';
 
 const props = defineProps({
   fileListExpand: Boolean,
@@ -14,6 +16,14 @@ const props = defineProps({
     type: String,
     default: "general"
   },
+  customPrompts: {
+    type: Object,
+    default: () => ({
+      entityExtraction: '',
+      relationshipExtraction: '',
+      knowledgeFusion: ''
+    })
+  },
   useImg2txt: {
     type: Boolean,
     default: false
@@ -25,6 +35,7 @@ const emits = defineEmits([
   "update:enableStreamOutput", 
   "update:enableHistoryContext",
   "update:noteType",
+  "update:customPrompts",
   "update:useImg2txt"
 ]);
 const fileListExpand = computed({
@@ -78,6 +89,158 @@ const openSettings = ref(false)
 const expandedFileId = ref(null)
 const fileEntities = ref({})
 const loadingEntities = ref({})
+const aiSettingsLoading = ref(false)
+const aiSettingsSaving = ref(false)
+const aiSettingsTesting = ref(false)
+const processingPromptsLoading = ref(false)
+const defaultProcessingPrompts = ref(null)
+const aiSettings = ref({
+  baseUrl: '',
+  apiKey: '',
+  modelName: '',
+  temperature: 0,
+  enableThinking: false,
+  apiKeyConfigured: false,
+  apiKeyHint: ''
+})
+
+const apiKeyPlaceholder = computed(() => {
+  if (!aiSettings.value.apiKeyConfigured) return '请输入 API Key';
+  const hint = aiSettings.value.apiKeyHint ? `（${aiSettings.value.apiKeyHint}）` : '';
+  return `已配置${hint}，留空则保持不变`;
+});
+
+const loadAiSettings = async () => {
+  aiSettingsLoading.value = true;
+  try {
+    const { data } = await api.get('/ai-settings');
+    aiSettings.value = {
+      baseUrl: data.base_url || '',
+      apiKey: '',
+      modelName: data.model_name || '',
+      temperature: Number(data.temperature ?? 0),
+      enableThinking: Boolean(data.enable_thinking),
+      apiKeyConfigured: Boolean(data.api_key_configured),
+      apiKeyHint: data.api_key_hint || ''
+    };
+  } catch (error) {
+    console.error('获取 AI 配置失败:', error);
+    ElMessage.error(getApiErrorMessage(error, '获取 AI 配置失败'));
+  } finally {
+    aiSettingsLoading.value = false;
+  }
+};
+
+const getAiSettingsPayload = () => {
+  const baseUrl = aiSettings.value.baseUrl.trim();
+  const modelName = aiSettings.value.modelName.trim();
+  if (!baseUrl || !modelName) {
+    ElMessage.warning('请填写 Base URL 和模型名称');
+    return null;
+  }
+  if (!aiSettings.value.apiKey.trim() && !aiSettings.value.apiKeyConfigured) {
+    ElMessage.warning('请填写 API Key');
+    return null;
+  }
+
+  return {
+    base_url: baseUrl,
+    api_key: aiSettings.value.apiKey.trim() || null,
+    model_name: modelName,
+    temperature: aiSettings.value.temperature,
+    enable_thinking: aiSettings.value.enableThinking
+  };
+};
+
+const testAiSettings = async () => {
+  const payload = getAiSettingsPayload();
+  if (!payload) return;
+
+  aiSettingsTesting.value = true;
+  try {
+    const { data } = await api.post('/ai-settings/test', payload);
+    const latency = Number.isFinite(data.latency_ms) ? `（${data.latency_ms} ms）` : '';
+    ElMessage.success(`${data.message || 'AI 连接测试成功'}${latency}`);
+  } catch (error) {
+    console.error('AI 连接测试失败:', error);
+    ElMessage.error(getApiErrorMessage(error, 'AI 连接测试失败'));
+  } finally {
+    aiSettingsTesting.value = false;
+  }
+};
+
+const saveAiSettings = async () => {
+  const payload = getAiSettingsPayload();
+  if (!payload) return;
+
+  aiSettingsSaving.value = true;
+  try {
+    const { data } = await api.put('/ai-settings', payload);
+    aiSettings.value.apiKey = '';
+    aiSettings.value.apiKeyConfigured = Boolean(data.api_key_configured);
+    aiSettings.value.apiKeyHint = data.api_key_hint || '';
+    aiSettings.value.baseUrl = data.base_url;
+    aiSettings.value.modelName = data.model_name;
+    aiSettings.value.temperature = Number(data.temperature);
+    aiSettings.value.enableThinking = Boolean(data.enable_thinking);
+    ElMessage.success('AI 配置已更新');
+    openSettings.value = false;
+  } catch (error) {
+    console.error('更新 AI 配置失败:', error);
+    ElMessage.error(getApiErrorMessage(error, '更新 AI 配置失败'));
+  } finally {
+    aiSettingsSaving.value = false;
+  }
+};
+
+const updateCustomPrompt = (field, value) => {
+  emits('update:customPrompts', {
+    ...props.customPrompts,
+    [field]: value
+  });
+};
+
+const loadDefaultProcessingPrompts = async (forceReset = false) => {
+  if (processingPromptsLoading.value) return;
+  processingPromptsLoading.value = true;
+  try {
+    if (!defaultProcessingPrompts.value) {
+      const { data } = await api.get('/processing-prompts/defaults');
+      defaultProcessingPrompts.value = {
+        entityExtraction: data.entity_extraction || '',
+        relationshipExtraction: data.relationship_extraction || '',
+        knowledgeFusion: data.knowledge_fusion || ''
+      };
+    }
+
+    const defaults = defaultProcessingPrompts.value;
+    const current = props.customPrompts || {};
+    emits('update:customPrompts', forceReset ? { ...defaults } : {
+      entityExtraction: current.entityExtraction?.trim() ? current.entityExtraction : defaults.entityExtraction,
+      relationshipExtraction: current.relationshipExtraction?.trim()
+        ? current.relationshipExtraction
+        : defaults.relationshipExtraction,
+      knowledgeFusion: current.knowledgeFusion?.trim() ? current.knowledgeFusion : defaults.knowledgeFusion
+    });
+    if (forceReset) ElMessage.success('已恢复通用提示词');
+  } catch (error) {
+    console.error('获取通用提示词失败:', error);
+    ElMessage.error(getApiErrorMessage(error, '获取通用提示词失败'));
+  } finally {
+    processingPromptsLoading.value = false;
+  }
+};
+
+watch(noteType, value => {
+  if (value === 'custom') loadDefaultProcessingPrompts();
+});
+
+watch(openSettings, isOpen => {
+  if (isOpen) {
+    loadAiSettings();
+    if (noteType.value === 'custom') loadDefaultProcessingPrompts();
+  }
+});
 
 const openMenuItem = (index) => {
   activeIndex.value = index;
@@ -105,7 +268,7 @@ const toggleFileExpand = async (file) => {
   if (!fileEntities.value[file.name] && !loadingEntities.value[file.name]) {
     try {
       loadingEntities.value[file.name] = true;
-      const response = await axios.get(`http://localhost:8000/file-entities/${file.name}`);
+      const response = await api.get(`/file-entities/${encodePathSegment(file.name)}`);
       if (response.data && response.data.entities) {
         fileEntities.value[file.name] = {
           entities: response.data.entities,
@@ -135,6 +298,11 @@ const noteTypeOptions = [
     value: 'story',
     label: '故事',
     color: '#67c23a' // 绿色，使其与通用类型区分
+  },
+  {
+    value: 'custom',
+    label: '自定义',
+    color: '#e6a23c'
   }
 ];
 
@@ -183,7 +351,9 @@ defineExpose({
 
   <el-dialog 
     v-model="openSettings" 
-    width="520px" 
+    width="min(760px, calc(100vw - 24px))"
+    top="5vh"
+    :lock-scroll="false"
     :close-on-click-modal="false" 
     :show-close="false"
     style="border-radius: 8px"
@@ -196,7 +366,55 @@ defineExpose({
       </div>
     </template>
     <template #default>
-      <div class="settings-content">
+      <div v-loading="aiSettingsLoading" class="settings-content">
+        <div class="settings-section">
+          <div class="section-title">AI 模型设置</div>
+          <el-form label-position="top" class="ai-settings-form">
+            <el-form-item label="Base URL">
+              <el-input
+                v-model="aiSettings.baseUrl"
+                placeholder="https://api.example.com/v1"
+                autocomplete="off"
+              />
+            </el-form-item>
+            <el-form-item label="API Key">
+              <el-input
+                v-model="aiSettings.apiKey"
+                type="password"
+                show-password
+                :placeholder="apiKeyPlaceholder"
+                autocomplete="new-password"
+              />
+            </el-form-item>
+            <el-form-item label="模型名称">
+              <el-input
+                v-model="aiSettings.modelName"
+                placeholder="例如：qwen-plus"
+                autocomplete="off"
+              />
+            </el-form-item>
+            <div class="ai-settings-row">
+              <el-form-item label="温度">
+                <el-input-number
+                  v-model="aiSettings.temperature"
+                  :min="0"
+                  :max="2"
+                  :step="0.1"
+                  :precision="2"
+                  controls-position="right"
+                />
+              </el-form-item>
+              <el-form-item label="思考模式">
+                <el-switch
+                  v-model="aiSettings.enableThinking"
+                  active-text="开启"
+                  inactive-text="关闭"
+                />
+              </el-form-item>
+            </div>
+          </el-form>
+        </div>
+
         <div class="settings-section">
           <div class="section-title">图谱构建设置</div>
           <div class="settings-item">
@@ -226,6 +444,56 @@ defineExpose({
           </div>
           <div class="item-description">
             选择不同的笔记类型，AI将根据类型构建相应的知识图谱结构。
+          </div>
+
+          <div v-if="noteType === 'custom'" v-loading="processingPromptsLoading" class="custom-prompts-editor">
+            <div class="custom-prompts-toolbar">
+              <span class="item-label">处理提示词</span>
+              <el-button
+                text
+                size="small"
+                :icon="RefreshLeft"
+                :disabled="processingPromptsLoading"
+                @click="loadDefaultProcessingPrompts(true)"
+              >
+                恢复通用提示词
+              </el-button>
+            </div>
+            <el-tabs type="card" class="processing-prompt-tabs">
+              <el-tab-pane label="实体抽取">
+                <el-input
+                  :model-value="customPrompts.entityExtraction"
+                  type="textarea"
+                  :rows="10"
+                  resize="vertical"
+                  maxlength="30000"
+                  show-word-limit
+                  @update:model-value="updateCustomPrompt('entityExtraction', $event)"
+                />
+              </el-tab-pane>
+              <el-tab-pane label="关系抽取">
+                <el-input
+                  :model-value="customPrompts.relationshipExtraction"
+                  type="textarea"
+                  :rows="10"
+                  resize="vertical"
+                  maxlength="30000"
+                  show-word-limit
+                  @update:model-value="updateCustomPrompt('relationshipExtraction', $event)"
+                />
+              </el-tab-pane>
+              <el-tab-pane label="知识融合">
+                <el-input
+                  :model-value="customPrompts.knowledgeFusion"
+                  type="textarea"
+                  :rows="10"
+                  resize="vertical"
+                  maxlength="30000"
+                  show-word-limit
+                  @update:model-value="updateCustomPrompt('knowledgeFusion', $event)"
+                />
+              </el-tab-pane>
+            </el-tabs>
           </div>
           
           <div class="settings-item">
@@ -266,6 +534,29 @@ defineExpose({
           <div class="item-description">
             开启后，AI回答会参考之前的对话历史，保持上下文连贯性。
           </div>
+        </div>
+      </div>
+    </template>
+    <template #footer>
+      <div class="settings-dialog-footer">
+        <el-button
+          :icon="Connection"
+          :loading="aiSettingsTesting"
+          :disabled="aiSettingsSaving"
+          @click="testAiSettings"
+        >
+          测试连接
+        </el-button>
+        <div class="settings-dialog-actions">
+          <el-button @click="openSettings=false">取消</el-button>
+          <el-button
+            type="primary"
+            :loading="aiSettingsSaving"
+            :disabled="aiSettingsTesting"
+            @click="saveAiSettings"
+          >
+            保存 AI 配置
+          </el-button>
         </div>
       </div>
     </template>
@@ -349,6 +640,8 @@ defineExpose({
 
 .settings-content {
   padding: 0 16px;
+  max-height: calc(90vh - 156px);
+  overflow-y: auto;
 
   .settings-section {
     margin-bottom: 24px;
@@ -437,6 +730,85 @@ defineExpose({
   }
 }
 
+.ai-settings-form {
+  :deep(.el-form-item) {
+    margin-bottom: 14px;
+  }
+
+  :deep(.el-form-item__label) {
+    color: var(--el-text-color-primary);
+    font-weight: 500;
+  }
+
+  .ai-settings-row {
+    display: grid;
+    grid-template-columns: minmax(160px, 1fr) minmax(160px, 1fr);
+    gap: 20px;
+
+    :deep(.el-input-number) {
+      width: 100%;
+    }
+  }
+}
+
+.settings-dialog-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+
+  .settings-dialog-actions {
+    display: flex;
+    gap: 8px;
+  }
+}
+
+.custom-prompts-editor {
+  margin: 12px 0 20px;
+  padding-top: 12px;
+  border-top: 1px solid var(--el-border-color-light);
+
+  .custom-prompts-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+
+  .processing-prompt-tabs {
+    :deep(.el-tabs__content) {
+      overflow: visible;
+    }
+
+    :deep(.el-textarea__inner) {
+      min-height: 180px !important;
+      line-height: 1.5;
+      font-family: inherit;
+    }
+  }
+}
+
+@media (max-width: 520px) {
+  .settings-content {
+    padding: 0 4px;
+  }
+
+  .ai-settings-form .ai-settings-row {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+
+  .settings-dialog-footer {
+    align-items: stretch;
+    flex-direction: column;
+
+    .settings-dialog-actions {
+      justify-content: flex-end;
+    }
+  }
+}
+
 .note-type-option-content {
   display: flex;
   align-items: center;
@@ -481,8 +853,17 @@ defineExpose({
 
 /* 增强设置dialog和项目的对比度 */
 :deep(.settings-dialog) {
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+
   .el-dialog__header, .el-dialog__body {
     padding: 16px;
+  }
+
+  .el-dialog__body {
+    min-height: 0;
+    overflow: hidden;
   }
 }
 

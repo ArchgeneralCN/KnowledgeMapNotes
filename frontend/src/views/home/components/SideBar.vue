@@ -577,6 +577,17 @@ defineExpose({
   .logo {
     margin-bottom: 8px;
     text-align: center;
+
+    // Keep the brand mark visible across Element Plus themes. The SVG uses
+    // currentColor, while the menu itself does not always define a color.
+    :deep(.svg-icon) {
+      display: inline-block;
+      width: 32px;
+      height: 32px;
+      color: var(--el-color-primary);
+      fill: currentColor;
+      vertical-align: middle;
+    }
   }
 
   .el-menu-item {

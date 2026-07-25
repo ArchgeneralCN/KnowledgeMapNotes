@@ -309,9 +309,53 @@ def get_public_ai_settings() -> Dict[str, Any]:
 def require_ai_settings() -> None:
     """Reject model-dependent requests until runtime settings are complete."""
     with ai_settings_lock:
-        is_configured = client is not None and bool(AI_SETTINGS["model_name"])
+        is_configured = (
+            client is not None
+            and bool(AI_SETTINGS["base_url"])
+            and bool(AI_SETTINGS["api_key"])
+            and bool(AI_SETTINGS["model_name"])
+        )
     if not is_configured:
-        raise HTTPException(status_code=503, detail="请先在前端设置 AI 服务")
+        raise HTTPException(status_code=503, detail="请先在前端完成 AI 配置")
+
+
+def request_ai_validation_completion(ai_client: OpenAI, settings: Dict[str, Any]) -> None:
+    """Send the smallest useful request for validating an OpenAI-compatible service."""
+    ai_client.with_options(timeout=20.0, max_retries=0).chat.completions.create(
+        model=settings["model_name"],
+        messages=[{"role": "user", "content": "Reply with OK."}],
+        temperature=settings["temperature"],
+        max_tokens=8,
+        extra_body={
+            "thinking": {
+                "type": "enabled" if settings["enable_thinking"] else "disabled"
+            }
+        },
+    )
+
+
+async def validate_current_ai_settings() -> None:
+    """Verify the active model configuration before starting file processing."""
+    require_ai_settings()
+    with ai_settings_lock:
+        current_client = client
+        settings = AI_SETTINGS.copy()
+
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(request_ai_validation_completion, current_client, settings),
+            timeout=25.0,
+        )
+    except asyncio.TimeoutError as exc:
+        raise HTTPException(status_code=504, detail="AI 配置校验超时，请检查服务地址或网络") from exc
+    except Exception as exc:
+        logger.warning(
+            "上传前 AI 配置校验失败: base_url=%s model=%s error=%s",
+            settings["base_url"],
+            settings["model_name"],
+            exc,
+        )
+        raise HTTPException(status_code=502, detail=f"AI 配置校验失败，请检查配置: {exc}") from exc
 
 
 def prepare_ai_settings(settings: AISettingsUpdate) -> tuple[OpenAI, Dict[str, Any]]:
@@ -352,6 +396,13 @@ async def get_ai_settings():
     return get_public_ai_settings()
 
 
+@app.post("/ai-settings/validate")
+async def validate_ai_settings():
+    """Validate the active model configuration without changing it."""
+    await validate_current_ai_settings()
+    return {"message": "AI 配置校验成功"}
+
+
 @app.put("/ai-settings")
 async def update_ai_settings(settings: AISettingsUpdate):
     """Apply model settings to subsequent graph extraction and RAG calls."""
@@ -390,22 +441,12 @@ async def test_ai_settings(settings: AISettingsUpdate):
     """Test submitted settings with a minimal request without saving them."""
     test_client, test_settings = prepare_ai_settings(settings)
 
-    def request_test_completion() -> None:
-        test_client.with_options(timeout=20.0, max_retries=0).chat.completions.create(
-            model=test_settings["model_name"],
-            messages=[{"role": "user", "content": "Reply with OK."}],
-            temperature=test_settings["temperature"],
-            max_tokens=8,
-            extra_body={
-                "thinking": {
-                    "type": "enabled" if test_settings["enable_thinking"] else "disabled"
-                }
-            },
-        )
-
     started_at = time.monotonic()
     try:
-        await asyncio.wait_for(asyncio.to_thread(request_test_completion), timeout=25.0)
+        await asyncio.wait_for(
+            asyncio.to_thread(request_ai_validation_completion, test_client, test_settings),
+            timeout=25.0,
+        )
     except asyncio.TimeoutError as exc:
         raise HTTPException(status_code=504, detail="AI 连接测试超时，请检查服务地址或网络") from exc
     except Exception as exc:
@@ -1135,7 +1176,9 @@ async def upload_file(
     异常：
         上传或处理失败时返回500。
     """
-    require_ai_settings()
+    # Validate the active credentials/model before touching the uploaded file or
+    # changing any existing graph state. A failed check leaves no processing task.
+    await validate_current_ai_settings()
     try:
         use_img2txt_bool = use_img2txt.strip().lower() in {"true", "1", "yes", "open"}
         custom_prompts = normalize_processing_prompts(

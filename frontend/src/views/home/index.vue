@@ -996,7 +996,27 @@ const closeFileList = () => {
 }
 
 // 文件状态: 'uploading', 'processing', 'success', 'error'
+let aiValidationPromise = null;
+
+const validateAiSettingsBeforeUpload = async () => {
+  // Share one validation request when several files are selected together.
+  if (!aiValidationPromise) {
+    aiValidationPromise = api.post('/ai-settings/validate')
+      .then(() => true)
+      .catch(error => {
+        ElMessage.error(getApiErrorMessage(error, '请先完成正确的 AI 配置'));
+        return false;
+      })
+      .finally(() => {
+        aiValidationPromise = null;
+      });
+  }
+  return aiValidationPromise;
+};
+
 const beforeUpload = async (file) => {
+  if (!await validateAiSettingsBeforeUpload()) return false;
+
   // 检查文件是否已存在
   const existingFile = uploadFileList.value.find(item => item.name === file.name);
 

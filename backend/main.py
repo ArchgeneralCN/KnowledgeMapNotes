@@ -125,6 +125,7 @@ TXT_FOLDER = Path(os.getenv("TXT_FOLDER", "txt_files"))
 RESULT_FOLDER = Path(os.getenv("RESULT_FOLDER", "results"))
 STATUS_FOLDER = Path(os.getenv("STATUS_FOLDER", "processing_states"))
 MAX_TRANSFER_PACKAGE_SIZE = 100 * 1024 * 1024
+DEFAULT_EXAMPLE_FOLDER = Path(__file__).resolve().parent / "default_examples"
 
 PROCESS_STATUS: Dict[str, Dict[str, Any]] = {}
 process_status_lock = Lock()
@@ -1159,6 +1160,42 @@ def import_file_transfer_package(payload: bytes) -> Dict[str, Any]:
         "imported": True,
         "percentage": 100,
     }
+
+
+def default_example_exists(base_name: str) -> bool:
+    """Avoid replacing either complete or partially created user data."""
+    local_paths_exist = (
+        base_name in PROCESS_STATUS
+        or (RESULT_FOLDER / base_name).exists()
+        or (TXT_FOLDER / f"{base_name}.txt").exists()
+        or get_source_text_path(base_name).exists()
+        or any(UPLOAD_FOLDER.glob(f"{base_name}.*"))
+    )
+    return local_paths_exist or chromadb_store.load_state(base_name) is not None
+
+
+def install_default_examples() -> None:
+    """Install bundled completed examples once, without invoking an AI model."""
+    if not parse_boolean(os.getenv("DEFAULT_EXAMPLES_ENABLED"), default=True):
+        logger.info("已通过 DEFAULT_EXAMPLES_ENABLED 关闭默认示例")
+        return
+    if not DEFAULT_EXAMPLE_FOLDER.is_dir():
+        return
+
+    for package_path in sorted(DEFAULT_EXAMPLE_FOLDER.glob(f"*{PACKAGE_SUFFIX}")):
+        base_name = package_path.name[:-len(PACKAGE_SUFFIX)]
+        try:
+            if default_example_exists(base_name):
+                logger.info("默认示例已存在，跳过导入: %s", base_name)
+                continue
+            result = import_file_transfer_package(package_path.read_bytes())
+            logger.info("默认示例安装完成: %s", result["filename"])
+        except Exception:
+            # A damaged optional example must not make the whole service unavailable.
+            logger.exception("默认示例安装失败: %s", package_path)
+
+
+install_default_examples()
 
 
 def write_processed_text(base_name: str, bolts: List[Any]) -> None:

@@ -23,6 +23,7 @@ https://github.com/user-attachments/assets/5e9e6ffd-4e18-4915-b3a4-85198eb8bb0f
 - **断点处理**：图谱构建按文本块保存检查点，可暂停任务并从上次完成位置继续处理。
 - **故障自动接管**：主 AI 请求失败或返回无效 JSON 时，自动切换到备用 AI 继续当前文本块。
 - **图谱迁移包**：已完成文件可导出 `.kmn.zip`，包含原始文档、图谱页面、处理状态和 RAG 历史；拖拽到另一系统即可恢复，不重新调用 AI。
+- **开箱即用示例**：首次部署会自动导入已完成处理的“三国志”，无需配置文本 AI 即可浏览原文和完整知识图谱。
 - **灵活的结果工作区**：原文、知识图谱和 RAG 面板可并排查看、隐藏或拖动调整宽度。
 - **运行时 AI 配置**：后端无需预先填写文本模型 Base URL 和 API Key；启动后可在前端填写、测试连接并保存到当前进程。
 - **单进程运行**：FastAPI 可直接托管 `frontend/dist`，构建前端后只需启动后端即可使用完整 Web 应用。
@@ -67,6 +68,8 @@ https://github.com/user-attachments/assets/5e9e6ffd-4e18-4915-b3a4-85198eb8bb0f
 
 首次启动会加载嵌入和重排模型，需要一定的磁盘空间。在线加载 Hugging Face 模型时还需要网络连接。
 
+首次部署还会从 `backend/default_examples` 自动导入已完成处理的“三国志”示例，不会调用文本 AI，也不会覆盖任何同名数据。如需空白实例，可在 `backend/.env` 中设置 `DEFAULT_EXAMPLES_ENABLED=False`。
+
 ### 1. 克隆项目
 
 ```bash
@@ -105,6 +108,7 @@ FALLBACK_ENABLED=False
 FALLBACK_BASE_URL=
 FALLBACK_API_KEY=
 FALLBACK_MODEL_NAME=
+DEFAULT_EXAMPLES_ENABLED=True
 
 # PDF 图片内容识别，可选
 VL_API_KEY=

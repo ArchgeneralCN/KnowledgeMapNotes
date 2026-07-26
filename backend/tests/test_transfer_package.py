@@ -2,6 +2,7 @@ import io
 import json
 import unittest
 import zipfile
+from pathlib import Path
 
 import networkx as nx
 
@@ -65,6 +66,21 @@ class TransferPackageTests(unittest.TestCase):
         self.assertEqual(manifest["version"], 1)
         self.assertEqual(manifest["files"]["original"], "original/三国.txt")
         self.assertEqual(manifest["files"]["graph_pages"], ["graph/三国.html"])
+
+    def test_bundled_three_kingdoms_example_is_complete(self):
+        package_path = (
+            Path(__file__).resolve().parents[1]
+            / "default_examples"
+            / "三国志.kmn.zip"
+        )
+        self.assertTrue(package_path.is_file())
+
+        imported = read_transfer_package(package_path.read_bytes())
+        self.assertEqual(imported.base_name, "三国志")
+        self.assertEqual(imported.original_filename, "三国志.txt")
+        self.assertEqual(imported.processing_status.get("status"), "completed")
+        self.assertGreater(len(imported.state["Bolts"]), 0)
+        self.assertIn("三国志.html", imported.graph_pages)
 
 
 if __name__ == "__main__":

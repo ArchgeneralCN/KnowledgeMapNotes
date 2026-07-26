@@ -64,7 +64,11 @@ class  storeManager:
         prompt = open(f"./prompt/{prompt_vision}/entity_q2merge.txt", encoding='utf-8').read()
         entity = [str(i) for i in current_g]
         input_parameter = f"实体列表：{entity}\n问题：{query}"
-        output = self.agent.agent_safe_generate_response(prompt, input_parameter)
+        output = self.agent.agent_safe_generate_response(
+            prompt,
+            input_parameter,
+            expected_key="entities",
+        )
         if isinstance(output, str):
             return []
         else:
@@ -159,7 +163,6 @@ class  storeManager:
         print(f"\nModularity of the entire graph: {modularity}")
 
         return knowledge_base
-
 
 
 

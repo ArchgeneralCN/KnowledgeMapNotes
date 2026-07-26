@@ -5,7 +5,7 @@ import os
 import shutil
 import time
 import uuid
-from collections import deque
+from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,9 +15,11 @@ from typing import Any, AsyncGenerator, Deque, Dict, List, Optional
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from openai import OpenAI
+import networkx as nx
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from urllib.parse import quote
@@ -25,6 +27,17 @@ from urllib.parse import quote
 from OmniStore.storeManager import storeManager
 from OmniText.MDProcessor import MDProcessor
 from OmniText.PDFProcessor import PDFProcessor
+from text_encoding import read_text_file
+from transfer_package import (
+    PACKAGE_SUFFIX,
+    build_transfer_package,
+    is_transfer_package_filename,
+    read_transfer_package,
+)
+from KnowledgeGraphManager.graph_interactions import (
+    get_local_vis_asset_path,
+    prepare_legacy_graph_html,
+)
 
 os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
 
@@ -64,9 +77,14 @@ class AISettingsUpdate(BaseModel):
     model_name: str
     temperature: float = Field(ge=0, le=2)
     enable_thinking: bool = False
+    fallback_enabled: bool = False
+    fallback_base_url: Optional[str] = None
+    fallback_api_key: Optional[str] = None
+    fallback_model_name: Optional[str] = None
 
 
 app = FastAPI(title="图谱笔记", description="大模型知识图谱笔记软件")
+app.add_middleware(GZipMiddleware, minimum_size=1_000, compresslevel=5)
 
 
 class SPAStaticFiles(StaticFiles):
@@ -105,17 +123,36 @@ async def support_frontend_api_prefix(request: Request, call_next):
 UPLOAD_FOLDER = Path(os.getenv("UPLOAD_FOLDER", "uploads"))
 TXT_FOLDER = Path(os.getenv("TXT_FOLDER", "txt_files"))
 RESULT_FOLDER = Path(os.getenv("RESULT_FOLDER", "results"))
+STATUS_FOLDER = Path(os.getenv("STATUS_FOLDER", "processing_states"))
+MAX_TRANSFER_PACKAGE_SIZE = 100 * 1024 * 1024
 
 PROCESS_STATUS: Dict[str, Dict[str, Any]] = {}
 process_status_lock = Lock()
+
+
+def persist_process_status(base_name: str, status: Dict[str, Any]) -> None:
+    """Atomically persist recovery metadata so a service restart is resumable."""
+    status_path = STATUS_FOLDER / f"{base_name}.json"
+    temporary_path = status_path.with_suffix(".json.tmp")
+    temporary_path.write_text(
+        json.dumps(status, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    temporary_path.replace(status_path)
 
 
 def set_process_status(base_name: str, status: str, **updates: Any) -> None:
     """Atomically update the status and chunk-level progress for one file."""
     with process_status_lock:
         current = PROCESS_STATUS.get(base_name, {})
-        next_status = {**current, **updates, "status": status}
+        next_status = {
+            **current,
+            **updates,
+            "status": status,
+            "updated_at": time.time(),
+        }
         PROCESS_STATUS[base_name] = next_status
+        persist_process_status(base_name, next_status)
 
 
 def get_process_status(base_name: str) -> Optional[Dict[str, Any]]:
@@ -129,9 +166,11 @@ def create_chunk_progress_callback(base_name: str, status: str = "processing"):
     """Record a completed chunk and estimate remaining work from its duration."""
     def update_progress(completed_chunks: int, total_chunks: int, chunk_seconds: float) -> None:
         remaining_chunks = max(total_chunks - completed_chunks, 0)
+        current = get_process_status(base_name) or {}
+        effective_status = "pausing" if current.get("pause_requested") else status
         set_process_status(
             base_name,
-            status,
+            effective_status,
             completed_chunks=completed_chunks,
             total_chunks=total_chunks,
             percentage=round(completed_chunks * 100 / total_chunks) if total_chunks else 0,
@@ -144,8 +183,41 @@ def create_chunk_progress_callback(base_name: str, status: str = "processing"):
     return update_progress
 
 # Ensure configured runtime directories exist before accepting requests.
-for folder in [UPLOAD_FOLDER, TXT_FOLDER, RESULT_FOLDER]:
+for folder in [UPLOAD_FOLDER, TXT_FOLDER, RESULT_FOLDER, STATUS_FOLDER]:
     folder.mkdir(parents=True, exist_ok=True)
+
+
+def restore_process_statuses() -> None:
+    """Restore file states and mark abandoned in-flight work as interrupted."""
+    active_statuses = {"uploading", "processing", "updating", "resuming", "pausing"}
+    for status_path in STATUS_FOLDER.glob("*.json"):
+        try:
+            restored = json.loads(status_path.read_text(encoding="utf-8"))
+            base_name = status_path.stem
+            if restored.get("status") in active_statuses:
+                completed = int(restored.get("completed_chunks") or 0)
+                was_pausing = restored.get("status") == "pausing" or restored.get("pause_requested")
+                restored["status"] = "paused" if was_pausing else (
+                    "interrupted" if completed else "error"
+                )
+                restored["error_message"] = (
+                    None if was_pausing else "服务中断，等待继续处理"
+                )
+                restored["pause_requested"] = False
+                source_path = Path(
+                    restored.get("source_text_path") or TXT_FOLDER / f"{base_name}.source.txt"
+                )
+                original_filename = restored.get("original_filename")
+                restored["resumable"] = source_path.is_file() or bool(
+                    original_filename and (UPLOAD_FOLDER / original_filename).is_file()
+                )
+                persist_process_status(base_name, restored)
+            PROCESS_STATUS[base_name] = restored
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            logger.warning("忽略损坏的处理状态文件: %s", status_path, exc_info=True)
+
+
+restore_process_statuses()
 
 
 def parse_file_extensions(value: str) -> set[str]:
@@ -178,7 +250,7 @@ def get_base_name(filename: str) -> str:
 # 初始化知识图谱组件
 from OmniStore.chromadb_store import StoreTool
 from sentence_transformers import SentenceTransformer
-from KnowledgeGraphManager.KGManager import KgManager, PROCESSING_PROMPT_FILES
+from KnowledgeGraphManager.KGManager import KgManager, PROCESSING_PROMPT_FILES, ProcessingPaused
 
 
 
@@ -247,6 +319,10 @@ AI_SETTINGS: Dict[str, Any] = {
     "model_name": os.getenv("MODEL_NAME", "").strip(),
     "temperature": float(os.getenv("TEMPERATURE", "0")),
     "enable_thinking": parse_boolean(os.getenv("ENABLE_THINKING")),
+    "fallback_enabled": parse_boolean(os.getenv("FALLBACK_ENABLED")),
+    "fallback_base_url": os.getenv("FALLBACK_BASE_URL", "").strip(),
+    "fallback_api_key": os.getenv("FALLBACK_API_KEY", "").strip(),
+    "fallback_model_name": os.getenv("FALLBACK_MODEL_NAME", "").strip(),
 }
 
 
@@ -261,6 +337,10 @@ client = create_openai_client(
     api_key=AI_SETTINGS["api_key"],
     base_url=AI_SETTINGS["base_url"],
 )
+fallback_client = create_openai_client(
+    api_key=AI_SETTINGS["fallback_api_key"],
+    base_url=AI_SETTINGS["fallback_base_url"],
+) if AI_SETTINGS["fallback_enabled"] else None
 if client is None:
     logger.info("未在环境变量中配置 AI 服务，等待用户在前端完成设置")
 
@@ -276,12 +356,16 @@ rag_agent = OpenaiAgent(
     model_name=AI_SETTINGS["model_name"],
     temperature=AI_SETTINGS["temperature"],
     enable_thinking=AI_SETTINGS["enable_thinking"],
+    fallback_client=fallback_client,
+    fallback_model_name=AI_SETTINGS["fallback_model_name"],
 )
 kg_agent = OpenaiAgent(
     client,
     model_name=AI_SETTINGS["model_name"],
     temperature=AI_SETTINGS["temperature"],
     enable_thinking=AI_SETTINGS["enable_thinking"],
+    fallback_client=fallback_client,
+    fallback_model_name=AI_SETTINGS["fallback_model_name"],
 )
 
 
@@ -303,18 +387,24 @@ def get_public_ai_settings() -> Dict[str, Any]:
         "enable_thinking": settings["enable_thinking"],
         "api_key_configured": bool(settings["api_key"]),
         "api_key_hint": mask_api_key(settings["api_key"]),
+        "fallback_enabled": settings["fallback_enabled"],
+        "fallback_base_url": settings["fallback_base_url"],
+        "fallback_model_name": settings["fallback_model_name"],
+        "fallback_api_key_configured": bool(settings["fallback_api_key"]),
+        "fallback_api_key_hint": mask_api_key(settings["fallback_api_key"]),
     }
 
 
 def require_ai_settings() -> None:
     """Reject model-dependent requests until runtime settings are complete."""
     with ai_settings_lock:
-        is_configured = (
-            client is not None
-            and bool(AI_SETTINGS["base_url"])
-            and bool(AI_SETTINGS["api_key"])
-            and bool(AI_SETTINGS["model_name"])
+        primary_configured = client is not None and bool(AI_SETTINGS["model_name"])
+        fallback_configured = (
+            AI_SETTINGS["fallback_enabled"]
+            and fallback_client is not None
+            and bool(AI_SETTINGS["fallback_model_name"])
         )
+        is_configured = primary_configured or fallback_configured
     if not is_configured:
         raise HTTPException(status_code=503, detail="请先在前端完成 AI 配置")
 
@@ -339,30 +429,66 @@ async def validate_current_ai_settings() -> None:
     require_ai_settings()
     with ai_settings_lock:
         current_client = client
+        current_fallback_client = fallback_client
         settings = AI_SETTINGS.copy()
 
+    primary_error: Optional[Exception] = None
     try:
         await asyncio.wait_for(
             asyncio.to_thread(request_ai_validation_completion, current_client, settings),
             timeout=25.0,
         )
-    except asyncio.TimeoutError as exc:
-        raise HTTPException(status_code=504, detail="AI 配置校验超时，请检查服务地址或网络") from exc
-    except Exception as exc:
+        return
+    except Exception as primary_exc:
+        primary_error = primary_exc
         logger.warning(
             "上传前 AI 配置校验失败: base_url=%s model=%s error=%s",
             settings["base_url"],
             settings["model_name"],
-            exc,
+            primary_exc,
         )
-        raise HTTPException(status_code=502, detail=f"AI 配置校验失败，请检查配置: {exc}") from exc
+
+    if settings["fallback_enabled"] and current_fallback_client is not None:
+        fallback_settings = {
+            **settings,
+            "base_url": settings["fallback_base_url"],
+            "api_key": settings["fallback_api_key"],
+            "model_name": settings["fallback_model_name"],
+        }
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    request_ai_validation_completion,
+                    current_fallback_client,
+                    fallback_settings,
+                ),
+                timeout=25.0,
+            )
+            logger.info("主 AI 校验失败，备用 AI 可用，允许继续处理")
+            return
+        except Exception as fallback_exc:
+            logger.warning("备用 AI 配置校验失败: %s", fallback_exc)
+            raise HTTPException(
+                status_code=502,
+                detail=f"主 AI 和备用 AI 均不可用: {fallback_exc}",
+            ) from fallback_exc
+
+    raise HTTPException(
+        status_code=502,
+        detail=f"主 AI 不可用且未配置备用 AI: {primary_error}",
+    ) from primary_error
 
 
-def prepare_ai_settings(settings: AISettingsUpdate) -> tuple[OpenAI, Dict[str, Any]]:
+def prepare_ai_settings(
+    settings: AISettingsUpdate,
+) -> tuple[OpenAI, Optional[OpenAI], Dict[str, Any]]:
     """Validate settings and build a client without changing runtime state."""
     base_url = settings.base_url.strip().rstrip("/")
     model_name = settings.model_name.strip()
     submitted_api_key = (settings.api_key or "").strip()
+    fallback_base_url = (settings.fallback_base_url or "").strip().rstrip("/")
+    fallback_model_name = (settings.fallback_model_name or "").strip()
+    submitted_fallback_api_key = (settings.fallback_api_key or "").strip()
 
     if not base_url.startswith(("http://", "https://")):
         raise HTTPException(status_code=422, detail="Base URL 必须以 http:// 或 https:// 开头")
@@ -371,6 +497,9 @@ def prepare_ai_settings(settings: AISettingsUpdate) -> tuple[OpenAI, Dict[str, A
 
     with ai_settings_lock:
         api_key = submitted_api_key or AI_SETTINGS["api_key"]
+        fallback_api_key = (
+            submitted_fallback_api_key or AI_SETTINGS["fallback_api_key"]
+        )
     if not api_key:
         raise HTTPException(status_code=422, detail="API Key 不能为空")
 
@@ -381,12 +510,32 @@ def prepare_ai_settings(settings: AISettingsUpdate) -> tuple[OpenAI, Dict[str, A
     if next_client is None:
         raise HTTPException(status_code=422, detail="Base URL 和 API Key 不能为空")
 
-    return next_client, {
+    next_fallback_client = None
+    if settings.fallback_enabled:
+        if not fallback_base_url.startswith(("http://", "https://")):
+            raise HTTPException(status_code=422, detail="备用 Base URL 必须以 http:// 或 https:// 开头")
+        if not fallback_model_name:
+            raise HTTPException(status_code=422, detail="备用模型名称不能为空")
+        if not fallback_api_key:
+            raise HTTPException(status_code=422, detail="备用 API Key 不能为空")
+        try:
+            next_fallback_client = create_openai_client(
+                api_key=fallback_api_key,
+                base_url=fallback_base_url,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=f"备用 AI 配置无效: {exc}") from exc
+
+    return next_client, next_fallback_client, {
         "base_url": base_url,
         "api_key": api_key,
         "model_name": model_name,
         "temperature": settings.temperature,
         "enable_thinking": settings.enable_thinking,
+        "fallback_enabled": settings.fallback_enabled,
+        "fallback_base_url": fallback_base_url,
+        "fallback_api_key": fallback_api_key,
+        "fallback_model_name": fallback_model_name,
     }
 
 
@@ -406,9 +555,9 @@ async def validate_ai_settings():
 @app.put("/ai-settings")
 async def update_ai_settings(settings: AISettingsUpdate):
     """Apply model settings to subsequent graph extraction and RAG calls."""
-    global client
+    global client, fallback_client
 
-    next_client, next_settings = prepare_ai_settings(settings)
+    next_client, next_fallback_client, next_settings = prepare_ai_settings(settings)
 
     with ai_settings_lock:
         rag_agent.configure(
@@ -416,14 +565,19 @@ async def update_ai_settings(settings: AISettingsUpdate):
             model_name=next_settings["model_name"],
             temperature=next_settings["temperature"],
             enable_thinking=next_settings["enable_thinking"],
+            fallback_client=next_fallback_client,
+            fallback_model_name=next_settings["fallback_model_name"],
         )
         kg_agent.configure(
             next_client,
             model_name=next_settings["model_name"],
             temperature=next_settings["temperature"],
             enable_thinking=next_settings["enable_thinking"],
+            fallback_client=next_fallback_client,
+            fallback_model_name=next_settings["fallback_model_name"],
         )
         client = next_client
+        fallback_client = next_fallback_client
         AI_SETTINGS.update(next_settings)
 
     logger.info(
@@ -439,7 +593,7 @@ async def update_ai_settings(settings: AISettingsUpdate):
 @app.post("/ai-settings/test")
 async def test_ai_settings(settings: AISettingsUpdate):
     """Test submitted settings with a minimal request without saving them."""
-    test_client, test_settings = prepare_ai_settings(settings)
+    test_client, test_fallback_client, test_settings = prepare_ai_settings(settings)
 
     started_at = time.monotonic()
     try:
@@ -458,8 +612,31 @@ async def test_ai_settings(settings: AISettingsUpdate):
         )
         raise HTTPException(status_code=502, detail=f"AI 连接测试失败: {exc}") from exc
 
+    if test_settings["fallback_enabled"] and test_fallback_client is not None:
+        fallback_test_settings = {
+            **test_settings,
+            "base_url": test_settings["fallback_base_url"],
+            "api_key": test_settings["fallback_api_key"],
+            "model_name": test_settings["fallback_model_name"],
+        }
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    request_ai_validation_completion,
+                    test_fallback_client,
+                    fallback_test_settings,
+                ),
+                timeout=25.0,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"备用 AI 连接测试失败: {exc}") from exc
+
     latency_ms = round((time.monotonic() - started_at) * 1000)
-    return {"message": "AI 连接测试成功", "latency_ms": latency_ms}
+    return {
+        "message": "主 AI 和备用 AI 连接测试成功"
+        if test_settings["fallback_enabled"] else "AI 连接测试成功",
+        "latency_ms": latency_ms,
+    }
 
 
 @app.get("/processing-prompts/defaults")
@@ -829,6 +1006,291 @@ async def delete_session(session_id: str):
     return {"message": f"会话 {session_id} 已清除"}
 
 
+def get_source_text_path(base_name: str) -> Path:
+    """Return the private full-text source used for recovery and incremental work."""
+    return TXT_FOLDER / f"{base_name}.source.txt"
+
+
+def export_file_transfer_package(base_name: str) -> tuple[bytes, str]:
+    """Collect one completed file into a portable, re-importable ZIP package."""
+    progress = get_process_status(base_name) or {}
+    if progress.get("status", "completed") != "completed":
+        raise ValueError("只能下载已处理完成的文件")
+
+    state = chromadb_store.load_state(base_name)
+    if not state:
+        raise FileNotFoundError("找不到可导出的图谱状态")
+
+    original_filename = get_safe_filename(
+        str(state.get("original_file_type") or progress.get("original_filename") or f"{base_name}.txt")
+    )
+    processed_path = TXT_FOLDER / f"{base_name}.txt"
+    source_path = get_source_text_path(base_name)
+    graph_directory = RESULT_FOLDER / base_name
+    if not processed_path.is_file() or not graph_directory.is_dir():
+        raise FileNotFoundError("原文或图谱页面不完整，无法导出")
+
+    processed_text, _ = read_text_file(processed_path)
+    if source_path.is_file():
+        source_text, _ = read_text_file(source_path)
+    else:
+        source_text = processed_text
+
+    original_path = UPLOAD_FOLDER / original_filename
+    if original_path.is_file():
+        original_content = original_path.read_bytes()
+    else:
+        # Older completed records may predate preservation of the binary upload.
+        # Keep the package complete by exporting the normalized source as TXT.
+        original_filename = f"{base_name}.txt"
+        original_content = source_text.encode("utf-8")
+
+    graph_pages = {
+        page.name: prepare_legacy_graph_html(
+            page.read_text(encoding="utf-8")
+        ).encode("utf-8")
+        for page in sorted(graph_directory.glob("*.html"))
+        if page.is_file()
+    }
+    rag_history = chromadb_store.get_rag_history(base_name)
+    package = build_transfer_package(
+        base_name=base_name,
+        original_filename=original_filename,
+        state=state,
+        processing_status=progress,
+        original_content=original_content,
+        source_text=source_text,
+        processed_text=processed_text,
+        graph_pages=graph_pages,
+        rag_history=rag_history,
+    )
+    return package, f"{base_name}{PACKAGE_SUFFIX}"
+
+
+def import_file_transfer_package(payload: bytes) -> Dict[str, Any]:
+    """Restore a package directly into storage without invoking an AI model."""
+    imported = read_transfer_package(payload)
+    base_name = get_base_name(f"{imported.base_name}.txt")
+    original_filename = get_safe_filename(imported.original_filename)
+    if chromadb_store.load_state(base_name) is not None or (RESULT_FOLDER / base_name).exists():
+        raise FileExistsError(f"文件 {original_filename} 已存在，请先删除后再导入")
+    if (UPLOAD_FOLDER / original_filename).exists():
+        raise FileExistsError(f"原始文件 {original_filename} 已存在")
+
+    state = imported.state
+    mapping = state.get("bidirectional_mapping") or {}
+    manager = KgManager(
+        agent=kg_agent,
+        splitter=kg_splitter,
+        embedding_model=embeddings,
+        store=chromadb_store,
+    )
+    manager.file = base_name
+    manager.kg_triplet = state.get("kg_triplet") or []
+    manager.bidirectional_mapping = {
+        "entity_to_label": dict(mapping.get("entity_to_label") or {}),
+        "label_to_entities": defaultdict(
+            list,
+            mapping.get("label_to_entities") or {},
+        ),
+    }
+    manager.current_G = nx.node_link_graph(state["current_G"])
+    manager.Bolts = [tuple(block) for block in (state.get("Bolts") or [])]
+    manager.original_file_type = original_filename
+
+    result_directory = RESULT_FOLDER / base_name
+    created_paths = [
+        UPLOAD_FOLDER / original_filename,
+        get_source_text_path(base_name),
+        TXT_FOLDER / f"{base_name}.txt",
+        result_directory,
+    ]
+    try:
+        manager.save_store()
+        created_paths[0].write_bytes(imported.original_content)
+        created_paths[1].write_text(imported.source_text, encoding="utf-8")
+        created_paths[2].write_text(imported.processed_text, encoding="utf-8")
+        result_directory.mkdir(parents=True, exist_ok=False)
+        for page_name, content in imported.graph_pages.items():
+            (result_directory / page_name).write_bytes(content)
+        if imported.rag_history:
+            chromadb_store.save_rag_history(base_name, imported.rag_history)
+
+        completed_chunks = len(manager.Bolts)
+        restored_status = {
+            **{
+                key: value
+                for key, value in imported.processing_status.items()
+                if key not in {"status", "updated_at"}
+            },
+            "original_filename": original_filename,
+            "source_text_path": str(get_source_text_path(base_name)),
+            "completed_chunks": completed_chunks,
+            "total_chunks": max(
+                completed_chunks,
+                int(imported.processing_status.get("total_chunks") or 0),
+            ),
+            "imported_from_package": True,
+            "percentage": 100,
+            "partial_available": False,
+            "resumable": False,
+            "pause_requested": False,
+            "error_message": None,
+        }
+        set_process_status(base_name, "completed", **restored_status)
+    except Exception:
+        try:
+            chromadb_store.delete_rag_history([base_name])
+            chromadb_store.delete_states([base_name])
+        except Exception:
+            logger.warning("回滚失败的迁移包导入时清理数据库失败", exc_info=True)
+        for path in created_paths[:3]:
+            if path.is_file():
+                path.unlink()
+        if result_directory.is_dir():
+            shutil.rmtree(result_directory)
+        raise
+
+    return {
+        "status": "completed",
+        "message": "图谱迁移包已导入，无需重新调用 AI 处理",
+        "filename": original_filename,
+        "base_name": base_name,
+        "imported": True,
+        "percentage": 100,
+    }
+
+
+def write_processed_text(base_name: str, bolts: List[Any]) -> None:
+    """Expose only the source blocks that have a completed graph checkpoint."""
+    text_path = TXT_FOLDER / f"{base_name}.txt"
+    temporary_path = text_path.with_suffix(".txt.tmp")
+    temporary_path.write_text(
+        "\n\n".join(text for _, text in bolts),
+        encoding="utf-8",
+    )
+    temporary_path.replace(text_path)
+
+
+def render_graph_atomically(manager: KgManager, base_name: str) -> None:
+    """Render beside the live result and publish the main page only when complete."""
+    temporary_root = RESULT_FOLDER / f".{base_name}.{uuid.uuid4().hex}.tmp"
+    try:
+        manager.绘制知识图谱(base_name, 输出目录=temporary_root)
+        generated_directory = temporary_root / base_name
+        target_directory = RESULT_FOLDER / base_name
+        target_directory.mkdir(parents=True, exist_ok=True)
+        generated_files = list(generated_directory.iterdir())
+        main_page = f"{base_name}.html"
+        generated_files.sort(key=lambda path: path.name == main_page)
+        for generated_file in generated_files:
+            generated_file.replace(target_directory / generated_file.name)
+    finally:
+        shutil.rmtree(temporary_root, ignore_errors=True)
+
+
+def persist_graph_checkpoint(
+    manager: KgManager,
+    base_name: str,
+    original_filename: str,
+    completed_chunks: int,
+    total_chunks: int,
+    processing_status: str,
+) -> None:
+    """Persist a complete, viewable partial result after one block succeeds."""
+    manager.file = base_name
+    manager.original_file_type = original_filename
+    manager.三元组转有向图nx(manager.kg_triplet)
+    render_graph_atomically(manager, base_name)
+    manager.save_store()
+    write_processed_text(base_name, manager.Bolts)
+    current = get_process_status(base_name) or {}
+    effective_status = "pausing" if current.get("pause_requested") else processing_status
+    set_process_status(
+        base_name,
+        effective_status,
+        completed_chunks=completed_chunks,
+        total_chunks=total_chunks,
+        percentage=round(completed_chunks * 100 / total_chunks) if total_chunks else 0,
+        partial_available=True,
+        resumable=True,
+    )
+
+
+def should_pause_file_processing(base_name: str) -> bool:
+    return bool((get_process_status(base_name) or {}).get("pause_requested"))
+
+
+def mark_file_processing_paused(base_name: str) -> None:
+    """Publish a stable paused state without discarding the latest checkpoint."""
+    progress = get_process_status(base_name) or {}
+    completed_chunks = int(progress.get("completed_chunks") or 0)
+    result_exists = (
+        RESULT_FOLDER / base_name / f"{base_name}.html"
+    ).is_file()
+    original_filename = progress.get("original_filename")
+    source_path = get_source_text_path(base_name)
+    resumable = source_path.is_file() or bool(
+        original_filename and (UPLOAD_FOLDER / original_filename).is_file()
+    )
+    set_process_status(
+        base_name,
+        "paused",
+        pause_requested=False,
+        partial_available=bool(completed_chunks and result_exists),
+        resumable=resumable,
+        estimated_remaining_seconds=None,
+        error_message=None,
+    )
+
+
+def mark_file_processing_completed(base_name: str) -> None:
+    set_process_status(
+        base_name,
+        "completed",
+        percentage=100,
+        estimated_remaining_seconds=0,
+        partial_available=False,
+        resumable=False,
+        pause_requested=False,
+        error_message=None,
+    )
+
+
+def mark_file_processing_failed(base_name: str, error: Exception) -> None:
+    """Keep completed checkpoints and expose an explicit resumable file state."""
+    progress = get_process_status(base_name) or {}
+    completed_chunks = int(progress.get("completed_chunks") or 0)
+    if completed_chunks == 0:
+        try:
+            stored_state = chromadb_store.load_state(base_name)
+            completed_chunks = len(stored_state.get("Bolts", [])) if stored_state else 0
+        except Exception:
+            logger.warning("读取失败文件的检查点数量失败: %s", base_name, exc_info=True)
+    source_path = get_source_text_path(base_name)
+    partial_available = completed_chunks > 0 and (
+        RESULT_FOLDER / base_name / f"{base_name}.html"
+    ).is_file()
+    original_filename = progress.get("original_filename")
+    resumable = source_path.is_file() or bool(
+        original_filename and (UPLOAD_FOLDER / original_filename).is_file()
+    )
+    set_process_status(
+        base_name,
+        "interrupted" if partial_available else "error",
+        completed_chunks=completed_chunks,
+        total_chunks=max(int(progress.get("total_chunks") or 0), completed_chunks),
+        percentage=(
+            round(completed_chunks * 100 / max(int(progress.get("total_chunks") or 0), completed_chunks))
+            if completed_chunks else 0
+        ),
+        estimated_remaining_seconds=None,
+        partial_available=partial_available,
+        resumable=resumable,
+        error_message=str(error),
+    )
+
+
 def process_knowledge_graph(
     base_name: str,
     text_content: str,
@@ -836,6 +1298,7 @@ def process_knowledge_graph(
     note_type: str = "general",
     splitter=None,
     custom_prompts: Optional[Dict[str, str]] = None,
+    resume: bool = False,
 ):
     """处理文本内容生成知识图谱"""
     try:
@@ -847,15 +1310,20 @@ def process_knowledge_graph(
             logger.info(f"开始处理文件 {base_name} 的知识图谱...")
             start_time = time.time()
 
+            requested_status = "resuming" if resume else "processing"
+            processing_status = (
+                "pausing" if should_pause_file_processing(base_name) else requested_status
+            )
+
             # 更新状态为处理中
             set_process_status(
                 base_name,
-                "processing",
-                completed_chunks=0,
-                total_chunks=0,
-                percentage=0,
+                processing_status,
+                completed_chunks=(get_process_status(base_name) or {}).get("completed_chunks", 0) if resume else 0,
+                percentage=(get_process_status(base_name) or {}).get("percentage", 0) if resume else 0,
                 latest_chunk_seconds=None,
                 estimated_remaining_seconds=None,
+                error_message=None,
             )
 
             # 新建独立的KgManager实例
@@ -870,12 +1338,49 @@ def process_knowledge_graph(
             kg_manager.configure_processing_prompts(note_type, custom_prompts)
             logger.info("设置笔记类型为: %s", note_type)
 
-            # 知识图谱构建过程
+            all_blocks = kg_manager.splitter.split_text(text_content)
+            completed_offset = 0
+            blocks_to_process = all_blocks
+            if resume:
+                if not kg_manager.load_store(base_name):
+                    raise ValueError("找不到可恢复的分块检查点")
+                completed_offset = len(kg_manager.Bolts)
+                completed_texts = [text for _, text in kg_manager.Bolts]
+                source_prefix = [text for _, text in all_blocks[:completed_offset]]
+                if completed_offset > len(all_blocks) or completed_texts != source_prefix:
+                    raise ValueError("恢复源文件与已完成检查点不一致，请重新上传文件")
+                blocks_to_process = all_blocks[completed_offset:]
+
+            set_process_status(
+                base_name,
+                processing_status,
+                completed_chunks=completed_offset,
+                total_chunks=len(all_blocks),
+                percentage=round(completed_offset * 100 / len(all_blocks)) if all_blocks else 0,
+            )
+
+            checkpoint_callback = lambda manager, completed, total: persist_graph_checkpoint(
+                manager,
+                base_name,
+                original_filename,
+                completed,
+                total,
+                processing_status,
+            )
+
+            # 知识图谱构建过程；每个完成块都会形成可查看、可恢复的检查点。
             r = kg_manager.知识图谱的构建(
-                text_content,
-                progress_callback=create_chunk_progress_callback(base_name),
+                blocks_to_process,
+                progress_callback=create_chunk_progress_callback(base_name, processing_status),
+                checkpoint_callback=checkpoint_callback,
+                append=resume,
+                completed_offset=completed_offset,
+                total_chunks=len(all_blocks),
+                pause_callback=lambda: should_pause_file_processing(base_name),
             )
             kg_manager.知识融合(r)
+            if should_pause_file_processing(base_name):
+                raise ProcessingPaused("用户已暂停文件处理")
             logger.info(f"知识图谱构建完成，耗时: {time.time() - start_time:.2f}秒")
 
             # 转换为有向图
@@ -883,13 +1388,11 @@ def process_knowledge_graph(
 
             # 绘制知识图谱
             start_time = time.time()
-            kg_manager.绘制知识图谱(
-                base_name,
-                输出目录=RESULT_FOLDER,
-            )
+            render_graph_atomically(kg_manager, base_name)
             kg_manager.original_file_type = original_filename  # 使用原始文件名
 
             kg_manager.save_store()
+            (TXT_FOLDER / f"{base_name}.txt").write_text(text_content, encoding="utf-8")
             logger.info(f"知识图谱绘制完成，耗时: {time.time() - start_time:.2f}秒")
 
             # 图谱首页和所有社区子页由 KgManager 直接写入同一个结果目录。
@@ -898,12 +1401,16 @@ def process_knowledge_graph(
                 raise FileNotFoundError("未生成结果HTML文件")
 
             # 更新处理状态为已完成
-            set_process_status(base_name, "completed", percentage=100, estimated_remaining_seconds=0)
+            mark_file_processing_completed(base_name)
             logger.info(f"知识图谱处理完成: {base_name}")
 
+    except ProcessingPaused:
+        mark_file_processing_paused(base_name)
+        logger.info("文件 %s 已在安全检查点暂停", base_name)
+        raise
     except Exception as e:
         error_msg = str(e)
-        set_process_status(base_name, "error", estimated_remaining_seconds=None)
+        mark_file_processing_failed(base_name, e)
         logger.error(f"处理文件 {base_name} 出错: {error_msg}", exc_info=True)
         raise
 
@@ -924,9 +1431,10 @@ def process_uploaded_file(
         txt_path = os.path.join(TXT_FOLDER, txt_filename)
 
         # 在开始处理前将状态设置为processing
+        initial_status = "pausing" if should_pause_file_processing(base_name) else "processing"
         set_process_status(
             base_name,
-            "processing",
+            initial_status,
             completed_chunks=0,
             total_chunks=0,
             percentage=0,
@@ -959,9 +1467,26 @@ def process_uploaded_file(
             logger.error(f"文件转换失败，未生成文本文件: {txt_path}")
             raise ValueError("文件转换失败，未能生成文本内容")
 
-        # 读取转换后的文本内容
-        with open(txt_path, "r", encoding="utf-8") as f:
-            text_content = f.read()
+        # 读取并规范化转换后的文本；上传的 TXT 可能使用 GBK/GB18030/Big5。
+        text_content, detected_encoding = read_text_file(txt_path)
+        Path(txt_path).write_text(text_content, encoding="utf-8")
+        logger.info("文件 %s 使用 %s 编码，已规范化为 UTF-8", filename, detected_encoding)
+
+        source_text_path = get_source_text_path(base_name)
+        source_text_path.write_text(text_content, encoding="utf-8")
+        Path(txt_path).write_text("", encoding="utf-8")
+        set_process_status(
+            base_name,
+            "pausing" if should_pause_file_processing(base_name) else "processing",
+            original_filename=filename,
+            source_text_path=str(source_text_path),
+            note_type=note_type,
+            custom_prompts=custom_prompts or {},
+            use_img2txt=use_img2txt,
+            resume_mode="initial",
+            resumable=True,
+            partial_available=False,
+        )
 
         logger.info(f"文件 {filename} 转换完成，开始处理知识图谱")
 
@@ -975,13 +1500,16 @@ def process_uploaded_file(
         )
 
         # 处理完成后更新状态
-        set_process_status(base_name, "completed", percentage=100, estimated_remaining_seconds=0)
+        mark_file_processing_completed(base_name)
         logger.info(f"文件 {filename} 处理完成，状态已设置为completed")
 
+    except ProcessingPaused:
+        mark_file_processing_paused(base_name)
+        logger.info("文件 %s 已暂停", base_name)
     except Exception as e:
         error_msg = f"文件处理失败: {str(e)}"
         if 'base_name' in locals():  # 确保base_name已定义
-            set_process_status(base_name, "error", estimated_remaining_seconds=None)
+            mark_file_processing_failed(base_name, e)
         logger.error(error_msg, exc_info=True)
 
 
@@ -1002,12 +1530,13 @@ def process_update_file(
         new_txt_path = os.path.join(TXT_FOLDER, new_txt_filename)
 
         # 在开始处理前将状态设置为updating
+        current_progress = get_process_status(base_name) or {}
         set_process_status(
             base_name,
-            "updating",
-            completed_chunks=0,
-            total_chunks=0,
-            percentage=0,
+            "pausing" if current_progress.get("pause_requested") else "updating",
+            completed_chunks=int(current_progress.get("completed_chunks") or 0),
+            total_chunks=int(current_progress.get("total_chunks") or 0),
+            percentage=int(current_progress.get("percentage") or 0),
             latest_chunk_seconds=None,
             estimated_remaining_seconds=None,
         )
@@ -1049,13 +1578,27 @@ def process_update_file(
             logger.error(f"文件转换失败，未生成临时文件: {new_txt_path}")
             raise ValueError("文件转换失败，未能生成文本内容")
 
-        # 读取新的文本内容
-        with open(new_txt_path, "r", encoding="utf-8") as f:
-            new_text_content = f.read()
+        # 读取并规范化新文本，确保增量比较不受源文件编码影响。
+        new_text_content, detected_encoding = read_text_file(new_txt_path)
+        Path(new_txt_path).write_text(new_text_content, encoding="utf-8")
+        logger.info("更新文件 %s 使用 %s 编码，已规范化为 UTF-8", filename, detected_encoding)
+
+        source_text_path = get_source_text_path(base_name)
+        source_text_path.write_text(new_text_content, encoding="utf-8")
+        set_process_status(
+            base_name,
+            "pausing" if should_pause_file_processing(base_name) else "updating",
+            original_filename=filename,
+            source_text_path=str(source_text_path),
+            note_type=note_type,
+            custom_prompts=custom_prompts or {},
+            use_img2txt=use_img2txt,
+            resume_mode="update",
+            resumable=True,
+        )
 
         # 读取原始文本内容
-        with open(txt_path, "r", encoding="utf-8") as f:
-            original_text_content = f.read()
+        original_text_content, _ = read_text_file(txt_path)
 
         logger.info(f"文件 {filename} 转换完成，开始比较内容差异")
 
@@ -1067,7 +1610,7 @@ def process_update_file(
             os.remove(new_txt_path)
 
             # 更新处理状态为已完成
-            set_process_status(base_name, "completed", percentage=100, estimated_remaining_seconds=0)
+            mark_file_processing_completed(base_name)
             return
 
         # 增量更新前，先加载原有知识图谱
@@ -1082,8 +1625,21 @@ def process_update_file(
         new_kg_triplet = kg_manager.增量更新(
             new_text_content,
             progress_callback=create_chunk_progress_callback(base_name, status="updating"),
+            checkpoint_callback=lambda manager, completed, total: persist_graph_checkpoint(
+                manager,
+                base_name,
+                filename,
+                completed,
+                total,
+                "updating",
+            ),
+            pause_callback=lambda: should_pause_file_processing(base_name),
         )
+        if should_pause_file_processing(base_name):
+            raise ProcessingPaused("用户已暂停文件处理")
         new_kg_triplet = kg_manager.知识融合(new_kg_triplet)
+        if should_pause_file_processing(base_name):
+            raise ProcessingPaused("用户已暂停文件处理")
 
         # 检查更新结果是否为空
         if not new_kg_triplet or len(new_kg_triplet) == 0:
@@ -1094,17 +1650,14 @@ def process_update_file(
             os.remove(new_txt_path)  # 删除临时文件
 
             # 更新处理状态为已完成
-            set_process_status(base_name, "completed", percentage=100, estimated_remaining_seconds=0)
+            mark_file_processing_completed(base_name)
             return
 
         # 转换为有向图
         kg_manager.三元组转有向图nx(new_kg_triplet)
 
         # 绘制更新后的知识图谱
-        kg_manager.绘制知识图谱(
-            base_name,
-            输出目录=RESULT_FOLDER,
-        )
+        render_graph_atomically(kg_manager, base_name)
 
         # 更新完成后，用新文件替换旧文件
         shutil.copy(new_txt_path, txt_path)
@@ -1130,13 +1683,16 @@ def process_update_file(
             raise FileNotFoundError("未生成结果HTML文件")
 
         # 更新处理状态为已完成
-        set_process_status(base_name, "completed", percentage=100, estimated_remaining_seconds=0)
+        mark_file_processing_completed(base_name)
         logger.info(f"知识图谱增量更新完成: {base_name}")
 
+    except ProcessingPaused:
+        mark_file_processing_paused(base_name)
+        logger.info("文件 %s 已暂停增量更新", base_name)
     except Exception as e:
         error_msg = f"文件增量更新失败: {str(e)}"
         if 'base_name' in locals():  # 确保base_name已定义
-            set_process_status(base_name, "error", estimated_remaining_seconds=None)
+            mark_file_processing_failed(base_name, e)
         logger.error(error_msg, exc_info=True)
 
         # 清理临时文件
@@ -1145,6 +1701,145 @@ def process_update_file(
                 os.remove(new_txt_path)
             except OSError:
                 logger.warning("清理临时文件失败: %s", new_txt_path, exc_info=True)
+
+
+def process_resume_file(base_name: str) -> None:
+    """Continue an interrupted file from its last completed block."""
+    progress = get_process_status(base_name) or {}
+    source_path = Path(progress.get("source_text_path") or get_source_text_path(base_name))
+    original_filename = progress.get("original_filename") or f"{base_name}.txt"
+    try:
+        if progress.get("resume_mode") == "update":
+            original_path = UPLOAD_FOLDER / original_filename
+            txt_path = TXT_FOLDER / f"{base_name}.txt"
+            if not original_path.is_file() or not txt_path.is_file():
+                raise FileNotFoundError("恢复增量更新所需的原文件或检查点文本不存在")
+            process_update_file(
+                str(original_path),
+                original_filename,
+                str(txt_path),
+                bool(progress.get("use_img2txt")),
+                progress.get("note_type", "general"),
+                progress.get("custom_prompts") or {},
+            )
+            return
+
+        if not source_path.is_file():
+            original_path = UPLOAD_FOLDER / original_filename
+            if not original_path.is_file():
+                raise FileNotFoundError("恢复所需的原文件和转换文本均不存在")
+            process_uploaded_file(
+                str(original_path),
+                original_filename,
+                progress.get("note_type", "general"),
+                bool(progress.get("use_img2txt")),
+                progress.get("custom_prompts") or {},
+            )
+            return
+        text_content, _ = read_text_file(source_path)
+        file_ext = Path(original_filename).suffix.lower()
+        stored_state = chromadb_store.load_state(base_name)
+        checkpoint_count = len(stored_state.get("Bolts", [])) if stored_state else 0
+        has_checkpoint = checkpoint_count > 0
+        if checkpoint_count != int(progress.get("completed_chunks") or 0):
+            set_process_status(
+                base_name,
+                "resuming",
+                completed_chunks=checkpoint_count,
+                partial_available=has_checkpoint,
+            )
+        process_knowledge_graph(
+            base_name,
+            text_content,
+            original_filename,
+            progress.get("note_type", "general"),
+            get_splitter_for_extension(file_ext),
+            progress.get("custom_prompts") or {},
+            resume=has_checkpoint,
+        )
+    except ProcessingPaused:
+        mark_file_processing_paused(base_name)
+        logger.info("文件 %s 已暂停继续处理", base_name)
+    except Exception as exc:
+        mark_file_processing_failed(base_name, exc)
+        logger.error("继续处理文件 %s 失败", base_name, exc_info=True)
+
+
+@app.post("/pause-processing/{filename}")
+async def pause_processing(filename: str):
+    """Request a cooperative pause after the current block checkpoint."""
+    filename = get_safe_filename(filename)
+    base_name = get_base_name(filename)
+    active_statuses = {"uploading", "processing", "updating", "resuming"}
+    with process_status_lock:
+        current = PROCESS_STATUS.get(base_name)
+        if not current:
+            raise HTTPException(status_code=404, detail="没有找到该文件的处理记录")
+        if current.get("status") == "pausing":
+            return JSONResponse({
+                "status": "pausing",
+                "message": "文件正在等待当前文本块完成后暂停",
+                "filename": filename,
+            })
+        if current.get("status") not in active_statuses:
+            raise HTTPException(status_code=409, detail="该文件当前不在处理中")
+        next_status = {
+            **current,
+            "status": "pausing",
+            "pause_requested": True,
+            "updated_at": time.time(),
+        }
+        PROCESS_STATUS[base_name] = next_status
+        persist_process_status(base_name, next_status)
+
+    return JSONResponse({
+        "status": "pausing",
+        "message": "将在当前文本块完成并保存后暂停",
+        "filename": filename,
+    })
+
+
+@app.post("/resume-processing/{filename}")
+async def resume_processing(
+    filename: str,
+    background_tasks: BackgroundTasks,
+):
+    """Resume only the unprocessed blocks of an interrupted file."""
+    await validate_current_ai_settings()
+    filename = get_safe_filename(filename)
+    base_name = get_base_name(filename)
+    progress = get_process_status(base_name)
+    if not progress:
+        raise HTTPException(status_code=404, detail="没有找到该文件的处理记录")
+    if progress.get("status") in {"uploading", "processing", "updating", "resuming", "pausing"}:
+        raise HTTPException(status_code=409, detail="文件当前仍在处理中")
+    if progress.get("status") not in {"paused", "interrupted", "error"}:
+        raise HTTPException(status_code=409, detail="该文件当前不需要继续处理")
+    source_path = Path(progress.get("source_text_path") or get_source_text_path(base_name))
+    original_filename = progress.get("original_filename") or filename
+    if not source_path.is_file() and not (UPLOAD_FOLDER / original_filename).is_file():
+        raise HTTPException(status_code=409, detail="缺少恢复源文本，请重新上传原文件")
+
+    completed = int(progress.get("completed_chunks") or 0)
+    total = int(progress.get("total_chunks") or 0)
+    set_process_status(
+        base_name,
+        "resuming",
+        completed_chunks=completed,
+        total_chunks=total,
+        percentage=round(completed * 100 / total) if total else 0,
+        error_message=None,
+        resumable=True,
+        pause_requested=False,
+    )
+    background_tasks.add_task(process_resume_file, base_name)
+    return JSONResponse({
+        "status": "resuming",
+        "message": "已从上次完成的文本块继续处理",
+        "filename": filename,
+        "completed_chunks": completed,
+        "total_chunks": total,
+    })
 
 
 @app.post("/upload")
@@ -1176,8 +1871,29 @@ async def upload_file(
     异常：
         上传或处理失败时返回500。
     """
-    # Validate the active credentials/model before touching the uploaded file or
-    # changing any existing graph state. A failed check leaves no processing task.
+    filename = get_safe_filename(file.filename or "")
+    if is_transfer_package_filename(filename):
+        package_content = bytearray()
+        while chunk := await file.read(1024 * 1024):
+            package_content.extend(chunk)
+            if len(package_content) > MAX_TRANSFER_PACKAGE_SIZE:
+                raise HTTPException(status_code=413, detail="图谱迁移包不能超过 100 MB")
+        try:
+            imported = await asyncio.to_thread(
+                import_file_transfer_package,
+                bytes(package_content),
+            )
+            return JSONResponse(imported)
+        except FileExistsError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except (ValueError, FileNotFoundError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:
+            logger.error("导入图谱迁移包失败: %s", exc, exc_info=True)
+            raise HTTPException(status_code=500, detail=f"导入图谱迁移包失败: {exc}") from exc
+
+    # Normal source files need a working primary or fallback AI. Transfer
+    # packages take the branch above and never invoke model validation.
     await validate_current_ai_settings()
     try:
         use_img2txt_bool = use_img2txt.strip().lower() in {"true", "1", "yes", "open"}
@@ -1191,7 +1907,6 @@ async def upload_file(
         logger.info(f"收到图片文本识别参数: {use_img2txt} -> {use_img2txt_bool}")
 
         # 保存原始文件
-        filename = get_safe_filename(file.filename or "")
         base_name = get_base_name(filename)
         file_ext = Path(filename).suffix.lower()
         if file_ext not in FILE_PROCESSORS and file_ext != ".txt":
@@ -1222,15 +1937,7 @@ async def upload_file(
         result_file = RESULT_FOLDER / base_name / f"{base_name}.html"
 
         if failed_retry:
-            # A failed run may leave a partial graph and converted text behind.
-            # Discard them so this upload is rebuilt from the source file.
-            if file_exists:
-                kg_manager.delete_store([base_name])
-            shutil.rmtree(RESULT_FOLDER / base_name, ignore_errors=True)
-            txt_path.unlink(missing_ok=True)
-            file_exists = False
-            existing_txt = False
-            logger.info("文件 %s 上次处理失败，本次将重新完整处理", filename)
+            logger.info("文件 %s 上次处理未完成，将保留检查点并执行增量处理", filename)
 
         can_incrementally_update = file_exists and existing_txt and result_file.is_file()
 
@@ -1245,14 +1952,28 @@ async def upload_file(
         # 设置状态和后台处理任务
         if can_incrementally_update:
             # 文件在数据库中已存在，执行增量更新
+            existing_state = chromadb_store.load_state(base_name) or {}
+            existing_chunk_count = len(existing_state.get("Bolts", []))
             set_process_status(
                 base_name,
                 "updating",
-                completed_chunks=0,
-                total_chunks=0,
-                percentage=0,
+                completed_chunks=existing_chunk_count,
+                total_chunks=max(
+                    int((previous_progress or {}).get("total_chunks") or 0),
+                    existing_chunk_count,
+                ),
+                percentage=int((previous_progress or {}).get("percentage") or 0),
                 latest_chunk_seconds=None,
                 estimated_remaining_seconds=None,
+                original_filename=filename,
+                note_type=note_type,
+                custom_prompts=custom_prompts or {},
+                use_img2txt=use_img2txt_bool,
+                resume_mode="update",
+                source_text_path=str(get_source_text_path(base_name)),
+                partial_available=bool(existing_chunk_count and result_file.is_file()),
+                resumable=True,
+                pause_requested=False,
             )
             logger.info(f"文件 {filename} 已存在，将进行增量更新")
             background_tasks.add_task(
@@ -1281,6 +2002,14 @@ async def upload_file(
                 percentage=0,
                 latest_chunk_seconds=None,
                 estimated_remaining_seconds=None,
+                original_filename=filename,
+                note_type=note_type,
+                custom_prompts=custom_prompts or {},
+                use_img2txt=use_img2txt_bool,
+                resume_mode="initial",
+                resumable=False,
+                partial_available=False,
+                pause_requested=False,
             )
             background_tasks.add_task(
                 process_uploaded_file,
@@ -1336,8 +2065,12 @@ async def get_processing_status(filename: str):
         "uploading": "上传中",
         "processing": "处理中",
         "updating": "增量更新中",
+        "resuming": "继续处理中",
+        "pausing": "暂停中",
+        "paused": "已暂停",
         "completed": "已完成",
-        "error": "失败"
+        "interrupted": "部分完成，可继续",
+        "error": "处理失败，可重试"
     }
 
     if progress:
@@ -1355,6 +2088,9 @@ async def get_processing_status(filename: str):
             "percentage": progress.get("percentage", 0),
             "latest_chunk_seconds": progress.get("latest_chunk_seconds"),
             "estimated_remaining_seconds": progress.get("estimated_remaining_seconds"),
+            "partial_available": bool(progress.get("partial_available")),
+            "resumable": bool(progress.get("resumable")),
+            "error_message": progress.get("error_message"),
         })
     else:
         return JSONResponse(
@@ -1386,8 +2122,7 @@ async def get_file_content(filename: str):
 
     if os.path.exists(txt_path):
         try:
-            with open(txt_path, "r", encoding="utf-8") as f:
-                content = f.read()
+            content, _ = read_text_file(txt_path)
             return JSONResponse({"content": content})
         except Exception as e:
             error_msg = str(e)
@@ -1401,6 +2136,36 @@ async def get_file_content(filename: str):
             status_code=404,
             content={"error": "文件不存在或尚未完成转换"}
         )
+
+
+@app.get("/export-package/{filename}")
+async def export_package(filename: str):
+    """Download original content, graph pages, and restorable processing data."""
+    filename = get_safe_filename(filename)
+    base_name = get_base_name(filename)
+    try:
+        package, download_name = await asyncio.to_thread(
+            export_file_transfer_package,
+            base_name,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("导出图谱迁移包失败: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"导出图谱迁移包失败: {exc}") from exc
+
+    return StreamingResponse(
+        iter([package]),
+        media_type="application/zip",
+        headers={
+            "Content-Length": str(len(package)),
+            "Content-Disposition": (
+                f"attachment; filename*=utf-8''{quote(download_name, safe='')}"
+            ),
+        },
+    )
 
 
 @app.get("/result-page/{graph_name}/{page_name}")
@@ -1424,9 +2189,30 @@ async def get_result_page(graph_name: str, page_name: str):
     return get_graph_html_response(result_path, graph_name, page_name)
 
 
+@app.get("/graph-assets/{asset_name}")
+async def get_graph_asset(asset_name: str):
+    """Serve the installed PyVis runtime locally with long-lived browser caching."""
+    try:
+        asset_path = get_local_vis_asset_path(asset_name)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if not asset_path.is_file():
+        raise HTTPException(status_code=404, detail="图谱资源不存在")
+    media_type = "text/css" if asset_name.endswith(".css") else "text/javascript"
+    return FileResponse(
+        asset_path,
+        media_type=media_type,
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
+
+
 def get_graph_html_response(result_path: Path, graph_name: str, page_name: str) -> HTMLResponse:
     """Serve graph HTML with a stable base for relative page navigation."""
     html_content = result_path.read_text(encoding="utf-8")
+    html_content = prepare_legacy_graph_html(
+        html_content,
+        asset_base_url="/api/graph-assets",
+    )
     if "<head>" in html_content:
         html_content = html_content.replace(
             "<head>", '<head><base href="./">', 1
@@ -1543,12 +2329,15 @@ async def list_files():
         db_metadatas = db_files.get('metadatas', [])
 
         # 获取当前正在处理的文件（从PROCESS_STATUS获取）
-        processing_statuses = ["uploading", "processing", "updating"]
+        tracked_statuses = {
+            "uploading", "processing", "updating", "resuming", "pausing",
+            "paused", "interrupted", "error",
+        }
         with process_status_lock:
             processing_files = {
                 base_name: progress.copy()
                 for base_name, progress in PROCESS_STATUS.items()
-                if progress["status"] in processing_statuses
+                if progress["status"] in tracked_statuses
             }
 
         # 状态映射，用于前端展示
@@ -1556,8 +2345,12 @@ async def list_files():
             "uploading": "上传中",
             "processing": "处理中",
             "updating": "增量更新中",
+            "resuming": "继续处理中",
+            "pausing": "暂停中",
+            "paused": "已暂停",
             "completed": "已完成",
-            "error": "失败"
+            "interrupted": "部分完成，可继续",
+            "error": "处理失败，可重试"
         }
 
         # 合并结果：先处理数据库中的文件
@@ -1582,6 +2375,9 @@ async def list_files():
                 "completed_chunks": progress.get("completed_chunks", 0),
                 "total_chunks": progress.get("total_chunks", 0),
                 "estimated_remaining_seconds": progress.get("estimated_remaining_seconds"),
+                "partial_available": bool(progress.get("partial_available")),
+                "resumable": bool(progress.get("resumable")),
+                "error_message": progress.get("error_message"),
             })
 
         # 再添加仅在PROCESS_STATUS中的文件（正在处理但尚未添加到数据库的文件）
@@ -1591,13 +2387,16 @@ async def list_files():
                 status = progress["status"]
                 display_status = status_map.get(status, status)
                 processed_files.append({
-                    "filename": f"{base_name}.txt",  # 默认使用txt扩展名
+                    "filename": progress.get("original_filename") or f"{base_name}.txt",
                     "status": status,
                     "display_status": display_status,
                     "percentage": progress.get("percentage", 0),
                     "completed_chunks": progress.get("completed_chunks", 0),
                     "total_chunks": progress.get("total_chunks", 0),
                     "estimated_remaining_seconds": progress.get("estimated_remaining_seconds"),
+                    "partial_available": bool(progress.get("partial_available")),
+                    "resumable": bool(progress.get("resumable")),
+                    "error_message": progress.get("error_message"),
                 })
 
         return JSONResponse({"files": processed_files})
@@ -1629,11 +2428,19 @@ async def delete_file(filename: str):
     try:
         filename = get_safe_filename(filename)
         base_name = get_base_name(filename)
+        progress = get_process_status(base_name) or {}
+        if progress.get("status") in {
+            "uploading", "processing", "updating", "resuming", "pausing"
+        }:
+            raise HTTPException(status_code=409, detail="请先暂停文件处理，再执行删除")
         kg_manager.delete_store([base_name])
         shutil.rmtree(RESULT_FOLDER / base_name, ignore_errors=True)
         for file_path in (
             UPLOAD_FOLDER / filename,
             TXT_FOLDER / f"{base_name}.txt",
+            get_source_text_path(base_name),
+            TXT_FOLDER / f"{base_name}_new.txt",
+            STATUS_FOLDER / f"{base_name}.json",
             # Clean up a flat result produced by earlier versions as well.
             RESULT_FOLDER / f"{base_name}.html",
         ):

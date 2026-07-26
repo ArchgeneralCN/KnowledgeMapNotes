@@ -20,6 +20,9 @@ https://github.com/user-attachments/assets/5e9e6ffd-4e18-4915-b3a4-85198eb8bb0f
 - **HybridRAG 问答**：结合向量召回、实体识别和图谱社区信息，支持普通响应、SSE 流式响应、停止生成和历史上下文。
 - **图谱可视化**：支持节点与关系检索、高亮、边权重展示，以及大图谱的 Louvain 社区总览和详情页。
 - **知识库管理**：支持文件搜索与筛选、原文预览与下载、主要实体查看、删除文件和单独清理 RAG 历史。
+- **断点处理**：图谱构建按文本块保存检查点，可暂停任务并从上次完成位置继续处理。
+- **故障自动接管**：主 AI 请求失败或返回无效 JSON 时，自动切换到备用 AI 继续当前文本块。
+- **图谱迁移包**：已完成文件可导出 `.kmn.zip`，包含原始文档、图谱页面、处理状态和 RAG 历史；拖拽到另一系统即可恢复，不重新调用 AI。
 - **灵活的结果工作区**：原文、知识图谱和 RAG 面板可并排查看、隐藏或拖动调整宽度。
 - **运行时 AI 配置**：后端无需预先填写文本模型 Base URL 和 API Key；启动后可在前端填写、测试连接并保存到当前进程。
 - **单进程运行**：FastAPI 可直接托管 `frontend/dist`，构建前端后只需启动后端即可使用完整 Web 应用。
@@ -34,6 +37,14 @@ https://github.com/user-attachments/assets/5e9e6ffd-4e18-4915-b3a4-85198eb8bb0f
 - 加强前端内容安全：Markdown 禁止原始 HTML 并经过 DOMPurify 清理，外部链接使用安全属性，文件路径参数统一编码。
 - 更新前端依赖并替换旧 SVG 加载方案，当前 `npm audit` 无已知漏洞。
 - 后端新增前端静态资源托管、SPA 路由回退和 `/api` 前缀兼容。
+
+## 待更新计划
+
+- 新增通过图对各个笔记间建立宏观联系图（寻找公共知识）
+- 支持用户自主新增、删除和修改节点与关系
+- 对 RAG 问答使用到的节点和关系进行高亮定位
+- 允许在线编辑笔记文件，并支持同步更新图谱等内容
+- 新增历史版本控制功能
 
 ## 技术栈
 
@@ -85,6 +96,15 @@ API_KEY=
 MODEL_NAME=
 TEMPERATURE=0
 ENABLE_THINKING=False
+AI_MAX_OUTPUT_TOKENS=8192
+AI_MAX_OUTPUT_PARAMETER=max_tokens
+RELATION_TEXT_BATCH_CHARS=2000
+RELATION_SOURCE_BATCH_SIZE=20
+RELATION_MAX_SPLIT_DEPTH=10
+FALLBACK_ENABLED=False
+FALLBACK_BASE_URL=
+FALLBACK_API_KEY=
+FALLBACK_MODEL_NAME=
 
 # PDF 图片内容识别，可选
 VL_API_KEY=
@@ -262,10 +282,13 @@ RERANK_MODEL=/app/models/bge-reranker-base
 3. 在文件列表查看处理状态和分块进度。
 4. 处理完成后点击文件进入结果工作区。
 
+处理中可通过文件右键菜单暂停任务；后端会在当前文本块完成并保存检查点后安全停止。之后选择继续处理即可从检查点恢复，无需重复已完成的 AI 请求。
+
 同名文件的处理规则：
 
 - 已有完整文本、知识库和图谱结果时，前端会询问是否执行增量更新。
 - 上次处理状态为失败时，重新上传不会执行增量更新；后端会删除可能残留的文本、图谱结果和知识库记录，然后完整重建。
+- 已完成文件可在右键菜单中下载 `.kmn.zip` 迁移包。迁移包本身是 ZIP，可直接解压查看原始文档和 HTML 图谱，也可拖拽回上传区完整恢复数据。
 - 数据不完整时，即使文件名相同也会执行完整处理，避免在缺失结果上进行增量更新。
 
 ### 查看结果
@@ -309,7 +332,10 @@ RERANK_MODEL=/app/models/bge-reranker-base
 | `POST` | `/ai-settings/test` | 测试提交的模型配置，不保存设置 |
 | `GET` | `/processing-prompts/defaults` | 获取当前版本的通用三阶段处理提示词 |
 | `POST` | `/upload` | 上传文档并开始完整处理或增量更新 |
+| `GET` | `/export-package/{filename}` | 下载可跨系统恢复的原文与图谱迁移包 |
 | `GET` | `/processing-status/{filename}` | 查询状态、分块进度和预计剩余时间 |
+| `POST` | `/pause-processing/{filename}` | 请求在当前文本块完成后暂停处理 |
+| `POST` | `/resume-processing/{filename}` | 从已保存的检查点继续处理 |
 | `GET` | `/list-files` | 获取知识库文件列表 |
 | `GET` | `/file-content/{filename}` | 获取转换后的文本内容 |
 | `GET` | `/file-entities/{filename}?count=5` | 获取文件的主要实体 |

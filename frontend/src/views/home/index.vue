@@ -243,6 +243,29 @@ const abortController = ref(null); // 用于取消请求的控制器
 const fileChatStates = ref({}); // 存储每个文件的聊天状态
 const processingTimers = new Map();
 let knowledgeGraphRequestId = 0;
+let knowledgeGraphReadyTimer = null;
+const fileContextMenu = reactive({
+  visible: false,
+  x: 0,
+  y: 0,
+  file: null
+});
+
+const closeFileContextMenu = () => {
+  fileContextMenu.visible = false;
+  fileContextMenu.file = null;
+};
+
+const openFileContextMenu = (event, file) => {
+  event.preventDefault();
+  event.stopPropagation();
+  const menuWidth = 176;
+  const menuHeight = 260;
+  fileContextMenu.file = file;
+  fileContextMenu.x = Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8));
+  fileContextMenu.y = Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8));
+  fileContextMenu.visible = true;
+};
 
 // 添加文件内容相关状态
 const fileContent = ref('');
@@ -266,6 +289,29 @@ const fileContentStats = computed(() => {
 // 在 script setup 部分添加
 const knowledgeGraphUrl = ref(null);
 const knowledgeGraphLoading = ref(false);
+const knowledgeGraphFrameRef = ref(null);
+
+const finishKnowledgeGraphLoading = () => {
+  if (knowledgeGraphReadyTimer) clearTimeout(knowledgeGraphReadyTimer);
+  knowledgeGraphReadyTimer = null;
+  knowledgeGraphLoading.value = false;
+};
+
+const handleKnowledgeGraphReadyMessage = (event) => {
+  if (
+    event.data?.type === 'knowledge-graph-ready'
+    && event.source === knowledgeGraphFrameRef.value?.contentWindow
+  ) {
+    finishKnowledgeGraphLoading();
+  }
+};
+
+const handleKnowledgeGraphFrameLoad = () => {
+  // New graph pages notify after their first canvas draw. Keep a short fallback
+  // for graph packages created by older versions that do not send the event.
+  if (knowledgeGraphReadyTimer) clearTimeout(knowledgeGraphReadyTimer);
+  knowledgeGraphReadyTimer = setTimeout(finishKnowledgeGraphLoading, 1800);
+};
 
 // 修改主题相关状态
 const themeOptions = [
@@ -369,6 +415,7 @@ const fetchKnowledgeGraph = async (filename) => {
 
   try {
     knowledgeGraphLoading.value = true;
+    if (knowledgeGraphReadyTimer) clearTimeout(knowledgeGraphReadyTimer);
 
     // Use the directory-shaped page URL as the iframe document URL. Community
     // links remain valid even when an older backend returns an empty <base>.
@@ -385,11 +432,8 @@ const fetchKnowledgeGraph = async (filename) => {
     }
   } catch (error) {
     console.error('获取知识图谱失败:', error);
+    finishKnowledgeGraphLoading();
     ElMessage.error('获取知识图谱失败');
-  } finally {
-    if (requestId === knowledgeGraphRequestId) {
-      knowledgeGraphLoading.value = false;
-    }
   }
 };
 
@@ -464,6 +508,11 @@ const loadChatHistory = (filename) => {
 
 // 页面加载时获取历史文件列表
 onMounted(async () => {
+  window.addEventListener('click', closeFileContextMenu);
+  window.addEventListener('blur', closeFileContextMenu);
+  window.addEventListener('resize', closeFileContextMenu);
+  window.addEventListener('scroll', closeFileContextMenu, true);
+  window.addEventListener('message', handleKnowledgeGraphReadyMessage);
   const savedFileListWidth = Number(localStorage.getItem('file-list-width'));
   if (Number.isFinite(savedFileListWidth)) {
     fileListWidth.value = Math.min(
@@ -497,7 +546,10 @@ onMounted(async () => {
         completedChunks: file.completed_chunks || 0,
         totalChunks: file.total_chunks || 0,
         latestChunkSeconds: file.latest_chunk_seconds,
-        estimatedRemainingSeconds: file.estimated_remaining_seconds
+        estimatedRemainingSeconds: file.estimated_remaining_seconds,
+        partialAvailable: Boolean(file.partial_available),
+        resumable: Boolean(file.resumable),
+        errorMessage: file.error_message || ''
       }));
 
       // 初始化过滤后的文件列表
@@ -507,7 +559,7 @@ onMounted(async () => {
       uploadFileList.value.forEach(file => {
         // 包括所有处理中状态
         const processingStatuses = [
-          'uploading', 'processing', 'updating'
+          'uploading', 'processing', 'updating', 'resuming', 'pausing'
         ];
 
         if (processingStatuses.includes(file.status)) {
@@ -570,7 +622,7 @@ const deleteFile = async (file) => {
 // 删除RAG历史记录功能
 const deleteRagHistory = async (file, event) => {
   // 阻止事件冒泡，防止触发文件查看
-  event.stopPropagation();
+  event?.stopPropagation();
 
   try {
     // 添加确认弹窗
@@ -1015,7 +1067,24 @@ const validateAiSettingsBeforeUpload = async () => {
 };
 
 const beforeUpload = async (file) => {
-  if (!await validateAiSettingsBeforeUpload()) return false;
+  const isTransferPackage = file.name.toLowerCase().endsWith('.kmn.zip');
+  if (!isTransferPackage && !await validateAiSettingsBeforeUpload()) return false;
+
+  if (isTransferPackage) {
+    uploadFileList.value.push({
+      uid: Date.now(),
+      name: file.name,
+      status: 'uploading',
+      display_status: '导入迁移包',
+      size: file.size,
+      percentage: 0,
+      completedChunks: 0,
+      totalChunks: 0,
+      isTransferPackage: true
+    });
+    fileListExpand.value = true;
+    return true;
+  }
 
   // 检查文件是否已存在
   const existingFile = uploadFileList.value.find(item => item.name === file.name);
@@ -1089,6 +1158,17 @@ const onUploadProgress = (event, file) => {
 const onUploadSuccess = (response, file) => {
   const targetFile = uploadFileList.value.find(item => item.name === file.name);
   if (targetFile) {
+    if (response?.imported) {
+      targetFile.name = response.filename;
+      targetFile.status = 'completed';
+      targetFile.display_status = '已导入';
+      targetFile.percentage = 100;
+      targetFile.isTransferPackage = false;
+      targetFile.partialAvailable = false;
+      targetFile.resumable = false;
+      ElMessage.success(response.message || '图谱迁移包已导入');
+      return;
+    }
     // 后端会根据处理状态和结果完整性决定是否允许增量更新。
     targetFile.isUpdate = Boolean(response?.is_update);
     if (targetFile.isUpdate) {
@@ -1127,7 +1207,7 @@ const checkFileProcessingStatus = async (file) => {
 
   const poll = async () => {
     await updateFileStatus(file);
-    const finished = file.status === 'completed' || file.status === 'error';
+    const finished = ['completed', 'paused', 'interrupted', 'error'].includes(file.status);
 
     if (finished || Date.now() - startedAt >= timeout) {
       stopFileStatusPolling(filename);
@@ -1152,6 +1232,9 @@ const updateFileStatus = async (file) => {
       file.totalChunks = response.data.total_chunks || 0;
       file.latestChunkSeconds = response.data.latest_chunk_seconds;
       file.estimatedRemainingSeconds = response.data.estimated_remaining_seconds;
+      file.partialAvailable = Boolean(response.data.partial_available);
+      file.resumable = Boolean(response.data.resumable);
+      file.errorMessage = response.data.error_message || '';
       if (response.data.display_status) {
         file.display_status = response.data.display_status;
       } else {
@@ -1183,6 +1266,76 @@ const onUploadError = (error, file) => {
   }
 }
 
+const pauseFileProcessing = async (file) => {
+  if (!file?.name || !['uploading', 'processing', 'updating', 'resuming'].includes(file.status)) {
+    ElMessage.warning('该文件当前无法暂停');
+    return;
+  }
+
+  try {
+    const response = await api.post(`/pause-processing/${encodePathSegment(file.name)}`);
+    file.status = response.data?.status || 'pausing';
+    file.display_status = '暂停中';
+    ElMessage.info('将在当前文本块完成并保存后暂停');
+    checkFileProcessingStatus(file);
+  } catch (error) {
+    ElMessage.error(getApiErrorMessage(error, '暂停处理失败'));
+  }
+};
+
+const resumeFileProcessing = async (file) => {
+  if (!file?.name || !file.resumable) {
+    ElMessage.warning('缺少恢复数据，请重新上传原文件');
+    return;
+  }
+
+  try {
+    const response = await api.post(`/resume-processing/${encodePathSegment(file.name)}`);
+    file.status = response.data?.status || 'resuming';
+    file.display_status = '继续处理中';
+    file.errorMessage = '';
+    ElMessage.success('已从上次完成的文本块继续处理');
+    checkFileProcessingStatus(file);
+  } catch (error) {
+    ElMessage.error(getApiErrorMessage(error, '继续处理失败'));
+  }
+};
+
+const downloadTransferPackage = async (file) => {
+  if (!file?.name || file.status !== 'completed') return;
+  try {
+    const response = await api.get(
+      `/export-package/${encodePathSegment(file.name)}`,
+      { responseType: 'blob' }
+    );
+    const baseName = file.name.replace(/\.[^.]+$/, '');
+    const blobUrl = URL.createObjectURL(response.data);
+    const link = document.createElement('a');
+    link.href = blobUrl;
+    link.download = `${baseName}.kmn.zip`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(blobUrl);
+    ElMessage.success('迁移包下载已开始');
+  } catch (error) {
+    ElMessage.error(getApiErrorMessage(error, '下载图谱迁移包失败'));
+  }
+};
+
+const handleFileContextAction = async (action) => {
+  const file = fileContextMenu.file;
+  closeFileContextMenu();
+  if (!file) return;
+
+  if (action === 'pause') await pauseFileProcessing(file);
+  if (action === 'resume') await resumeFileProcessing(file);
+  if (action === 'view') await viewFileResult(file);
+  if (action === 'download-package') await downloadTransferPackage(file);
+  if (action === 'clear-history') await deleteRagHistory(file);
+  if (action === 'delete') await deleteFile(file);
+};
+
 // 添加handleSearch函数，这个函数在搜索框输入时被调用，但之前未定义
 const handleSearch = () => {
   handleFilter();
@@ -1190,7 +1343,10 @@ const handleSearch = () => {
 
 // 查看文件结果
 const viewFileResult = async (file) => {
-  if (file.status === 'completed') {
+  if (
+    file.status === 'completed'
+    || (['paused', 'interrupted'].includes(file.status) && file.partialAvailable)
+  ) {
     try {
       // 如果切换了文件，保存当前文件的聊天记录
       if (currentChatFile.value && currentChatFile.value !== file.name) {
@@ -1258,7 +1414,9 @@ const viewFileResult = async (file) => {
       ElMessage.error('查看文件结果失败');
     }
   } else if (file.status === 'error') {
-    ElMessage.warning(`文件 ${file.name} 处理失败，请重新上传原文件后重试`);
+    ElMessage.warning(file.resumable
+      ? `文件 ${file.name} 处理失败，可点击“继续处理”重试`
+      : `文件 ${file.name} 处理失败，请重新上传原文件后重试`);
   } else {
     // 对于uploading、processing等状态，只显示提示
     ElMessage.info(`文件 ${file.name} 正在${file.display_status || getStatusText(file.status)}，请稍后查看`);
@@ -1280,6 +1438,7 @@ const closeResultView = () => {
     localStorage.setItem(`chat_${currentChatFile.value}`, JSON.stringify(chatHistory));
   }
   activeView.value = 'upload';
+  finishKnowledgeGraphLoading();
   knowledgeGraphUrl.value = null;
   currentChatFile.value = null;
   chatMessages.value = [];
@@ -1339,8 +1498,16 @@ const getStatusText = (status) => {
       return '处理中';
     case 'updating':
       return '增量更新中';
+    case 'resuming':
+      return '继续处理中';
+    case 'pausing':
+      return '暂停中';
+    case 'paused':
+      return '已暂停';
     case 'completed':
       return '已完成';
+    case 'interrupted':
+      return '部分完成，可继续';
     case 'error':
       return '处理失败';
     default:
@@ -1349,7 +1516,7 @@ const getStatusText = (status) => {
 };
 
 const isFileProcessing = (status) => {
-  return ['uploading', 'processing', 'updating'].includes(status);
+  return ['uploading', 'processing', 'updating', 'resuming', 'pausing'].includes(status);
 };
 
 const formatRemainingTime = (seconds) => {
@@ -1391,10 +1558,14 @@ const getFileIcon = (status) => {
     case 'uploading':
     case 'processing':
     case 'updating':
+    case 'resuming':
+    case 'pausing':
       return Loading;
     case 'completed':
       return SuccessFilled;
     case 'error':
+    case 'interrupted':
+    case 'paused':
       return 'circle-close';
     default:
       return Document;
@@ -1426,7 +1597,11 @@ const statusOptions = [
   { value: 'uploading', label: '上传中' },
   { value: 'processing', label: '处理中' },
   { value: 'updating', label: '增量更新中' },
+  { value: 'resuming', label: '继续处理中' },
+  { value: 'pausing', label: '暂停中' },
+  { value: 'paused', label: '已暂停' },
   { value: 'completed', label: '已完成' },
+  { value: 'interrupted', label: '部分完成' },
   { value: 'error', label: '失败' }
 ];
 
@@ -1597,16 +1772,7 @@ const loadFileContent = async (file) => {
 // 加载知识图谱
 const loadKnowledgeGraph = async (file) => {
   if (!file || !file.name) return;
-
-  try {
-    knowledgeGraphLoading.value = true;
-    await fetchKnowledgeGraph(file.name);
-  } catch (error) {
-    console.error('加载知识图谱失败:', error);
-    ElMessage.warning('加载知识图谱失败');
-  } finally {
-    knowledgeGraphLoading.value = false;
-  }
+  await fetchKnowledgeGraph(file.name);
 };
 
 // 添加历史上下文相关状态
@@ -1614,6 +1780,12 @@ const enableHistoryContext = ref(true);
 
 onUnmounted(() => {
   abortController.value?.abort();
+  window.removeEventListener('click', closeFileContextMenu);
+  window.removeEventListener('blur', closeFileContextMenu);
+  window.removeEventListener('resize', closeFileContextMenu);
+  window.removeEventListener('scroll', closeFileContextMenu, true);
+  window.removeEventListener('message', handleKnowledgeGraphReadyMessage);
+  if (knowledgeGraphReadyTimer) clearTimeout(knowledgeGraphReadyTimer);
   processingTimers.forEach(timer => clearTimeout(timer));
   processingTimers.clear();
   finishResizeSession();
@@ -1717,10 +1889,11 @@ onUnmounted(() => {
                   :key="file.name"
                   class="file-item"
                   :class="{
-                  'can-click': file.status === 'completed',
+                  'can-click': file.status === 'completed' || (['paused', 'interrupted'].includes(file.status) && file.partialAvailable),
                   'active': currentFile?.name === file.name,
                   'expanded': sideBarRef?.expandedFileId === file.name
                 }"
+                  @contextmenu="openFileContextMenu($event, file)"
               >
                 <div class="file-header"
                      @dblclick="viewFileResult(file)"
@@ -1747,8 +1920,11 @@ onUnmounted(() => {
                       {{ file.display_status || getStatusText(file.status) }}
                     </div>
                     <transition name="fade">
-                      <div v-if="currentFileId === file.name && file.status === 'completed'" class="delete-action">
-                        <el-tooltip content="清除RAG历史" placement="top">
+                      <div
+                        v-if="currentFileId === file.name && ['completed', 'paused', 'interrupted', 'error'].includes(file.status)"
+                        class="delete-action"
+                      >
+                        <el-tooltip v-if="file.status === 'completed'" content="清除RAG历史" placement="top">
                           <svg-icon
                               icon-name="clear"
                               icon-class="clear-icon"
@@ -1776,6 +1952,29 @@ onUnmounted(() => {
                     <div v-if="getFileEstimatedTime(file)" class="progress-estimate">
                       {{ getFileEstimatedTime(file) }}
                     </div>
+                  </div>
+                </div>
+
+                <div v-else-if="['paused', 'interrupted', 'error'].includes(file.status)" class="file-recovery">
+                  <el-progress
+                    v-if="file.totalChunks"
+                    :percentage="file.percentage"
+                    :show-text="false"
+                    :stroke-width="2"
+                    status="warning"
+                  />
+                  <div class="recovery-summary">
+                    <span v-if="file.completedChunks">已保留 {{ file.completedChunks }}/{{ file.totalChunks }} 块</span>
+                    <span v-else>{{ file.errorMessage || '尚无完成的文本块' }}</span>
+                    <el-button
+                      v-if="file.resumable"
+                      type="warning"
+                      link
+                      size="small"
+                      @click.stop="resumeFileProcessing(file)"
+                    >
+                      继续处理
+                    </el-button>
                   </div>
                 </div>
 
@@ -1869,6 +2068,7 @@ onUnmounted(() => {
                 点击或拖拽上传文件
               </div>
               <p>支持的文件类型：TXT，PDF...</p>
+              <p>支持拖拽 .KMN.ZIP 迁移包直接恢复，无需重新处理</p>
               <p>单个txt不超过 5M</p>
               <p>图谱初始构造时间较长，请耐心等待</p>
               <br>
@@ -2038,17 +2238,23 @@ onUnmounted(() => {
                 <h3>知识图谱</h3>
               </div>
               <div class="panel-content" style="overflow: hidden;">
-                <div v-if="knowledgeGraphLoading" class="loading-content">
-                  <el-icon class="is-loading"><Loading /></el-icon>
-                  <span>加载知识图谱中...</span>
-                </div>
-                <div v-else-if="knowledgeGraphUrl" class="knowledge-graph-content">
+                <div v-if="knowledgeGraphUrl" class="knowledge-graph-content">
                   <iframe
+                      ref="knowledgeGraphFrameRef"
                       :src="knowledgeGraphUrl"
                       sandbox="allow-scripts"
                       class="result-iframe"
                       frameborder="0"
+                      @load="handleKnowledgeGraphFrameLoad"
                   ></iframe>
+                  <div v-if="knowledgeGraphLoading" class="graph-loading-overlay">
+                    <el-icon class="is-loading"><Loading /></el-icon>
+                    <span>正在加载图谱并计算节点布局...</span>
+                  </div>
+                </div>
+                <div v-else-if="knowledgeGraphLoading" class="loading-content">
+                  <el-icon class="is-loading"><Loading /></el-icon>
+                  <span>正在准备知识图谱...</span>
                 </div>
                 <div v-else class="empty-content">
                   <el-empty description="暂无知识图谱数据" />
@@ -2175,10 +2381,120 @@ onUnmounted(() => {
       </div>
     </div>
     <div v-if="resizeMode" class="resize-shield" aria-hidden="true"></div>
+    <teleport to="body">
+      <div
+        v-if="fileContextMenu.visible && fileContextMenu.file"
+        class="file-context-menu"
+        :style="{ left: `${fileContextMenu.x}px`, top: `${fileContextMenu.y}px` }"
+        @click.stop
+        @contextmenu.prevent
+      >
+        <div class="context-menu-title" :title="fileContextMenu.file.name">
+          {{ fileContextMenu.file.name }}
+        </div>
+        <button
+          v-if="['uploading', 'processing', 'updating', 'resuming'].includes(fileContextMenu.file.status)"
+          type="button"
+          class="context-menu-item"
+          @click="handleFileContextAction('pause')"
+        >暂停处理</button>
+        <button
+          v-if="['paused', 'interrupted', 'error'].includes(fileContextMenu.file.status) && fileContextMenu.file.resumable"
+          type="button"
+          class="context-menu-item"
+          @click="handleFileContextAction('resume')"
+        >继续处理</button>
+        <button
+          v-if="fileContextMenu.file.status === 'completed' || (['paused', 'interrupted'].includes(fileContextMenu.file.status) && fileContextMenu.file.partialAvailable)"
+          type="button"
+          class="context-menu-item"
+          @click="handleFileContextAction('view')"
+        >查看原文与图谱</button>
+        <button
+          v-if="fileContextMenu.file.status === 'completed'"
+          type="button"
+          class="context-menu-item"
+          @click="handleFileContextAction('download-package')"
+        >下载原文与图谱迁移包</button>
+        <button
+          v-if="fileContextMenu.file.status === 'completed'"
+          type="button"
+          class="context-menu-item"
+          @click="handleFileContextAction('clear-history')"
+        >清除 RAG 历史</button>
+        <div
+          v-if="['completed', 'paused', 'interrupted', 'error'].includes(fileContextMenu.file.status)"
+          class="context-menu-divider"
+        ></div>
+        <button
+          v-if="['completed', 'paused', 'interrupted', 'error'].includes(fileContextMenu.file.status)"
+          type="button"
+          class="context-menu-item danger"
+          @click="handleFileContextAction('delete')"
+        >删除文件</button>
+        <div v-if="fileContextMenu.file.status === 'pausing'" class="context-menu-hint">
+          正在保存当前文本块，请稍候…
+        </div>
+      </div>
+    </teleport>
   </div>
 </template>
 
 <style lang="scss" scoped>
+.file-context-menu {
+  position: fixed;
+  z-index: 5000;
+  box-sizing: border-box;
+  width: 176px;
+  padding: 6px;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 8px;
+  background: var(--el-bg-color);
+  box-shadow: 0 8px 28px rgb(0 0 0 / 18%);
+
+  .context-menu-title {
+    overflow: hidden;
+    padding: 7px 9px;
+    color: var(--el-text-color-secondary);
+    font-size: 12px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .context-menu-item {
+    display: block;
+    width: 100%;
+    padding: 8px 10px;
+    border: 0;
+    border-radius: 5px;
+    color: var(--el-text-color-primary);
+    background: transparent;
+    cursor: pointer;
+    font: inherit;
+    text-align: left;
+
+    &:hover {
+      background: var(--el-fill-color-light);
+    }
+
+    &.danger {
+      color: var(--el-color-danger);
+    }
+  }
+
+  .context-menu-divider {
+    height: 1px;
+    margin: 5px 4px;
+    background: var(--el-border-color-lighter);
+  }
+
+  .context-menu-hint {
+    padding: 8px 9px;
+    color: var(--el-text-color-secondary);
+    font-size: 12px;
+  }
+}
+
 .main-container {
   display: flex;
   box-sizing: border-box;
@@ -2397,7 +2713,7 @@ onUnmounted(() => {
                   font-size: 20px;
                   flex-shrink: 0;
 
-                  &.uploading, &.processing, &.updating {
+                  &.uploading, &.processing, &.updating, &.resuming, &.pausing {
                     color: var(--el-color-primary);
                     animation: spin 1.5s infinite linear;
                   }
@@ -2408,6 +2724,14 @@ onUnmounted(() => {
 
                   &.error {
                     color: var(--el-color-danger);
+                  }
+
+                  &.interrupted {
+                    color: var(--el-color-warning);
+                  }
+
+                  &.paused {
+                    color: var(--el-color-warning);
                   }
                 }
 
@@ -2432,7 +2756,7 @@ onUnmounted(() => {
                 white-space: nowrap;
                 flex-shrink: 0;
 
-                &.uploading, &.processing, &.updating {
+                &.uploading, &.processing, &.updating, &.resuming, &.pausing {
                   color: var(--el-color-primary);
                 }
 
@@ -2442,6 +2766,14 @@ onUnmounted(() => {
 
                 &.error {
                   color: var(--el-color-danger);
+                }
+
+                &.interrupted {
+                  color: var(--el-color-warning);
+                }
+
+                &.paused {
+                  color: var(--el-color-warning);
                 }
               }
             }
@@ -2465,6 +2797,20 @@ onUnmounted(() => {
               .progress-estimate {
                 margin-top: 2px;
                 color: var(--el-text-color-placeholder);
+              }
+            }
+
+            .file-recovery {
+              margin: -5px 16px 12px;
+
+              .recovery-summary {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 8px;
+                margin-top: 5px;
+                color: var(--el-color-warning);
+                font-size: 11px;
               }
             }
 
@@ -3507,6 +3853,7 @@ onUnmounted(() => {
 }
 
 .knowledge-graph-content {
+  position: relative;
   height: 100%;
   overflow: hidden;
 
@@ -3516,6 +3863,25 @@ onUnmounted(() => {
     border: none;
     display: block;
     background-color: white;
+  }
+
+  .graph-loading-overlay {
+    position: absolute;
+    z-index: 5;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    background: var(--el-bg-color);
+    color: var(--el-text-color-secondary);
+    font-size: 13px;
+
+    .el-icon {
+      color: var(--el-color-primary);
+      font-size: 28px;
+    }
   }
 }
 

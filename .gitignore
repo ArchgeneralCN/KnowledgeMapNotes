@@ -20,6 +20,7 @@ backend/chroma_data/
 backend/results/
 backend/txt_files/
 backend/uploads/
+backend/processing_states/
 backend/validation/result*.html
 
 # Frontend dependencies and build output

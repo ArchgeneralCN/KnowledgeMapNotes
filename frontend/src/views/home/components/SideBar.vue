@@ -101,12 +101,26 @@ const aiSettings = ref({
   temperature: 0,
   enableThinking: false,
   apiKeyConfigured: false,
-  apiKeyHint: ''
+  apiKeyHint: '',
+  fallbackEnabled: false,
+  fallbackBaseUrl: '',
+  fallbackApiKey: '',
+  fallbackModelName: '',
+  fallbackApiKeyConfigured: false,
+  fallbackApiKeyHint: ''
 })
 
 const apiKeyPlaceholder = computed(() => {
   if (!aiSettings.value.apiKeyConfigured) return '请输入 API Key';
   const hint = aiSettings.value.apiKeyHint ? `（${aiSettings.value.apiKeyHint}）` : '';
+  return `已配置${hint}，留空则保持不变`;
+});
+
+const fallbackApiKeyPlaceholder = computed(() => {
+  if (!aiSettings.value.fallbackApiKeyConfigured) return '请输入备用 API Key';
+  const hint = aiSettings.value.fallbackApiKeyHint
+    ? `（${aiSettings.value.fallbackApiKeyHint}）`
+    : '';
   return `已配置${hint}，留空则保持不变`;
 });
 
@@ -121,7 +135,13 @@ const loadAiSettings = async () => {
       temperature: Number(data.temperature ?? 0),
       enableThinking: Boolean(data.enable_thinking),
       apiKeyConfigured: Boolean(data.api_key_configured),
-      apiKeyHint: data.api_key_hint || ''
+      apiKeyHint: data.api_key_hint || '',
+      fallbackEnabled: Boolean(data.fallback_enabled),
+      fallbackBaseUrl: data.fallback_base_url || '',
+      fallbackApiKey: '',
+      fallbackModelName: data.fallback_model_name || '',
+      fallbackApiKeyConfigured: Boolean(data.fallback_api_key_configured),
+      fallbackApiKeyHint: data.fallback_api_key_hint || ''
     };
   } catch (error) {
     console.error('获取 AI 配置失败:', error);
@@ -142,13 +162,31 @@ const getAiSettingsPayload = () => {
     ElMessage.warning('请填写 API Key');
     return null;
   }
+  const fallbackBaseUrl = aiSettings.value.fallbackBaseUrl.trim();
+  const fallbackModelName = aiSettings.value.fallbackModelName.trim();
+  if (aiSettings.value.fallbackEnabled && (!fallbackBaseUrl || !fallbackModelName)) {
+    ElMessage.warning('请填写备用 AI 的 Base URL 和模型名称');
+    return null;
+  }
+  if (
+    aiSettings.value.fallbackEnabled
+    && !aiSettings.value.fallbackApiKey.trim()
+    && !aiSettings.value.fallbackApiKeyConfigured
+  ) {
+    ElMessage.warning('请填写备用 API Key');
+    return null;
+  }
 
   return {
     base_url: baseUrl,
     api_key: aiSettings.value.apiKey.trim() || null,
     model_name: modelName,
     temperature: aiSettings.value.temperature,
-    enable_thinking: aiSettings.value.enableThinking
+    enable_thinking: aiSettings.value.enableThinking,
+    fallback_enabled: aiSettings.value.fallbackEnabled,
+    fallback_base_url: fallbackBaseUrl || null,
+    fallback_api_key: aiSettings.value.fallbackApiKey.trim() || null,
+    fallback_model_name: fallbackModelName || null
   };
 };
 
@@ -183,6 +221,12 @@ const saveAiSettings = async () => {
     aiSettings.value.modelName = data.model_name;
     aiSettings.value.temperature = Number(data.temperature);
     aiSettings.value.enableThinking = Boolean(data.enable_thinking);
+    aiSettings.value.fallbackEnabled = Boolean(data.fallback_enabled);
+    aiSettings.value.fallbackBaseUrl = data.fallback_base_url || '';
+    aiSettings.value.fallbackApiKey = '';
+    aiSettings.value.fallbackModelName = data.fallback_model_name || '';
+    aiSettings.value.fallbackApiKeyConfigured = Boolean(data.fallback_api_key_configured);
+    aiSettings.value.fallbackApiKeyHint = data.fallback_api_key_hint || '';
     ElMessage.success('AI 配置已更新');
     openSettings.value = false;
   } catch (error) {
@@ -256,7 +300,9 @@ const menuItemSelect = (index) => {
 }
 
 const toggleFileExpand = async (file) => {
-  if (!file || file.status !== 'completed') return;
+  const canViewEntities = file?.status === 'completed'
+    || (['paused', 'interrupted'].includes(file?.status) && file?.partialAvailable);
+  if (!canViewEntities) return;
   
   if (expandedFileId.value === file.name) {
     expandedFileId.value = null;
@@ -412,6 +458,38 @@ defineExpose({
                 />
               </el-form-item>
             </div>
+            <div class="fallback-ai-header">
+              <div>
+                <div class="fallback-ai-title">备用 AI 自动接管</div>
+                <div class="fallback-ai-description">主 API 请求或返回格式异常时，自动切换并继续当前文本块。</div>
+              </div>
+              <el-switch v-model="aiSettings.fallbackEnabled" />
+            </div>
+            <template v-if="aiSettings.fallbackEnabled">
+              <el-form-item label="备用 Base URL">
+                <el-input
+                  v-model="aiSettings.fallbackBaseUrl"
+                  placeholder="https://backup-api.example.com/v1"
+                  autocomplete="off"
+                />
+              </el-form-item>
+              <el-form-item label="备用 API Key">
+                <el-input
+                  v-model="aiSettings.fallbackApiKey"
+                  type="password"
+                  show-password
+                  :placeholder="fallbackApiKeyPlaceholder"
+                  autocomplete="new-password"
+                />
+              </el-form-item>
+              <el-form-item label="备用模型名称">
+                <el-input
+                  v-model="aiSettings.fallbackModelName"
+                  placeholder="例如：qwen-plus"
+                  autocomplete="off"
+                />
+              </el-form-item>
+            </template>
           </el-form>
         </div>
 
@@ -759,6 +837,31 @@ defineExpose({
     :deep(.el-input-number) {
       width: 100%;
     }
+  }
+
+  .fallback-ai-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    margin: 4px 0 16px;
+    padding: 14px;
+    border: 1px solid var(--el-border-color-light);
+    border-radius: 8px;
+    background: var(--el-fill-color-light);
+  }
+
+  .fallback-ai-title {
+    color: var(--el-text-color-primary);
+    font-size: 14px;
+    font-weight: 600;
+  }
+
+  .fallback-ai-description {
+    margin-top: 4px;
+    color: var(--el-text-color-secondary);
+    font-size: 12px;
+    line-height: 1.5;
   }
 }
 

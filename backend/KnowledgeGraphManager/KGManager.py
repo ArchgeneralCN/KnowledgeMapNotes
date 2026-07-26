@@ -3,22 +3,40 @@ import os
 import re
 import itertools
 import time
+import html
 from collections import defaultdict
 from pathlib import Path
 from dotenv import load_dotenv
 from pyvis.network import Network
 import networkx as nx
 import concurrent.futures
+import logging
 from urllib.parse import quote
+from KnowledgeGraphManager.graph_interactions import build_graph_interaction_html
+from LLM.Openai_Agent import AIResponseFormatError, AIResponseTruncatedError
 
 load_dotenv(dotenv_path="./.env")
 prompt_vision = os.getenv("PROMPTVISION")
+logger = logging.getLogger("知识图谱关系提取")
+
+
+def _positive_int_env(name, default):
+    try:
+        value = int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
 
 PROCESSING_PROMPT_FILES = {
     "entity_extraction": "entity_extraction2.txt",
     "relationship_extraction": "relationship_extraction2.txt",
     "knowledge_fusion": "knowledge_fusion.txt",
 }
+
+
+class ProcessingPaused(Exception):
+    """Raised after a safe checkpoint when a user requests file processing pause."""
+
 
 class KgManager:
     def __init__(self,agent,splitter,embedding_model,store):
@@ -46,6 +64,17 @@ class KgManager:
         self.Bolts = []
         self.noteType = "general"
         self.custom_prompts = {}
+        # Smaller independent responses prevent one oversized JSON document from
+        # invalidating an otherwise completed source block.
+        self.relationship_text_batch_chars = _positive_int_env(
+            "RELATION_TEXT_BATCH_CHARS", 2000
+        )
+        self.relationship_source_batch_size = _positive_int_env(
+            "RELATION_SOURCE_BATCH_SIZE", 20
+        )
+        self.relationship_max_split_depth = _positive_int_env(
+            "RELATION_MAX_SPLIT_DEPTH", 10
+        )
 
     def configure_processing_prompts(self, note_type="general", custom_prompts=None):
         """Use per-file custom prompts while falling back to the general templates."""
@@ -117,35 +146,243 @@ class KgManager:
     def 实体提取(self,input_parameter):
         entity_label = []
         prompt = self._processing_prompt("entity_extraction")
-        output = self.Agent.agent_safe_generate_response(prompt, input_parameter)
+        output = self.Agent.agent_safe_generate_response(
+            prompt,
+            input_parameter,
+            expected_key="entities",
+        )
         if not isinstance(output, dict):
-            entity_label = []
-        else:
-            entity_label = output.get("entities",[])
-            # print(output)
+            raise RuntimeError("实体提取请求失败或返回格式无效")
+        entity_label = output.get("entities",[])
+        # print(output)
         return entity_label
 
-    def 关系提取(self,input_parameter,entity):
-        prompt2 = self._processing_prompt("relationship_extraction")
-        output2 = self.Agent.agent_safe_generate_response(
-            prompt2, "笔记内容：" + input_parameter + "\n实体列表：" + json.dumps(entity))
-        print(output2)
-        # 确保从输出中获取正确的relations和weight值
-        if not isinstance(output2,dict):
-            relations = []
-        else:
-            relations = output2.get("relations", [])
+    @staticmethod
+    def _unique_entity_names(entities):
+        names = []
+        seen = set()
+        for entity in entities or []:
+            name = entity[0] if isinstance(entity, (list, tuple)) and entity else entity
+            if not isinstance(name, str):
+                continue
+            name = name.strip()
+            if name and name not in seen:
+                names.append(name)
+                seen.add(name)
+        return names
 
-        # 确保权重是浮点数类型
-        for relation in relations:
-            if 'weight' not in relation:
-                relation['weight'] = 0.5
+    @staticmethod
+    def _split_long_relation_segment(segment, max_chars):
+        """Split an exceptionally long sentence near punctuation when possible."""
+        pieces = []
+        remaining = segment
+        while len(remaining) > max_chars:
+            search_from = max_chars // 2
+            cut = max(
+                remaining.rfind(marker, search_from, max_chars + 1)
+                for marker in ("，", ",", "、", "：", ":")
+            )
+            if cut < search_from:
+                cut = max_chars
             else:
-                # 确保weight是浮点数类型
-                relation['weight'] = float(relation['weight'])
+                cut += 1
+            pieces.append(remaining[:cut])
+            remaining = remaining[cut:]
+        if remaining:
+            pieces.append(remaining)
+        return pieces
 
-        # print("原始关系权重:", [(rel['source'], rel['target'], rel['weight']) for rel in relations])
-        return relations
+    def _split_relation_text(self, text, max_chars=None):
+        """Create sentence-aligned chunks whose model outputs stay bounded."""
+        text = (text or "").strip()
+        if not text:
+            return []
+        max_chars = max_chars or self.relationship_text_batch_chars
+        sentences = [
+            part for part in re.split(r"(?<=[。！？!?；;\n])", text) if part
+        ]
+        chunks = []
+        current = ""
+        for sentence in sentences:
+            parts = (
+                self._split_long_relation_segment(sentence, max_chars)
+                if len(sentence) > max_chars
+                else [sentence]
+            )
+            for part in parts:
+                if current and len(current) + len(part) > max_chars:
+                    chunks.append(current.strip())
+                    current = ""
+                current += part
+        if current.strip():
+            chunks.append(current.strip())
+        return chunks
+
+    @staticmethod
+    def _relation_batches(items, batch_size):
+        return [
+            items[index:index + batch_size]
+            for index in range(0, len(items), batch_size)
+        ]
+
+    @staticmethod
+    def _normalise_relations(relations, candidate_entities, source_entities):
+        if not isinstance(relations, list):
+            raise AIResponseFormatError("模型返回的 relations 必须是列表")
+
+        candidates = set(candidate_entities)
+        sources = set(source_entities)
+        normalised = []
+        for relation in relations:
+            if not isinstance(relation, dict):
+                logger.warning("跳过非对象关系: %r", relation)
+                continue
+            if not all(
+                isinstance(relation.get(key), str) and relation[key].strip()
+                for key in ("source", "target", "relation", "context")
+            ):
+                logger.warning("跳过字段不完整的关系: %r", relation)
+                continue
+
+            source = relation["source"].strip()
+            target = relation["target"].strip()
+            if source not in candidates or target not in candidates:
+                logger.warning("跳过实体列表之外的关系: %s -> %s", source, target)
+                continue
+            if source not in sources:
+                logger.warning("跳过当前 source 批次之外的关系: %s -> %s", source, target)
+                continue
+
+            try:
+                weight = float(relation.get("weight", 0.5))
+            except (TypeError, ValueError):
+                weight = 0.5
+            normalised.append({
+                "source": source,
+                "target": target,
+                "relation": relation["relation"].strip(),
+                "context": relation["context"].strip(),
+                "weight": min(1.0, max(0.5, weight)),
+            })
+        return normalised
+
+    def _request_relation_batch(
+        self,
+        prompt,
+        text,
+        candidate_entities,
+        source_entities,
+        depth=0,
+    ):
+        request_text = (
+            "笔记内容：" + text
+            + "\n实体列表：" + json.dumps(candidate_entities, ensure_ascii=False)
+            + "\n本批允许作为 source 的实体列表："
+            + json.dumps(source_entities, ensure_ascii=False)
+            + "\n只输出 source 位于本批 source 列表中的关系；target 仍可使用完整实体列表。"
+        )
+        try:
+            output = self.Agent.agent_safe_generate_response(
+                prompt,
+                request_text,
+                repeat=1,
+                expected_key="relations",
+                raise_on_failure=True,
+            )
+            return self._normalise_relations(
+                output.get("relations", []), candidate_entities, source_entities
+            )
+        except (AIResponseTruncatedError, AIResponseFormatError) as exc:
+            if depth >= self.relationship_max_split_depth:
+                raise RuntimeError("关系抽取多次拆分后仍返回不完整 JSON") from exc
+
+            logger.warning(
+                "关系批次响应过长或格式不完整，自动二分: depth=%d chars=%d "
+                "candidates=%d sources=%d error=%s",
+                depth,
+                len(text),
+                len(candidate_entities),
+                len(source_entities),
+                exc,
+            )
+            if len(source_entities) > 1:
+                middle = len(source_entities) // 2
+                return self._request_relation_batch(
+                    prompt,
+                    text,
+                    candidate_entities,
+                    source_entities[:middle],
+                    depth + 1,
+                ) + self._request_relation_batch(
+                    prompt,
+                    text,
+                    candidate_entities,
+                    source_entities[middle:],
+                    depth + 1,
+                )
+
+            smaller_texts = self._split_relation_text(
+                text, max(200, len(text) // 2)
+            )
+            if len(smaller_texts) <= 1:
+                raise RuntimeError("最小关系批次仍返回不完整 JSON") from exc
+
+            recovered = []
+            for smaller_text in smaller_texts:
+                smaller_candidates = [
+                    name for name in candidate_entities if name in smaller_text
+                ]
+                smaller_sources = [
+                    name for name in source_entities if name in smaller_text
+                ]
+                if len(smaller_candidates) < 2 or not smaller_sources:
+                    continue
+                recovered.extend(self._request_relation_batch(
+                    prompt,
+                    smaller_text,
+                    smaller_candidates,
+                    smaller_sources,
+                    depth + 1,
+                ))
+            return recovered
+
+    @staticmethod
+    def _deduplicate_relations(relations):
+        unique = {}
+        for relation in relations:
+            key = (
+                relation["source"],
+                relation["target"],
+                relation["relation"],
+                relation["context"],
+            )
+            previous = unique.get(key)
+            if previous is None or relation["weight"] > previous["weight"]:
+                unique[key] = relation
+        return list(unique.values())
+
+    def 关系提取(self, input_parameter, entity):
+        prompt = self._processing_prompt("relationship_extraction")
+        entities = self._unique_entity_names(entity)
+        if len(entities) < 2:
+            return []
+
+        all_relations = []
+        for text_batch in self._split_relation_text(input_parameter):
+            candidates = [name for name in entities if name in text_batch]
+            if len(candidates) < 2:
+                continue
+            for source_batch in self._relation_batches(
+                candidates, self.relationship_source_batch_size
+            ):
+                all_relations.extend(self._request_relation_batch(
+                    prompt,
+                    text_batch,
+                    candidates,
+                    source_batch,
+                ))
+
+        return self._deduplicate_relations(all_relations)
 
 
     def 知识融合(self,relations):
@@ -185,22 +422,25 @@ class KgManager:
                 prompt = prompt.replace("{input_text}", input_text)
                 # print(input_text,"input_text")
                 # 使用Agent进行关系融合
-                merged_result = self.Agent.agent_safe_generate_response(prompt, input_text)
+                merged_result = self.Agent.agent_safe_generate_response(
+                    prompt,
+                    input_text,
+                    expected_key="relations",
+                )
                 print(merged_result, "关系融合")
 
                 # 确保融合后的关系中包含权重
-                if isinstance(merged_result, dict):
-                    merged_result = []
-                else:
-                    for rel in merged_result.get('relations', []):
-                        if 'weight' not in rel:
+                if not isinstance(merged_result, dict):
+                    raise RuntimeError("知识融合请求失败或返回格式无效")
+                for rel in merged_result.get('relations', []):
+                    if 'weight' not in rel:
+                        rel['weight'] = 0.5
+                    else:
+                        # 确保weight是浮点数
+                        try:
+                            rel['weight'] = float(rel['weight'])
+                        except (ValueError, TypeError):
                             rel['weight'] = 0.5
-                        else:
-                            # 确保weight是浮点数
-                            try:
-                                rel['weight'] = float(rel['weight'])
-                            except (ValueError, TypeError):
-                                rel['weight'] = 0.5
 
                 # 将融合后的关系添加到结果中
                 for rel in rel_list:
@@ -247,47 +487,75 @@ class KgManager:
         return formatted_relations
 
     # 输入处理好的分割文本，输出bid与实体-关系三元集合
-    def 知识图谱的构建(self, text=None, progress_callback=None):
-        if type(text) == str:
-            self.Bolts = self._Txt2Bolts(text)
-        elif type(text) == list:
-            self.Bolts = text
+    def 知识图谱的构建(
+        self,
+        text=None,
+        progress_callback=None,
+        checkpoint_callback=None,
+        append=False,
+        completed_offset=0,
+        total_chunks=None,
+        pause_callback=None,
+    ):
+        """构建图谱，并在每个文本块完成后暴露一致的检查点。
+
+        ``append`` 用于中断恢复：保留已经落库的块和三元组，只把传入的
+        剩余块交给模型处理。检查点回调看到的 ``Bolts`` 永远只包含已完成块。
+        """
+        if isinstance(text, str):
+            blocks_to_process = self.splitter.split_text(text)
+        elif isinstance(text, list):
+            blocks_to_process = text
         elif text is None:
-            pass
-        kg_triplet = []
-        entity_labels = []
-        num_blocks = len(self.Bolts)
+            blocks_to_process = list(self.Bolts)
+        else:
+            raise TypeError("text 必须是字符串、分块列表或 None")
+
+        existing_bolts = list(self.Bolts) if append else []
+        kg_triplet = list(self.kg_triplet) if append else []
+        entity_labels = (
+            list(self.bidirectional_mapping.get("entity_to_label", {}).items())
+            if append
+            else []
+        )
+        self.Bolts = existing_bolts
+        self.kg_triplet = kg_triplet
+        num_blocks = len(blocks_to_process)
+        overall_total = total_chunks if total_chunks is not None else completed_offset + num_blocks
         if num_blocks == 0:
             self.bidirectional_mapping = self._build_bidirectional_mapping(entity_labels)
             self.kg_triplet = kg_triplet
             return kg_triplet
 
-        # 用于存储每个块的实体识别结果
-        entity_futures = [None] * num_blocks
-        relation_futures = [None] * num_blocks
-        results = [None] * num_blocks
-        block_started_at = [None] * num_blocks
+        # 每次只处理一个完整块，确保暂停时不会有下一个模型请求在后台运行。
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-            # 1. 先提交第一个块的实体提取
-            block_started_at[0] = time.monotonic()
-            entity_futures[0] = executor.submit(self.实体提取, self.Bolts[0][1])
             for i in range(num_blocks):
-                # 等待当前块实体提取完成
-                entity_label = entity_futures[i].result()
+                if pause_callback and pause_callback():
+                    raise ProcessingPaused("用户已暂停文件处理")
+
+                block_started_at = time.monotonic()
+                entity_label = executor.submit(
+                    self.实体提取,
+                    blocks_to_process[i][1],
+                ).result()
                 entity_labels += entity_label
                 entity = [e[0] for e in entity_label]
-                # 立即提交当前块的关系提取
-                relation_futures[i] = executor.submit(self.关系提取, self.Bolts[i][1], entity)
-                # 如果还有下一个块，提前提交下一个块的实体提取
-                if i + 1 < num_blocks:
-                    block_started_at[i + 1] = time.monotonic()
-                    entity_futures[i + 1] = executor.submit(self.实体提取, self.Bolts[i + 1][1])
-                # 等待当前块关系提取完成
-                relation = relation_futures[i].result()
-                results[i] = {"bid": self.Bolts[i][0], "relation": relation}
+                relation = executor.submit(
+                    self.关系提取,
+                    blocks_to_process[i][1],
+                    entity,
+                ).result()
+                result = {"bid": blocks_to_process[i][0], "relation": relation}
+                self.Bolts.append(blocks_to_process[i])
+                self.kg_triplet.append(result)
+                self.bidirectional_mapping = self._build_bidirectional_mapping(entity_labels)
+                completed = completed_offset + i + 1
+                if checkpoint_callback:
+                    checkpoint_callback(self, completed, overall_total)
                 if progress_callback:
-                    progress_callback(i + 1, num_blocks, time.monotonic() - block_started_at[i])
-        kg_triplet = results
+                    progress_callback(completed, overall_total, time.monotonic() - block_started_at)
+                if pause_callback and pause_callback():
+                    raise ProcessingPaused("用户已暂停文件处理")
         self.bidirectional_mapping = self._build_bidirectional_mapping(entity_labels)
         self.kg_triplet = kg_triplet
         # print(kg_triplet)
@@ -375,7 +643,13 @@ class KgManager:
 
         return replaced_text, deleted_blocks, added_blocks
 
-    def 增量更新(self, new_text: str, progress_callback=None):
+    def 增量更新(
+        self,
+        new_text: str,
+        progress_callback=None,
+        checkpoint_callback=None,
+        pause_callback=None,
+    ):
         replaced_new_text, deleted_blocks, added_blocks = self._replace_blocks_and_find_changes(
             self.Bolts,
             new_text,
@@ -396,14 +670,20 @@ class KgManager:
                 ids=bids_to_remove
             )
 
-        add_data = []
-
-        # 新增的块
-        for bid, text in added_blocks:
-            add_data.append((bid, text))
+        add_data = list(added_blocks)
         print(f"增量更新：\n 新增的块：{add_data},\n  被删除的块：{bids_to_remove}")
-        self.kg_triplet = self.知识图谱的构建(add_data, progress_callback=progress_callback)
-        new_kg_triplet = self.kg_triplet + filtered_data
+        retained_blocks = [item for item in self.Bolts if item[0] not in bids_to_remove]
+        self.Bolts = retained_blocks
+        self.kg_triplet = filtered_data
+        new_kg_triplet = self.知识图谱的构建(
+            add_data,
+            progress_callback=progress_callback,
+            checkpoint_callback=checkpoint_callback,
+            append=True,
+            completed_offset=len(retained_blocks),
+            total_chunks=len(retained_blocks) + len(add_data),
+            pause_callback=pause_callback,
+        )
 
         return new_kg_triplet
 
@@ -483,6 +763,19 @@ class KgManager:
         for n, cid in 社区分配.items():
             社区节点列表.setdefault(cid, []).append(n)
 
+        社区实体类型 = {
+            cid: sorted({
+                str(
+                    self.current_G.nodes[node].get("entity_type")
+                    or self.current_G.nodes[node].get("group")
+                    or self.current_G.nodes[node].get("title")
+                    or "未分类"
+                )
+                for node in nodes
+            })
+            for cid, nodes in 社区节点列表.items()
+        }
+
         节点度数全图 = dict(self.current_G.degree())
         社区代表节点 = {}
         for cid, nodes in 社区节点列表.items():
@@ -506,6 +799,7 @@ class KgManager:
                           label=代表节点名,
                           size=size,
                           group=cid,
+                          entity_type="社区",
                           title=f"社区 {cid}\n节点数: {size}\n代表节点: {代表节点名}")
 
         # 构建跨社区边（使用代表节点间的真实关系）
@@ -536,18 +830,41 @@ class KgManager:
                               arrows='none')  # 无向概览图不显示箭头
 
         # ---- 4. 生成主页面（概览图） ----
+        社区类型选项 = sorted({
+            entity_type
+            for cid in 大社区
+            for entity_type in 社区实体类型.get(cid, [])
+        })
+        社区类型选项HTML = "".join(
+            f'<option value="{html.escape(entity_type, quote=True)}">'
+            f'{html.escape(entity_type)}</option>'
+            for entity_type in 社区类型选项
+        )
         导航链接列表 = "".join(
-            f'<a href="{页面链接(子页面名称[cid])}" style="margin:0 8px;color:#2196F3;">'
-            f'{社区代表节点.get(cid, f"社区{cid}")}</a>'
+            f'<a class="community-list-item" href="{html.escape(页面链接(子页面名称[cid]), quote=True)}" '
+            f'data-name="{html.escape(str(社区代表节点.get(cid, f"社区{cid}")), quote=True)}" '
+            f'data-types="{html.escape("|".join(社区实体类型.get(cid, [])), quote=True)}">'
+            f'<span class="community-item-name">{html.escape(str(社区代表节点.get(cid, f"社区{cid}")))}</span>'
+            f'<span class="community-item-meta">{社区节点计数.get(cid, 0)} 个节点 · '
+            f'{html.escape("、".join(社区实体类型.get(cid, [])) or "未分类")}</span></a>'
             for cid in 大社区
         )
 
         # 主页面底部导航HTML
         导航HTML_主 = f"""
-        <div style="position:fixed;bottom:12px;left:50%;transform:translateX(-50%);z-index:2000;
-                    background:rgba(255,255,255,0.95);padding:6px 16px;border-radius:20px;
-                    box-shadow:0 2px 8px rgba(0,0,0,0.15);font-size:13px;">
-            📂 <b>社区详情页：</b>{导航链接列表}
+        <div class="community-directory graph-floating-panel" id="communityDirectory">
+            <div class="graph-panel-header">
+                <span>📂 社区详情</span>
+                <button class="graph-panel-collapse" type="button" aria-label="收起社区详情">−</button>
+            </div>
+            <div class="graph-panel-body">
+                <input id="communitySearchInput" class="graph-text-input" type="search" placeholder="搜索社区代表实体...">
+                <select id="communityTypeFilter" class="graph-select">
+                    <option value="">全部实体类型</option>{社区类型选项HTML}
+                </select>
+                <div class="community-list" id="communityList">{导航链接列表}</div>
+                <div class="graph-empty-state" id="communityEmptyState" hidden>没有匹配的社区</div>
+            </div>
         </div>
         """
         self._渲染图(ov_G, 主页面路径, 社区分配={}, 物理引擎=物理引擎, 导航HTML=导航HTML_主)
@@ -559,11 +876,9 @@ class KgManager:
 
             代表名 = 社区代表节点.get(cid, f"社区{cid}")
             导航HTML_子 = f"""
-            <div style="position:fixed;bottom:12px;left:50%;transform:translateX(-50%);z-index:2000;
-                        background:rgba(255,255,255,0.95);padding:5px 14px;border-radius:20px;
-                        box-shadow:0 2px 8px rgba(0,0,0,0.15);font-size:13px;">
-                ⬅️ <a href="{页面链接(主页面名称)}" style="color:#2196F3;">返回总览图</a> &nbsp;|&nbsp;
-                {代表名}（{len(子节点)} 个节点）
+            <div class="community-back-bar">
+                <a href="{html.escape(页面链接(主页面名称), quote=True)}">← 返回社区列表</a>
+                <span>{html.escape(str(代表名))}（{len(子节点)} 个节点）</span>
             </div>
             """
             self._渲染图(子图, 子页面路径[cid], 社区分配={}, 物理引擎=物理引擎, 导航HTML=导航HTML_子)
@@ -599,6 +914,8 @@ class KgManager:
             bgcolor="#ffffff",
             font_color="#1a1a1a",
             directed=is_directed,
+            # Keep the stored checkpoint compact. The result endpoint replaces
+            # this reference with the installed local asset before delivery.
             cdn_resources='remote'
         )
 
@@ -619,7 +936,7 @@ class KgManager:
                 "solver": "forceAtlas2Based",
                 "stabilization": {
                     "enabled": True,
-                    "iterations": 500,  # 增加迭代次数
+                    "iterations": 220,
                     "updateInterval": 25,
                     "onlyDynamicEdges": False,
                     "fit": True
@@ -640,7 +957,12 @@ class KgManager:
                     "avoidOverlap": 1.0
                 },
                 "solver": "forceAtlas2Based",
-                "stabilization": {"iterations": 400}
+                "stabilization": {
+                    "enabled": True,
+                    "iterations": 180,
+                    "updateInterval": 25,
+                    "fit": True,
+                }
             }
         else:
             # 小图：保留原精美配置
@@ -654,7 +976,12 @@ class KgManager:
                     "avoidOverlap": 1.0
                 },
                 "solver": "forceAtlas2Based",
-                "stabilization": {"iterations": 300}
+                "stabilization": {
+                    "enabled": True,
+                    "iterations": 120,
+                    "updateInterval": 25,
+                    "fit": True,
+                }
             }
 
         options = {
@@ -693,6 +1020,12 @@ class KgManager:
             size = 15 + (degree / 最大度数) * 25 + pr * 20
             is_hub = degree > 最大度数 * 0.3 if 最大度数 > 0 else False
             group = attr.get('group', 社区分配.get(node, 0))
+            entity_type = str(
+                attr.get('entity_type')
+                or attr.get('group')
+                or attr.get('title')
+                or '未分类'
+            )
 
             # 优先使用节点属性中的 label
             node_label = str(attr.get('label', node))
@@ -701,6 +1034,7 @@ class KgManager:
                 "title": attr.get('title', f'节点: {node}\n连接数: {degree}\nPageRank: {pr:.3f}'),
                 "value": size,
                 "group": group,
+                "entityType": entity_type,
                 "color": {
                     "background": "#ff6b35" if is_hub else "#2196F3",
                     "border": "#e55a2b" if is_hub else "#1976D2",
@@ -754,6 +1088,33 @@ class KgManager:
 
     def _注入交互增强(self, html_file, 节点总数, 边总数, nav_html=""):
         """注入高级交互功能 + 可选导航HTML（修复版）"""
+        interaction_html = build_graph_interaction_html(节点总数, 边总数)
+        with open(html_file, "r+", encoding="utf-8") as graph_html:
+            content = graph_html.read()
+            content = content.replace(
+                "</body>",
+                interaction_html + nav_html + "</body>",
+            )
+            # PyVis includes Bootstrap even though this page does not use its
+            # controls. Remove those remaining remote dependencies.
+            content = re.sub(
+                r'\s*<link\b[^>]*href="https://cdn\.jsdelivr\.net/npm/bootstrap@[^\"]+"[^>]*>',
+                '',
+                content,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            content = re.sub(
+                r'\s*<script\b[^>]*src="https://cdn\.jsdelivr\.net/npm/bootstrap@[^\"]+"[^>]*>\s*</script>',
+                '',
+                content,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            content = content.replace(' <script src="lib/bindings/utils.js"></script>', '')
+            graph_html.seek(0)
+            graph_html.write(content)
+            graph_html.truncate()
+        return
+
         js_injection = f"""
         <style>
             /* 隐藏pyvis自带控制面板 */
@@ -1278,7 +1639,11 @@ class KgManager:
         prompt = open(f"./prompt/{prompt_vision}/entity_q2merge.txt", encoding='utf-8').read()
         entity = [str(i) for i in self.current_G]
         input_parameter = f"实体列表：{entity}\n问题：{text}"
-        output = self.Agent.agent_safe_generate_response(prompt, input_parameter)
+        output = self.Agent.agent_safe_generate_response(
+            prompt,
+            input_parameter,
+            expected_key="entities",
+        )
         return output['entities']
 
     # 对比两个有向图对象的差异

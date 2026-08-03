@@ -30,6 +30,33 @@ class OpenaiAgentJsonParsingTests(unittest.TestCase):
 
         self.assertEqual(parsed, {"entities": []})
 
+    def test_extracts_raw_json_chat_completion(self):
+        response = (
+            '{"choices":[{"finish_reason":"stop","message":'
+            '{"content":"{\\"entities\\": []}"}}]}'
+        )
+
+        content, finish_reason = OpenaiAgent._extract_chat_completion(response)
+
+        self.assertEqual(content, '{"entities": []}')
+        self.assertEqual(finish_reason, "stop")
+
+    def test_rejects_html_chat_completion_with_base_url_hint(self):
+        with self.assertRaisesRegex(AIResponseFormatError, "/v1"):
+            OpenaiAgent._extract_chat_completion("<!doctype html><title>New API</title>")
+
+    def test_extracts_mapping_and_stream_content(self):
+        response = {
+            "choices": [{"message": {"content": "答案"}, "finish_reason": "stop"}]
+        }
+        self.assertEqual(OpenaiAgent._extract_chat_completion(response)[0], "答案")
+        self.assertEqual(
+            OpenaiAgent._extract_stream_content(
+                'data: {"choices":[{"delta":{"content":"流"}}]}'
+            ),
+            "流",
+        )
+
     def test_safe_generate_accepts_raw_json(self):
         agent = object.__new__(OpenaiAgent)
         agent.agent_request = lambda _prompt, _input: '{"entities": []}'

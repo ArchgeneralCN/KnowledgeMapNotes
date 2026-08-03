@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import inspect
 import json
 import time
 import zipfile
@@ -33,6 +34,32 @@ class ImportedTransferPackage:
     rag_history: Optional[list]
 
 
+def _node_link_edge_keyword(function: Any) -> str:
+    """Return the edge-key keyword supported by this NetworkX version."""
+    return "edges" if "edges" in inspect.signature(function).parameters else "link"
+
+
+def graph_to_node_link_data(graph: nx.Graph) -> Dict[str, Any]:
+    """Serialize a graph with an explicit, version-independent edge key."""
+    keyword = _node_link_edge_keyword(nx.node_link_data)
+    return nx.node_link_data(graph, **{keyword: "edges"})
+
+
+def graph_from_node_link_data(data: Mapping[str, Any]) -> nx.Graph:
+    """Restore NetworkX node-link data written with either edge key format."""
+    if "edges" in data:
+        edge_key = "edges"
+    elif "links" in data:
+        edge_key = "links"
+    else:
+        raise ValueError("图谱状态缺少 edges 或 links")
+
+    # NetworkX renamed the keyword from ``link`` to ``edges``. Selecting it
+    # explicitly also avoids relying on a default that changes in NetworkX 3.6.
+    keyword = _node_link_edge_keyword(nx.node_link_graph)
+    return nx.node_link_graph(data, **{keyword: edge_key})
+
+
 def is_transfer_package_filename(filename: str) -> bool:
     return filename.lower().endswith(PACKAGE_SUFFIX)
 
@@ -54,7 +81,7 @@ def _serialize_state(state: Mapping[str, Any]) -> Dict[str, Any]:
     graph = state.get("current_G")
     if graph is None:
         raise ValueError("图谱状态缺少 current_G")
-    graph_data = nx.node_link_data(graph) if hasattr(graph, "nodes") else graph
+    graph_data = graph_to_node_link_data(graph) if hasattr(graph, "nodes") else graph
     mapping = state.get("bidirectional_mapping") or {}
     return {
         "file": state.get("file"),

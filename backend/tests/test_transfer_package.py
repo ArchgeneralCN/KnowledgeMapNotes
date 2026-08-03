@@ -6,7 +6,11 @@ from pathlib import Path
 
 import networkx as nx
 
-from transfer_package import build_transfer_package, read_transfer_package
+from transfer_package import (
+    build_transfer_package,
+    graph_from_node_link_data,
+    read_transfer_package,
+)
 
 
 class TransferPackageTests(unittest.TestCase):
@@ -44,9 +48,18 @@ class TransferPackageTests(unittest.TestCase):
         self.assertEqual(imported.original_content.decode(), "原始文档")
         self.assertEqual(imported.source_text, "原文内容")
         self.assertIn("三国.html", imported.graph_pages)
-        restored_graph = nx.node_link_graph(imported.state["current_G"])
+        restored_graph = graph_from_node_link_data(imported.state["current_G"])
         self.assertTrue(restored_graph.has_edge("刘备", "蜀汉"))
         self.assertEqual(imported.rag_history[0]["content"], "问题")
+
+    def test_restores_both_networkx_edge_key_formats(self):
+        graph = nx.DiGraph()
+        graph.add_edge("刘备", "蜀汉")
+
+        for edge_key in ("links", "edges"):
+            data = nx.node_link_data(graph, edges=edge_key)
+            restored = graph_from_node_link_data(data)
+            self.assertTrue(restored.has_edge("刘备", "蜀汉"))
 
     def test_rejects_unsafe_zip_member(self):
         source = zipfile.ZipFile(io.BytesIO(self.build_package()))
@@ -66,6 +79,7 @@ class TransferPackageTests(unittest.TestCase):
         self.assertEqual(manifest["version"], 1)
         self.assertEqual(manifest["files"]["original"], "original/三国.txt")
         self.assertEqual(manifest["files"]["graph_pages"], ["graph/三国.html"])
+        self.assertIn("edges", manifest["state"]["current_G"])
 
     def test_bundled_three_kingdoms_example_is_complete(self):
         package_path = (
@@ -81,6 +95,9 @@ class TransferPackageTests(unittest.TestCase):
         self.assertEqual(imported.processing_status.get("status"), "completed")
         self.assertGreater(len(imported.state["Bolts"]), 0)
         self.assertIn("三国志.html", imported.graph_pages)
+        graph = graph_from_node_link_data(imported.state["current_G"])
+        self.assertGreater(graph.number_of_nodes(), 0)
+        self.assertGreater(graph.number_of_edges(), 0)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import torch
 from chromadb.utils import embedding_functions
 import time
 from embedding_tools.embedding_tools import BgeZhEmbeddingFunction
+from transfer_package import graph_from_node_link_data, graph_to_node_link_data
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from dotenv import load_dotenv
 import os
@@ -60,9 +61,15 @@ class StoreTool:
 
     def save_state(self, kg_manager):
         """保存文本块向量到chromadb，便于rag使用"""
-        bolt_count = len(kg_manager.Bolts)
+        bolts = list(kg_manager.Bolts)
+        persisted_count = getattr(kg_manager, "_persisted_bolt_count", 0)
+        persisted_file = getattr(kg_manager, "_persisted_bolt_file", None)
+        if persisted_file != kg_manager.file or not 0 <= persisted_count <= len(bolts):
+            persisted_count = 0
+        new_bolts = bolts[persisted_count:]
+        bolt_count = len(bolts)
         metadatas = []
-        for bid, text in kg_manager.Bolts:
+        for bid, text in new_bolts:
             entry_metadata = {
                 "file": kg_manager.file,
                 "operation_type": "add",
@@ -72,16 +79,17 @@ class StoreTool:
             }
             metadatas.append(entry_metadata)
 
-        self.vector_collection.upsert(
-            ids=[bid for bid, text in kg_manager.Bolts],
-            metadatas=metadatas,
-            embeddings=self.embedding_func([text for bid, text in kg_manager.Bolts]),
-            documents=[text for bid, text in kg_manager.Bolts]
-        )
+        if new_bolts:
+            self.vector_collection.upsert(
+                ids=[bid for bid, text in new_bolts],
+                metadatas=metadatas,
+                embeddings=self.embedding_func([text for bid, text in new_bolts]),
+                documents=[text for bid, text in new_bolts]
+            )
 
         """保存KgManager状态到chromadb"""
         # 序列化有向图
-        graph_data = nx.node_link_data(kg_manager.current_G)
+        graph_data = graph_to_node_link_data(kg_manager.current_G)
 
         # 准备需要存储的元数据
         metadata = {
@@ -102,6 +110,8 @@ class StoreTool:
             metadatas=[metadata],
             documents=[kg_manager.file]  # 使用文件名作为文档内容
         )
+        kg_manager._persisted_bolt_count = len(bolts)
+        kg_manager._persisted_bolt_file = kg_manager.file
 
     def load_state(self, filename):
         """从chromadb加载指定文件名的状态"""
@@ -120,7 +130,7 @@ class StoreTool:
                 "label_to_entities": defaultdict(list,
                                                  json.loads(metadata["bidirectional_mapping"])["label_to_entities"])
             },
-            "current_G": nx.node_link_graph(json.loads(metadata["current_G"])),
+            "current_G": graph_from_node_link_data(json.loads(metadata["current_G"])),
             "Bolts": json.loads(metadata["Bolts"]),
             "original_file_type": metadata.get("original_file_type", filename)  # 使用原始文件名
         }

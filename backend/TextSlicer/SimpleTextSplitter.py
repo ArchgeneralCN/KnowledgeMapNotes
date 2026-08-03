@@ -22,41 +22,36 @@ class SimpleTextSplitter:
             元组列表 (块ID, 文本块)
         """
         chunks = []
-        start_pos = 0  # 当前处理起始位置
         chunk_counter = 1  # 块计数器
-        total_length = len(text)  # 文本总长度
+        # Encode once. The old implementation encoded the entire remaining
+        # document on every iteration, which made large files approach O(n^2).
+        tokens = self.encoder.encode(text)
+        start_token = 0
+        total_tokens = len(tokens)
 
-        while start_pos < total_length:
-            # 计算剩余文本
-            remaining_text = text[start_pos:]
+        while start_token < total_tokens:
+            window_end = min(start_token + self.max_tokens, total_tokens)
+            window_tokens = tokens[start_token:window_end]
+            chunk_text = self.encoder.decode(window_tokens)
 
-            # 根据最大令牌数确定初始结束位置
-            tokens = self.encoder.encode(remaining_text)
-            if len(tokens) <= self.max_tokens:
-                # 剩余文本可完整容纳
-                chunk_text = remaining_text
-                end_pos = total_length
-            else:
-                # 在最大令牌范围内查找最后一个标点
-                chunk_text = self.encoder.decode(tokens[:self.max_tokens])
-                end_pos_in_chunk = self._find_last_punctuation(chunk_text)
+            if window_end < total_tokens:
+                split_tokens = self._find_last_punctuation(chunk_text)
+                if split_tokens >= self.min_tokens:
+                    window_tokens = window_tokens[:split_tokens]
+                    chunk_text = self.encoder.decode(window_tokens)
 
-                if end_pos_in_chunk >= self.min_tokens:
-                    # 在标点处调整块结尾
-                    chunk_text = self.encoder.decode(tokens[:end_pos_in_chunk])
-                    end_pos = start_pos + len(self.encoder.encode(chunk_text))
-                else:
-                    # 未找到合适标点时按最大令牌数分割
-                    chunk_text = self.encoder.decode(tokens[:self.max_tokens])
-                    end_pos = start_pos + self.max_tokens
+            consumed = len(window_tokens)
+            if consumed <= 0:
+                # Defensive guard for unusual tokenizer/decoder combinations.
+                consumed = min(self.max_tokens, total_tokens - start_token)
+                chunk_text = self.encoder.decode(tokens[start_token:start_token + consumed])
 
-            # 生成块ID并添加到结果
             bid = self._generate_block_id(chunk_text, chunk_counter, doc_id)
             chunks.append((bid, chunk_text.strip()))
 
-            # 更新位置和计数器
             chunk_counter += 1
-            start_pos = end_pos - self.overlap_tokens if (end_pos - self.overlap_tokens) > start_pos else end_pos
+            next_start = start_token + consumed - self.overlap_tokens
+            start_token = next_start if next_start > start_token else start_token + consumed
 
         return chunks
 

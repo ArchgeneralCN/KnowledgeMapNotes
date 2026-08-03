@@ -31,6 +31,7 @@ from text_encoding import read_text_file
 from transfer_package import (
     PACKAGE_SUFFIX,
     build_transfer_package,
+    graph_from_node_link_data,
     is_transfer_package_filename,
     read_transfer_package,
 )
@@ -126,6 +127,10 @@ RESULT_FOLDER = Path(os.getenv("RESULT_FOLDER", "results"))
 STATUS_FOLDER = Path(os.getenv("STATUS_FOLDER", "processing_states"))
 MAX_TRANSFER_PACKAGE_SIZE = 100 * 1024 * 1024
 DEFAULT_EXAMPLE_FOLDER = Path(__file__).resolve().parent / "default_examples"
+try:
+    CHECKPOINT_INTERVAL = max(1, int(os.getenv("CHECKPOINT_INTERVAL", "10")))
+except (TypeError, ValueError):
+    CHECKPOINT_INTERVAL = 10
 
 PROCESS_STATUS: Dict[str, Dict[str, Any]] = {}
 process_status_lock = Lock()
@@ -412,17 +417,20 @@ def require_ai_settings() -> None:
 
 def request_ai_validation_completion(ai_client: OpenAI, settings: Dict[str, Any]) -> None:
     """Send the smallest useful request for validating an OpenAI-compatible service."""
-    ai_client.with_options(timeout=20.0, max_retries=0).chat.completions.create(
+    response = ai_client.with_options(timeout=20.0, max_retries=0).chat.completions.create(
         model=settings["model_name"],
         messages=[{"role": "user", "content": "Reply with OK."}],
         temperature=settings["temperature"],
-        max_tokens=8,
+        max_tokens=32,
         extra_body={
             "thinking": {
                 "type": "enabled" if settings["enable_thinking"] else "disabled"
             }
         },
     )
+    # A gateway can return HTTP 200 with an HTML landing page or raw text.
+    # Validate the actual OpenAI-compatible response before accepting settings.
+    OpenaiAgent._extract_chat_completion(response)
 
 
 async def validate_current_ai_settings() -> None:
@@ -1095,7 +1103,7 @@ def import_file_transfer_package(payload: bytes) -> Dict[str, Any]:
             mapping.get("label_to_entities") or {},
         ),
     }
-    manager.current_G = nx.node_link_graph(state["current_G"])
+    manager.current_G = graph_from_node_link_data(state["current_G"])
     manager.Bolts = [tuple(block) for block in (state.get("Bolts") or [])]
     manager.original_file_type = original_filename
 
@@ -1254,6 +1262,32 @@ def persist_graph_checkpoint(
     )
 
 
+def persist_graph_checkpoint_if_due(
+    manager: KgManager,
+    base_name: str,
+    original_filename: str,
+    completed_chunks: int,
+    total_chunks: int,
+    processing_status: str,
+) -> None:
+    """Throttle expensive graph rendering while preserving pause/final checkpoints."""
+    is_final = completed_chunks >= total_chunks
+    if (
+        not is_final
+        and completed_chunks % CHECKPOINT_INTERVAL
+        and not should_pause_file_processing(base_name)
+    ):
+        return
+    persist_graph_checkpoint(
+        manager,
+        base_name,
+        original_filename,
+        completed_chunks,
+        total_chunks,
+        processing_status,
+    )
+
+
 def should_pause_file_processing(base_name: str) -> bool:
     return bool((get_process_status(base_name) or {}).get("pause_requested"))
 
@@ -1396,7 +1430,7 @@ def process_knowledge_graph(
                 percentage=round(completed_offset * 100 / len(all_blocks)) if all_blocks else 0,
             )
 
-            checkpoint_callback = lambda manager, completed, total: persist_graph_checkpoint(
+            checkpoint_callback = lambda manager, completed, total: persist_graph_checkpoint_if_due(
                 manager,
                 base_name,
                 original_filename,
@@ -1662,7 +1696,7 @@ def process_update_file(
         new_kg_triplet = kg_manager.增量更新(
             new_text_content,
             progress_callback=create_chunk_progress_callback(base_name, status="updating"),
-            checkpoint_callback=lambda manager, completed, total: persist_graph_checkpoint(
+            checkpoint_callback=lambda manager, completed, total: persist_graph_checkpoint_if_due(
                 manager,
                 base_name,
                 filename,

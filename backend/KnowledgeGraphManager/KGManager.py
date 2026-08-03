@@ -62,6 +62,10 @@ class KgManager:
         self.current_G = nx.DiGraph()
         # 当前 文本分块
         self.Bolts = []
+        # StoreTool uses this to avoid re-embedding every completed block at
+        # each checkpoint. It is reset when an incremental update deletes data.
+        self._persisted_bolt_count = 0
+        self._persisted_bolt_file = None
         self.noteType = "general"
         self.custom_prompts = {}
         # Smaller independent responses prevent one oversized JSON document from
@@ -75,6 +79,12 @@ class KgManager:
         self.relationship_max_split_depth = _positive_int_env(
             "RELATION_MAX_SPLIT_DEPTH", 10
         )
+        # Keep the conservative serial mode by default. Providers that allow
+        # concurrent requests can raise this to 2-4 for much higher throughput.
+        self.processing_workers = _positive_int_env("KG_WORKER_COUNT", 1)
+        self.knowledge_fusion_enabled = os.getenv(
+            "KG_FUSION_ENABLED", "True"
+        ).strip().lower() in {"true", "1", "yes", "on", "enabled"}
 
     def configure_processing_prompts(self, note_type="general", custom_prompts=None):
         """Use per-file custom prompts while falling back to the general templates."""
@@ -151,6 +161,7 @@ class KgManager:
             input_parameter,
             expected_key="entities",
         )
+        logger.debug("实体提取响应: %s", output)
         if not isinstance(output, dict):
             raise RuntimeError("实体提取请求失败或返回格式无效")
         entity_label = output.get("entities",[])
@@ -386,6 +397,9 @@ class KgManager:
 
 
     def 知识融合(self,relations):
+        if not self.knowledge_fusion_enabled:
+            logger.info("已通过 KG_FUSION_ENABLED 关闭关系融合")
+            return relations
         # 创建一个字典来存储实体对及其关系
         entity_pairs = defaultdict(list)
 
@@ -405,7 +419,7 @@ class KgManager:
         merged_relations = []
         for entity_pair, rel_list in entity_pairs.items():
             if len(rel_list) > 1:  # 只处理有多个关系的实体对
-                print(entity_pair,"需要更新的",rel_list)
+                logger.debug("关系融合实体对: %s, 关系数: %d", entity_pair, len(rel_list))
                 # 构建输入文本
                 input_text = f"实体1：{entity_pair[0]}\n实体2：{entity_pair[1]}\n"
                 input_text += "现有关系：\n"
@@ -427,7 +441,7 @@ class KgManager:
                     input_text,
                     expected_key="relations",
                 )
-                print(merged_result, "关系融合")
+                logger.debug("关系融合结果: %s", merged_result)
 
                 # 确保融合后的关系中包含权重
                 if not isinstance(merged_result, dict):
@@ -474,13 +488,16 @@ class KgManager:
                         try:
                             rel['weight'] = float(rel['weight'])
                         except (ValueError, TypeError):
-                            print(f"警告: 无法将权重 '{rel['weight']}' 转换为浮点数，使用默认值0.5")
+                            logger.warning(
+                                "无法将权重 '%s' 转换为浮点数，使用默认值0.5",
+                                rel['weight'],
+                            )
                             rel['weight'] = 0.5
 
                     formatted_relation['relation'].append(rel)
                     # print(f"添加关系: {rel['source']} -> {rel['target']}, 权重: {rel['weight']}")
                 else:
-                    print(f"警告：跳过格式不正确的关系: {rel}")
+                    logger.warning("跳过格式不正确的关系: %r", rel)
             if formatted_relation['relation']:  # 只添加有效的关系
                 formatted_relations.append(formatted_relation)
 
@@ -527,35 +544,54 @@ class KgManager:
             self.kg_triplet = kg_triplet
             return kg_triplet
 
-        # 每次只处理一个完整块，确保暂停时不会有下一个模型请求在后台运行。
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-            for i in range(num_blocks):
-                if pause_callback and pause_callback():
-                    raise ProcessingPaused("用户已暂停文件处理")
+        def process_block(block):
+            entity_label = self.实体提取(block[1])
+            entity = [item[0] for item in entity_label]
+            return entity_label, self.关系提取(block[1], entity)
 
-                block_started_at = time.monotonic()
-                entity_label = executor.submit(
-                    self.实体提取,
-                    blocks_to_process[i][1],
-                ).result()
-                entity_labels += entity_label
-                entity = [e[0] for e in entity_label]
-                relation = executor.submit(
-                    self.关系提取,
-                    blocks_to_process[i][1],
-                    entity,
-                ).result()
-                result = {"bid": blocks_to_process[i][0], "relation": relation}
-                self.Bolts.append(blocks_to_process[i])
-                self.kg_triplet.append(result)
-                self.bidirectional_mapping = self._build_bidirectional_mapping(entity_labels)
-                completed = completed_offset + i + 1
-                if checkpoint_callback:
-                    checkpoint_callback(self, completed, overall_total)
-                if progress_callback:
-                    progress_callback(completed, overall_total, time.monotonic() - block_started_at)
+        def commit_block(index, entity_label, relation, block_started_at):
+            entity_labels.extend(entity_label)
+            result = {"bid": blocks_to_process[index][0], "relation": relation}
+            self.Bolts.append(blocks_to_process[index])
+            self.kg_triplet.append(result)
+            self.bidirectional_mapping = self._build_bidirectional_mapping(entity_labels)
+            completed = completed_offset + index + 1
+            if checkpoint_callback:
+                checkpoint_callback(self, completed, overall_total)
+            if progress_callback:
+                progress_callback(completed, overall_total, time.monotonic() - block_started_at)
+
+        if self.processing_workers == 1:
+            executor_context = None
+        else:
+            executor_context = concurrent.futures.ThreadPoolExecutor(
+                max_workers=self.processing_workers
+            )
+
+        try:
+            # Concurrent batches preserve commit order and pause checkpoints.
+            for batch_start in range(0, num_blocks, self.processing_workers):
                 if pause_callback and pause_callback():
                     raise ProcessingPaused("用户已暂停文件处理")
+                batch_end = min(batch_start + self.processing_workers, num_blocks)
+                batch_started_at = time.monotonic()
+                if executor_context is None:
+                    results = [process_block(blocks_to_process[batch_start])]
+                else:
+                    futures = [
+                        executor_context.submit(process_block, blocks_to_process[index])
+                        for index in range(batch_start, batch_end)
+                    ]
+                    results = [future.result() for future in futures]
+
+                for offset, (entity_label, relation) in enumerate(results):
+                    index = batch_start + offset
+                    commit_block(index, entity_label, relation, batch_started_at)
+                    if pause_callback and pause_callback():
+                        raise ProcessingPaused("用户已暂停文件处理")
+        finally:
+            if executor_context is not None:
+                executor_context.shutdown(wait=True)
         self.bidirectional_mapping = self._build_bidirectional_mapping(entity_labels)
         self.kg_triplet = kg_triplet
         # print(kg_triplet)
@@ -576,7 +612,10 @@ class KgManager:
                 try:
                     weight = float(rel.get('weight', 0.5))
                 except (ValueError, TypeError):
-                    print(f"警告: 无法转换权重值 '{rel.get('weight')}' 为浮点数，使用默认值0.5")
+                    logger.warning(
+                        "无法转换权重值 '%s' 为浮点数，使用默认值0.5",
+                        rel.get('weight'),
+                    )
                     weight = 0.5
 
                 # print(f"添加边 {source} -> {target} 权重: {weight}")
@@ -669,9 +708,15 @@ class KgManager:
                 where={"file": self.file},
                 ids=bids_to_remove
             )
+            self._persisted_bolt_count = 0
+            self._persisted_bolt_file = self.file
 
         add_data = list(added_blocks)
-        print(f"增量更新：\n 新增的块：{add_data},\n  被删除的块：{bids_to_remove}")
+        logger.info(
+            "增量更新: 新增块=%d, 删除块=%d",
+            len(add_data),
+            len(bids_to_remove),
+        )
         retained_blocks = [item for item in self.Bolts if item[0] not in bids_to_remove]
         self.Bolts = retained_blocks
         self.kg_triplet = filtered_data
@@ -900,10 +945,16 @@ class KgManager:
         # 节点重要性计算
         节点度数 = dict(G.degree())
         最大度数 = max(节点度数.values(), default=0) or 1
-        try:
-            pagerank = nx.pagerank(G)
-        except:
-            pagerank = {n: 1.0 for n in G.nodes()}
+        max_pagerank_nodes = _positive_int_env("GRAPH_PAGERANK_MAX_NODES", 5000)
+        if len(G) > max_pagerank_nodes or G.number_of_edges() > max_pagerank_nodes * 10:
+            # PageRank is visual decoration; skip its iterative solve for very
+            # large graphs so rendering remains bounded by graph serialization.
+            pagerank = {n: 0.0 for n in G.nodes()}
+        else:
+            try:
+                pagerank = nx.pagerank(G)
+            except Exception:
+                pagerank = {n: 1.0 for n in G.nodes()}
 
         # 创建PyVis网络
         is_directed = G.is_directed()  # 根据图类型自适应
@@ -1738,6 +1789,8 @@ class KgManager:
                 self.current_G = state["current_G"]
                 self.Bolts = state["Bolts"]
                 self.original_file_type = state.get('original_file_type', '.txt')
+                self._persisted_bolt_count = len(self.Bolts)
+                self._persisted_bolt_file = self.file
                 return True
         return False
 

@@ -2,6 +2,7 @@ import json
 import logging
 import re
 import time
+from collections.abc import Mapping
 from dotenv import load_dotenv
 import os
 from threading import Lock
@@ -171,6 +172,82 @@ class OpenaiAgent:
 
         raise ValueError("未找到有效的 JSON 内容") from last_error
 
+    @staticmethod
+    def _response_field(value, field, default=None):
+        if isinstance(value, Mapping):
+            return value.get(field, default)
+        return getattr(value, field, default)
+
+    @classmethod
+    def _extract_chat_completion(cls, response):
+        """Extract text from SDK objects and gateways that return raw JSON."""
+        if isinstance(response, (bytes, bytearray)):
+            response = response.decode("utf-8", errors="replace")
+        if isinstance(response, str):
+            raw_response = response.strip()
+            if raw_response.startswith("<"):
+                raise AIResponseFormatError(
+                    "AI 服务返回了 HTML 页面，请检查 Base URL 是否包含兼容接口路径（通常是 /v1）"
+                )
+            try:
+                response = json.loads(raw_response)
+            except json.JSONDecodeError as exc:
+                preview = raw_response[:120].replace("\n", " ")
+                raise AIResponseFormatError(
+                    f"AI 服务返回的不是 JSON（响应片段: {preview!r}）"
+                ) from exc
+
+        choices = cls._response_field(response, "choices")
+        if not choices:
+            raise AIResponseFormatError("AI 返回中没有 choices")
+        choice = choices[0]
+        message = cls._response_field(choice, "message")
+        content = cls._response_field(message, "content")
+        finish_reason = cls._response_field(choice, "finish_reason")
+
+        if isinstance(content, list):
+            content = "".join(
+                cls._response_field(part, "text", "")
+                for part in content
+                if cls._response_field(part, "type") in {None, "text"}
+            )
+        if content is None:
+            content = ""
+        if not isinstance(content, str):
+            content = str(content)
+        return content, finish_reason
+
+    @classmethod
+    def _extract_stream_content(cls, chunk):
+        """Extract a text delta from SDK chunks or mapping-shaped chunks."""
+        if isinstance(chunk, (bytes, bytearray)):
+            chunk = chunk.decode("utf-8", errors="replace")
+        if isinstance(chunk, str):
+            text = chunk.strip()
+            if text.startswith("data:"):
+                text = text[5:].strip()
+            if not text or text == "[DONE]":
+                return ""
+            try:
+                chunk = json.loads(text)
+            except json.JSONDecodeError:
+                return chunk
+
+        choices = cls._response_field(chunk, "choices") or []
+        if not choices:
+            return ""
+        delta = cls._response_field(choices[0], "delta")
+        content = cls._response_field(delta, "content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "".join(
+                cls._response_field(part, "text", "")
+                for part in content
+                if cls._response_field(part, "type") in {None, "text"}
+            )
+        return ""
+
     def agent_safe_generate_response(
         self,
         prompt,
@@ -232,11 +309,7 @@ class OpenaiAgent:
             self.max_output_parameter: self.max_output_tokens,
         }
         response = client.chat.completions.create(**request_options)
-        if not response.choices:
-            raise AIResponseFormatError("AI 返回中没有 choices")
-        choice = response.choices[0]
-        output = choice.message.content or ""
-        finish_reason = getattr(choice, "finish_reason", None)
+        output, finish_reason = self._extract_chat_completion(response)
         logger.info(
             "AI 响应完成: provider=%s model=%s finish_reason=%s chars=%d",
             "备用 AI" if fallback else "主 AI",
@@ -268,8 +341,7 @@ class OpenaiAgent:
                         fallback=use_fallback,
                     )
                     for chunk in response_stream:
-                        if hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content is not None:
-                            response_content += chunk.choices[0].delta.content
+                        response_content += self._extract_stream_content(chunk)
 
                     # 构建类似非流式输出的结构
                     if 'json' in response_content:
@@ -387,7 +459,7 @@ class OpenaiAgent:
             stream=False,
             extra_body=self._thinking_options(enable_thinking)
         )
-        output = response.choices[0].message.content
+        output, _ = self._extract_chat_completion(response)
         return output
 
     def hybrid_rag(self, query, graph, vectors, messages, stream=False):
@@ -446,9 +518,7 @@ class OpenaiAgent:
         处理流式响应的单个块，返回格式化的内容
         便于上层应用统一处理
         """
-        if hasattr(chunk.choices[0].delta, 'content') and chunk.choices[0].delta.content is not None:
-            return chunk.choices[0].delta.content
-        return ""
+        return self._extract_stream_content(chunk)
 
     def extract_material_from_text(self, text):
         """

@@ -101,6 +101,22 @@ class GraphInteractionTests(unittest.TestCase):
         self.assertIn('class="community-list-item"', overview)
         self.assertGreaterEqual(len(community_pages), 2)
 
+    def test_community_min_size_one_exposes_small_communities(self):
+        manager = KgManager(agent=None, splitter=None, embedding_model=None, store=None)
+        manager.current_G = nx.DiGraph()
+        manager.current_G.add_nodes_from(["甲", "乙", "丙"])
+
+        with tempfile.TemporaryDirectory() as output_dir:
+            manager.绘制知识图谱(
+                "小社区",
+                输出目录=output_dir,
+                社区最小规模=1,
+            )
+            graph_dir = Path(output_dir, "小社区")
+            community_pages = list(graph_dir.glob("小社区_community_*.html"))
+
+        self.assertEqual(len(community_pages), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

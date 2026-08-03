@@ -739,6 +739,7 @@ class KgManager:
         物理引擎="forceAtlas2Based",
         输出目录="results",
         页面路由前缀=None,
+        社区最小规模=None,
     ):
         """
         优化版知识图谱可视化（支持社区分页渲染）
@@ -750,6 +751,8 @@ class KgManager:
             输出目录: 图谱结果根目录；每个图谱在其中使用独立的同名目录
             页面路由前缀: 可选的浏览器访问路由前缀。未指定时使用同目录相对链接，
                 生成的 HTML 可直接从结果目录打开。
+            社区最小规模: 生成社区详情页的最小节点数；未指定时读取
+                GRAPH_COMMUNITY_MIN_SIZE，默认为 20。设置为 1 可查看所有社区。
         """
         self.file = name
 
@@ -777,7 +780,10 @@ class KgManager:
 
         最大社区大小 = max(社区节点计数.values()) if 社区节点计数 else 0
         社区数量 = len(社区节点计数)
-        MIN_SIZE = 20  # 可调：大于此值才单独生成页面
+        if 社区最小规模 is None:
+            MIN_SIZE = _positive_int_env("GRAPH_COMMUNITY_MIN_SIZE", 20)
+        else:
+            MIN_SIZE = max(1, int(社区最小规模))
 
         启用分页 = (聚类算法 == "louvain") and (社区数量 > 1) and (最大社区大小 >= MIN_SIZE)
 

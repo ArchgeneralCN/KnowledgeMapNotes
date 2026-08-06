@@ -69,10 +69,15 @@ class  storeManager:
             input_parameter,
             expected_key="entities",
         )
-        if isinstance(output, str):
+        # A truncated/invalid entity response must not abort the whole RAG
+        # queue. Vector retrieval can still answer the question without graph
+        # context, while the caller can continue with an empty entity set.
+        if not isinstance(output, dict):
             return []
-        else:
-            return output.get("entities",[])
+        entities = output.get("entities", [])
+        if not isinstance(entities, list):
+            return []
+        return entities
 
 
     def select_vectors(self, query, file, n_results):
@@ -163,6 +168,5 @@ class  storeManager:
         print(f"\nModularity of the entire graph: {modularity}")
 
         return knowledge_base
-
 
 

@@ -56,6 +56,12 @@ class GraphInteractionTests(unittest.TestCase):
         self.assertIn("network.on('oncontext'", html)
         self.assertIn("graphContainer.addEventListener('contextmenu'", html)
         self.assertIn("右键节点、关系或空白处", html)
+        self.assertIn("const GRAPH_EDITOR_VERSION = 3;", html)
+        self.assertIn("knowledge-graph-evidence", html)
+        self.assertIn("出处文本块（只读）", html)
+        self.assertIn("function showNodeDialog", html)
+        self.assertIn("原文查找", html)
+        self.assertIn("knowledge-graph-highlight", html)
 
     def test_old_graph_page_receives_editor_on_delivery(self):
         legacy = "<html><body><div id=\"mynetwork\"></div><script>var network = {};</script></body></html>"
@@ -112,6 +118,8 @@ class GraphInteractionTests(unittest.TestCase):
         self.assertIn('id="communitySearchInput"', overview)
         self.assertIn('id="communityTypeFilter"', overview)
         self.assertIn('class="community-list-item"', overview)
+        self.assertIn('class="community-source-link"', overview)
+        self.assertNotIn('"entityType": "社区"', overview)
         self.assertGreaterEqual(len(community_pages), 2)
 
     def test_community_min_size_one_exposes_small_communities(self):

@@ -190,6 +190,35 @@ class OpenaiAgentJsonParsingTests(unittest.TestCase):
                 raise_on_failure=True,
             )
 
+    def test_rag_truncation_recovers_completed_answer_and_sets_output_limit(self):
+        class Completions:
+            def __init__(self):
+                self.calls = 0
+                self.kwargs = None
+
+            def create(self, **kwargs):
+                self.calls += 1
+                self.kwargs = kwargs
+                return SimpleNamespace(choices=[SimpleNamespace(
+                    finish_reason="length",
+                    message=SimpleNamespace(
+                        content='{"answer":["已完整生成的答案"],"material":["未完成的引用'
+                    )
+                )])
+
+        completions = Completions()
+        client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+        agent = OpenaiAgent(client, model_name="rag-model", max_output_tokens=2048)
+        agent.temp_sleep = lambda *_args: None
+
+        result = agent.agent_safe_generate_response_rag(
+            "prompt", "input", [], stream=False, repeat=1
+        )
+
+        self.assertEqual(result["answer"], "已完整生成的答案")
+        self.assertEqual(completions.kwargs["max_tokens"], 2048)
+        self.assertEqual(completions.calls, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

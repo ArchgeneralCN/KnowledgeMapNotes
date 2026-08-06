@@ -95,14 +95,20 @@ GRAPH_INTERACTION_TEMPLATE = r"""
   .community-list { max-height: min(39vh, 300px); overflow-y: auto; }
   .community-list-item {
     display: block; padding: 8px; border: 1px solid #eef2f7; border-radius: 7px;
-    margin-bottom: 6px; color: #334155; text-decoration: none;
+    margin-bottom: 6px; color: #334155;
   }
   .community-list-item:hover { border-color: #93c5fd; background: #eff6ff; }
+  .community-item-link { display: block; color: #334155; text-decoration: none; }
   .community-item-name { display: block; font-size: 11px; font-weight: 700; }
   .community-item-meta {
     display: block; overflow: hidden; margin-top: 3px; color: #64748b;
     font-size: 9px; text-overflow: ellipsis; white-space: nowrap;
   }
+  .community-source-link {
+    margin-top: 6px; padding: 3px 6px; border: 1px solid #bfdbfe; border-radius: 5px;
+    background: #eff6ff; color: #2563eb; cursor: pointer; font-size: 9px;
+  }
+  .community-source-link:hover { background: #dbeafe; border-color: #60a5fa; }
   .community-back-bar {
     position: fixed; z-index: 1900; right: 10px; bottom: 10px; display: flex; gap: 10px;
     padding: 7px 10px; border: 1px solid #e5e7eb; border-radius: 18px;
@@ -176,6 +182,7 @@ GRAPH_INTERACTION_TEMPLATE = r"""
   const NODE_COUNT = __NODE_COUNT__;
   const EDGE_COUNT = __EDGE_COUNT__;
   const GRAPH_NAME = __GRAPH_NAME__;
+  const GRAPH_STATIC_LAYOUT_VERSION = __GRAPH_STATIC_LAYOUT_VERSION__;
   let searchTimer = null;
   let minimumWeight = 0.5;
   let focusKeepNodes = null;
@@ -218,6 +225,65 @@ GRAPH_INTERACTION_TEMPLATE = r"""
       edgeStates[edge.id] = { clicked: false, labelVisible: false };
       edgeOriginalWidths[edge.id] = edge.width || 1;
     });
+  }
+
+  function prepareLegacyStaticForceLayout(nodeCount) {
+    const graphContainer = document.getElementById('mynetwork');
+    if (!graphContainer) return false;
+    graphContainer.style.visibility = 'hidden';
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      network.setOptions({ physics: { enabled: false } });
+      graphContainer.style.visibility = 'visible';
+      updateVisibleStatus(nodeCount, network.body.data.edges.get().length);
+      network.fit({ animation: false });
+    };
+    network.once('stabilized', finish);
+    network.setOptions({
+      physics: {
+        enabled: true,
+        solver: 'forceAtlas2Based',
+        stabilization: {
+          enabled: true,
+          iterations: nodeCount > 500 ? 50 : 80,
+          updateInterval: 25,
+          fit: true
+        }
+      },
+      layout: { improvedLayout: true }
+    });
+    network.stabilize(nodeCount > 500 ? 50 : 80);
+    window.setTimeout(finish, 5000);
+    return true;
+  }
+
+  function applyLargeGraphPerformance() {
+    const nodes = network.body?.data?.nodes?.get?.() || [];
+    const edges = network.body?.data?.edges?.get?.() || [];
+    if (nodes.length <= 50) return false;
+
+    // Newly generated pages already contain server-side ForceAtlas2 coordinates.
+    // Legacy pages are stabilized while hidden, then physics is disabled before
+    // they are shown, so users do not see the original continuous bouncing.
+    network.setOptions({
+      physics: { enabled: false, stabilization: { enabled: false } },
+      layout: { improvedLayout: false },
+      interaction: {
+        dragNodes: true, dragView: true, zoomView: true,
+        hideEdgesOnDrag: true
+      }
+    });
+    const hasCoordinates = nodes.length > 0 && nodes.every(node =>
+      Number.isFinite(Number(node.x)) && Number.isFinite(Number(node.y))
+    );
+    if (GRAPH_STATIC_LAYOUT_VERSION < 1 || !hasCoordinates) {
+      prepareLegacyStaticForceLayout(nodes.length);
+    }
+    updateVisibleStatus(nodes.length, edges.length);
+    network.fit({ animation: false });
+    return true;
   }
 
   function nodePassesFilters(node) {
@@ -347,6 +413,80 @@ GRAPH_INTERACTION_TEMPLATE = r"""
     });
   }
 
+  function bindCommunitySourceButton(button) {
+    if (!button || button.dataset.bound === '1') return;
+    button.dataset.bound = '1';
+    button.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      let sourceBlocks = [];
+      try {
+        sourceBlocks = JSON.parse(button.dataset.sourceBlocks || '[]');
+      } catch (error) {
+        console.warn('社区主节点出处文本块格式无效:', error);
+      }
+      window.parent?.postMessage({
+        type: 'knowledge-graph-evidence',
+        graphName: GRAPH_NAME,
+        kind: 'node',
+        id: button.dataset.nodeId || '',
+        sourceBlocks
+      }, '*');
+    });
+  }
+
+  function refreshCommunityMetadata() {
+    const directory = document.getElementById('communityDirectory');
+    if (!directory || !nodeDetails.size) return;
+    const findNodeDetail = label => nodeDetails.get(String(label))
+      || [...nodeDetails.values()].find(node => String(node.name || node.id) === String(label));
+    const types = new Set();
+    directory.querySelectorAll('.community-list-item').forEach(item => {
+      const representative = item.dataset.name || '';
+      const detail = findNodeDetail(representative);
+      if (!detail) return;
+      const type = String(detail.entityType || '未分类');
+      types.add(type);
+      item.dataset.types = type;
+      const meta = item.querySelector('.community-item-meta');
+      if (meta) {
+        const count = (meta.textContent.match(/\d+/) || [''])[0];
+        meta.textContent = `${count ? `${count} 个节点 · ` : ''}主节点类型：${type}`;
+      }
+      let sourceButton = item.querySelector('.community-source-link');
+      if (!sourceButton) {
+        sourceButton = document.createElement('button');
+        sourceButton.type = 'button';
+        sourceButton.className = 'community-source-link';
+        sourceButton.textContent = '查看原文文本块';
+        item.appendChild(sourceButton);
+      }
+      sourceButton.dataset.nodeId = String(detail.id);
+      sourceButton.dataset.sourceBlocks = JSON.stringify(detail.source_blocks || []);
+      bindCommunitySourceButton(sourceButton);
+    });
+    const typeFilter = document.getElementById('communityTypeFilter');
+    if (typeFilter && types.size) {
+      typeFilter.innerHTML = '<option value="">全部实体类型</option>'
+        + [...types].sort((a, b) => a.localeCompare(b, 'zh-CN'))
+          .map(type => `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`).join('');
+    }
+    const communityNodes = network.body.data.nodes.get().map(node => {
+      const detail = findNodeDetail(node.label || node.id);
+      return detail ? {
+        ...node,
+        entityType: detail.entityType || '未分类',
+        group: detail.entityType || '未分类',
+        source_blocks: detail.source_blocks || []
+      } : node;
+    });
+    network.body.data.nodes.update(communityNodes);
+    const typeOptions = document.getElementById('entityTypeOptions');
+    if (typeOptions) renderEntityTypeOptions(typeOptions);
+    applyVisibilityFilters();
+    renderSearchResults();
+  }
+
   function setupCommunityDirectory() {
     const directory = document.getElementById('communityDirectory');
     if (!directory) return;
@@ -358,6 +498,8 @@ GRAPH_INTERACTION_TEMPLATE = r"""
     const typeFilter = document.getElementById('communityTypeFilter');
     const items = [...directory.querySelectorAll('.community-list-item')];
     const empty = document.getElementById('communityEmptyState');
+    directory.querySelectorAll('.community-source-link').forEach(bindCommunitySourceButton);
+    editorMetadataReady.then(refreshCommunityMetadata);
     const apply = () => {
       const term = (search?.value || '').toLowerCase().trim();
       const type = typeFilter?.value || '';
@@ -441,6 +583,60 @@ GRAPH_INTERACTION_TEMPLATE = r"""
         id: requestedId,
         sourceBlocks
       }, '*');
+    });
+  }
+
+  function showNodeDialog(target) {
+    const node = network.body.data.nodes.get(target.id);
+    if (!node) return;
+    const detail = nodeDetails.get(String(node.id)) || {};
+    const sourceBlocks = Array.isArray(detail.source_blocks) ? detail.source_blocks : [];
+    const mask = document.createElement('div');
+    mask.className = 'graph-editor-dialog-mask';
+    mask.innerHTML = `
+      <section class="graph-editor-dialog" role="dialog" aria-modal="true">
+        <h3>节点详情</h3>
+        <div class="graph-editor-field"><label>节点名称</label><input value="${escapeHtml(node.label || node.id)}" readonly></div>
+        <div class="graph-editor-field"><label>节点类型</label><input value="${escapeHtml(entityTypeOf(node))}" readonly></div>
+        <div class="graph-editor-field"><label>连接数</label><input value="${escapeHtml(network.getConnectedNodes(node.id).length)}" readonly></div>
+        <div class="graph-editor-field"><label>出处文本块（只读）</label><textarea readonly>${escapeHtml(sourceBlocks.length ? sourceBlocks.join('\n') : '无可定位出处')}</textarea></div>
+        <div class="graph-editor-actions">
+          <button type="button" data-dialog-close>关闭</button>
+          <button type="button" class="primary" data-dialog-locate>原文查找</button>
+        </div>
+      </section>`;
+    document.body.appendChild(mask);
+    const close = () => mask.remove();
+    mask.addEventListener('click', event => {
+      if (event.target === mask || event.target.closest('[data-dialog-close]')) close();
+    });
+    mask.querySelector('[data-dialog-locate]').addEventListener('click', () => {
+      requestEvidence('node', target.id);
+      close();
+    });
+  }
+
+  function highlightGraphTarget(kind, id) {
+    const requestedId = String(id ?? '');
+    if (!requestedId) return;
+    editorMetadataReady.then(() => {
+      if (kind === 'node') {
+        const node = network.body.data.nodes.get(requestedId)
+          || network.body.data.nodes.get().find(item => String(item.id) === requestedId);
+        if (!node) return;
+        network.selectNodes([node.id]);
+        network.focus(node.id, { scale: 1.45, animation: { duration: 350 } });
+        requestEvidence('node', node.id);
+        return;
+      }
+      const edge = network.body.data.edges.get(requestedId)
+        || network.body.data.edges.get().find(item =>
+          String(item.id) === requestedId || String(edgeApiIds.get(String(item.id))) === requestedId
+        );
+      if (!edge) return;
+      network.selectEdges([edge.id]);
+      network.fit({ nodes: [edge.from, edge.to], animation: { duration: 350 } });
+      requestEvidence('edge', edge.id);
     });
   }
 
@@ -572,7 +768,7 @@ GRAPH_INTERACTION_TEMPLATE = r"""
         <div class="graph-editor-field"><label>关系 ID</label><input value="${escapeHtml(edge.editId)}" readonly></div>
         <div class="graph-editor-actions">
           <button type="button" data-dialog-close>关闭</button>
-          <button type="button" data-dialog-locate>定位出处</button>
+          <button type="button" data-dialog-locate>原文查找</button>
           ${readonly ? '' : '<button type="button" class="primary" data-dialog-save>保存修改</button>'}
         </div>
       </section>`;
@@ -618,8 +814,7 @@ GRAPH_INTERACTION_TEMPLATE = r"""
     const item = target.type === 'node' ? selectedNode(target) : selectedEdge(target);
     if (!item) return;
     if (target.type === 'node') {
-      window.alert(`节点：${item.label || item.id}\n类型：${entityTypeOf(item)}\n连接数：${network.getConnectedNodes(item.id).length}`);
-      requestEvidence('node', target.id);
+      showNodeDialog(target);
     } else {
       showEdgeDialog(target, true);
     }
@@ -658,6 +853,7 @@ GRAPH_INTERACTION_TEMPLATE = r"""
     const graphContainer = document.getElementById('mynetwork');
     if (!graphContainer || typeof network === 'undefined') return;
     const host = graphContainer.parentNode;
+    applyLargeGraphPerformance();
     let readyNotified = false;
     const notifyGraphReady = () => {
       if (readyNotified) return;
@@ -672,6 +868,11 @@ GRAPH_INTERACTION_TEMPLATE = r"""
     window.setTimeout(notifyGraphReady, 2500);
     initializeGraphMetadata();
     editorMetadataReady = syncEditorRevision();
+    window.addEventListener('message', event => {
+      if (event.source !== window.parent || event.data?.type !== 'knowledge-graph-highlight') return;
+      if (event.data.graphName && event.data.graphName !== GRAPH_NAME) return;
+      highlightGraphTarget(event.data.kind, event.data.id);
+    });
     document.addEventListener('click', hideContextMenu);
     // vis-network's `oncontext` is not emitted consistently across its
     // versions, especially when the canvas is inside a sandboxed iframe.
@@ -704,10 +905,12 @@ GRAPH_INTERACTION_TEMPLATE = r"""
           : { type: 'canvas', id: null });
     });
 
+    const runtimeNodeCount = network.body.data.nodes.get().length;
+    const runtimeEdgeCount = network.body.data.edges.get().length;
     const searchPanel = createPanel('search-panel', '🔍 实体与关系', `
       <input type="search" id="searchInput" class="graph-text-input" placeholder="搜索实体或关系...">
       <div class="search-results" id="searchResults"></div>
-      <div class="status-bar" id="visibleGraphStatus"><strong>${NODE_COUNT}</strong> 节点 · <strong>${EDGE_COUNT}</strong> 关系</div>`);
+      <div class="status-bar" id="visibleGraphStatus"><strong>${Math.max(NODE_COUNT, runtimeNodeCount)}</strong> 节点 · <strong>${Math.max(EDGE_COUNT, runtimeEdgeCount)}</strong> 关系</div>`);
     host.insertBefore(searchPanel, graphContainer);
 
     const controlPanel = createPanel('control-panel', '⚙️ 图谱控制', `
@@ -873,13 +1076,19 @@ GRAPH_INTERACTION_TEMPLATE = r"""
 """
 
 
-def build_graph_interaction_html(node_count: int, edge_count: int, graph_name: str = "") -> str:
+def build_graph_interaction_html(
+    node_count: int,
+    edge_count: int,
+    graph_name: str = "",
+    static_layout_version: int = 1,
+) -> str:
     """Build the static interaction layer with escaped numeric counters."""
     return (
         GRAPH_INTERACTION_TEMPLATE
         .replace("__NODE_COUNT__", escape(str(int(node_count))))
         .replace("__EDGE_COUNT__", escape(str(int(edge_count))))
         .replace("__GRAPH_NAME__", json.dumps(str(graph_name), ensure_ascii=False))
+        .replace("__GRAPH_STATIC_LAYOUT_VERSION__", escape(str(int(static_layout_version))))
     )
 
 
@@ -977,18 +1186,24 @@ document.addEventListener('DOMContentLoaded', function () {
 </script>
 """
         html_content = html_content.replace("</body>", ready_script + "</body>")
-    if graph_name and "const GRAPH_EDITOR_VERSION = 3;" not in html_content:
+    if graph_name and (
+        "const GRAPH_EDITOR_VERSION = 3;" not in html_content
+        or "function applyLargeGraphPerformance()" not in html_content
+        or "const GRAPH_STATIC_LAYOUT_VERSION =" not in html_content
+    ):
         # Replace an older injected interaction layer instead of appending a
         # second one. Otherwise both old and new context-menu handlers would
         # run on the same right click.
         old_layer = re.compile(
             r'<style>\s*div\.vis-configuration-wrapper.*?</style>\s*'
-            r'<script>\s*\(function \(\) \{\s*const NODE_COUNT = .*?</script>',
+            r'<script>\s*\(function \(\) \{\s*'
+            r'(?:const GRAPH_EDITOR_VERSION\s*=\s*\d+;\s*)?'
+            r'const NODE_COUNT = .*?</script>',
             flags=re.IGNORECASE | re.DOTALL,
         )
         html_content = old_layer.sub('', html_content, count=1)
         # Older generated pages predate the editor. Inject the current layer
         # on delivery so they gain the same CRUD and history behavior.
-        editor_html = build_graph_interaction_html(0, 0, graph_name)
+        editor_html = build_graph_interaction_html(0, 0, graph_name, static_layout_version=0)
         html_content = html_content.replace("</body>", editor_html + "</body>", 1)
     return html_content

@@ -19,6 +19,10 @@ class AIResponseError(RuntimeError):
 class AIResponseTruncatedError(AIResponseError):
     """Raised when the provider reports that the output token limit was hit."""
 
+    def __init__(self, message, content=""):
+        super().__init__(message)
+        self.content = content or ""
+
 
 class AIResponseFormatError(AIResponseError):
     """Raised when every provider attempt returned an unusable JSON payload."""
@@ -320,7 +324,8 @@ class OpenaiAgent:
         if finish_reason in {"length", "max_tokens"}:
             raise AIResponseTruncatedError(
                 f"AI 输出达到 token 上限（finish_reason={finish_reason}，"
-                f"已返回 {len(output)} 字符）"
+                f"已返回 {len(output)} 字符）",
+                content=output,
             )
         if not output.strip():
             raise AIResponseFormatError(
@@ -329,10 +334,10 @@ class OpenaiAgent:
         return output
 
     def agent_safe_generate_response_rag(self, prompt, input_parameter, messages, stream, repeat=3):
+        truncated_content = ""
         for use_fallback in self._request_attempts(repeat):
             try:
                 if stream:
-                    # 流式输出需要特殊处理
                     response_content = ""
                     response_stream = self.agent_request_rag_stream(
                         prompt,
@@ -342,37 +347,8 @@ class OpenaiAgent:
                     )
                     for chunk in response_stream:
                         response_content += self._extract_stream_content(chunk)
-
-                    # 构建类似非流式输出的结构
-                    if 'json' in response_content:
-                        pattern = r"```json\s*({.*?})\s*```"
-                        match = re.search(pattern, response_content, re.DOTALL)
-                        if match:
-                            json_content = match.group(1)
-                            try:
-                                return json.loads(json_content)
-                            except json.JSONDecodeError:
-                                print(f"JSON解析错误: {json_content}")
-                                continue
-                        else:
-                            print("未找到匹配的 JSON 内容")
-                            print(f"原始内容: {response_content[:100]}...")
-
-                    # 如果没有JSON格式，尝试解析普通文本
-                    # 尝试从文本中提取答案和参考资料
-                    answer = response_content
-                    material = ""
-
-                    # 尝试寻找参考资料部分
-                    material_match = re.search(r"参考资料[：:]([\s\S]+)$", response_content)
-                    if material_match:
-                        material = material_match.group(1).strip()
-                        # 从答案中移除参考资料部分
-                        answer = response_content[:material_match.start()].strip()
-
-                    return {"answer": answer, "material": material}
+                    return self._parse_rag_output(response_content)
                 else:
-                    # 非流式输出处理方式不变
                     curr_gpt_response = self.agent_request_rag(
                         prompt,
                         input_parameter,
@@ -380,41 +356,89 @@ class OpenaiAgent:
                         stream,
                         fallback=use_fallback,
                     )
-                    x = ""
-                    if 'json' in curr_gpt_response:
-                        pattern = r"```json\s*({.*?})\s*```"
-                        match = re.search(pattern, curr_gpt_response, re.DOTALL)
-                        if match:
-                            json_content = match.group(1)
-                            try:
-                                x = json.loads(json_content)
-                            except json.JSONDecodeError:
-                                print(f"JSON解析错误: {json_content}")
-                                continue
-                        else:
-                            print("未找到匹配的 JSON 内容")
-                            continue
-                    else:
-                        # 如果没有JSON格式，尝试解析普通文本
-                        # 尝试从文本中提取答案和参考资料
-                        answer = curr_gpt_response
-                        material = ""
-
-                        # 尝试寻找参考资料部分
-                        material_match = re.search(r"参考资料[：:]([\s\S]+)$", curr_gpt_response)
-                        if material_match:
-                            material = material_match.group(1).strip()
-                            # 从答案中移除参考资料部分
-                            answer = curr_gpt_response[:material_match.start()].strip()
-
-                        x = {"answer": answer, "material": material}
-                    return x
+                    return self._parse_rag_output(curr_gpt_response)
+            except AIResponseTruncatedError as exc:
+                truncated_content = exc.content or truncated_content
+                logger.warning(
+                    "%s RAG 响应达到输出上限，准备重试: %s",
+                    "备用 AI" if use_fallback else "主 AI",
+                    exc,
+                )
             except Exception as e:
                 provider = "备用 AI" if use_fallback else "主 AI"
-                print(f"{provider} ERROR: {str(e)}")
-                import traceback
-                traceback.print_exc()
+                logger.warning("%s RAG 响应解析或请求失败: %s", provider, e)
+
+        recovered = self._recover_rag_response(truncated_content)
+        if recovered is not None:
+            logger.warning("RAG 响应多次截断，已保留模型已完整生成的答案部分")
+            return recovered
+        if truncated_content:
+            logger.error("RAG 响应多次达到 token 上限，无法恢复完整 JSON")
+            return {
+                "answer": "AI 回答过长，未能完整生成。请缩小问题范围或减少关联关系后重试。",
+                "material": "",
+            }
         return -1
+
+    @classmethod
+    def _parse_rag_output(cls, response):
+        """Parse RAG JSON and retain a plain-text fallback for older prompts."""
+        try:
+            parsed = cls._parse_json_response(response)
+        except (TypeError, ValueError):
+            text = str(response or "").strip()
+            if not text or "{" in text or "```json" in text.lower():
+                raise AIResponseFormatError("RAG 响应不是完整 JSON")
+            answer, material = cls._split_plain_rag_text(text)
+            return {"answer": answer, "material": material}
+        if not isinstance(parsed, Mapping):
+            raise AIResponseFormatError("RAG JSON 顶层必须是对象")
+        return {
+            "answer": cls._rag_value_to_text(parsed.get("answer", "")),
+            "material": cls._rag_value_to_text(parsed.get("material", "")),
+        }
+
+    @staticmethod
+    def _rag_value_to_text(value):
+        if isinstance(value, list):
+            return "\n".join(str(item) for item in value if item is not None).strip()
+        return str(value or "").strip()
+
+    @classmethod
+    def _split_plain_rag_text(cls, text):
+        material_match = re.search(r"参考资料[：:]([\s\S]+)$", text)
+        if not material_match:
+            return text, ""
+        return text[:material_match.start()].strip(), material_match.group(1).strip()
+
+    @classmethod
+    def _recover_rag_response(cls, content):
+        """Recover an answer when JSON is cut off while writing material."""
+        if not content:
+            return None
+        answer_match = re.search(
+            r'"answer"\s*:\s*(?:\[\s*)?"((?:\\.|[^"\\])*)"',
+            content,
+            flags=re.DOTALL,
+        )
+        if not answer_match:
+            return None
+        try:
+            answer = json.loads('"' + answer_match.group(1) + '"')
+        except json.JSONDecodeError:
+            answer = answer_match.group(1).replace('\\"', '"').replace('\\n', '\n')
+        material_match = re.search(
+            r'"material"\s*:\s*(?:\[\s*)?"((?:\\.|[^"\\])*)"',
+            content,
+            flags=re.DOTALL,
+        )
+        material = ""
+        if material_match:
+            try:
+                material = json.loads('"' + material_match.group(1) + '"')
+            except json.JSONDecodeError:
+                material = material_match.group(1).replace('\\"', '"').replace('\\n', '\n')
+        return {"answer": answer.strip(), "material": material.strip()}
 
     def agent_request_rag_stream(self, prompt, input_parameter, messages, fallback=False):
         """流式请求方法"""
@@ -434,6 +458,7 @@ class OpenaiAgent:
             messages=formatted_messages,
             temperature=temperature,
             stream=True,
+            **{self.max_output_parameter: self.max_output_tokens},
             extra_body=self._thinking_options(enable_thinking)
         )
         return response
@@ -457,9 +482,16 @@ class OpenaiAgent:
             messages=formatted_messages,
             temperature=temperature,
             stream=False,
+            **{self.max_output_parameter: self.max_output_tokens},
             extra_body=self._thinking_options(enable_thinking)
         )
-        output, _ = self._extract_chat_completion(response)
+        output, finish_reason = self._extract_chat_completion(response)
+        if finish_reason in {"length", "max_tokens"}:
+            raise AIResponseTruncatedError(
+                f"RAG 输出达到 token 上限（finish_reason={finish_reason}，"
+                f"已返回 {len(output)} 字符）",
+                content=output,
+            )
         return output
 
     def hybrid_rag(self, query, graph, vectors, messages, stream=False):

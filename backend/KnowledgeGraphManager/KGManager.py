@@ -803,6 +803,26 @@ class KgManager:
         else:
             MIN_SIZE = max(1, int(社区最小规模))
 
+        # 为原图节点建立稳定的出处文本块索引。社区子图复制节点时会
+        # 一并携带该字段，右键查看节点即可定位它在本社区中的原文出处。
+        节点出处文本块 = defaultdict(list)
+        for block in self.kg_triplet or []:
+            if not isinstance(block, dict):
+                continue
+            bid = str(block.get("bid", ""))
+            if not bid:
+                continue
+            for relation in block.get("relation") or []:
+                if not isinstance(relation, dict):
+                    continue
+                for endpoint in (relation.get("source"), relation.get("target")):
+                    if endpoint and bid not in 节点出处文本块[endpoint]:
+                        节点出处文本块[endpoint].append(bid)
+        for node in self.current_G.nodes:
+            self.current_G.nodes[node]["source_blocks"] = list(
+                节点出处文本块.get(node, self.current_G.nodes[node].get("source_blocks", []))
+            )
+
         启用分页 = (聚类算法 == "louvain") and (社区数量 > 1) and (最大社区大小 >= MIN_SIZE)
 
         if not 启用分页:
@@ -832,19 +852,6 @@ class KgManager:
         for n, cid in 社区分配.items():
             社区节点列表.setdefault(cid, []).append(n)
 
-        社区实体类型 = {
-            cid: sorted({
-                str(
-                    self.current_G.nodes[node].get("entity_type")
-                    or self.current_G.nodes[node].get("group")
-                    or self.current_G.nodes[node].get("title")
-                    or "未分类"
-                )
-                for node in nodes
-            })
-            for cid, nodes in 社区节点列表.items()
-        }
-
         节点度数全图 = dict(self.current_G.degree())
         社区代表节点 = {}
         for cid, nodes in 社区节点列表.items():
@@ -854,6 +861,20 @@ class KgManager:
             else:
                 社区代表节点[cid] = f"社区{cid}"
 
+        def 节点实体类型(node):
+            return str(
+                self.current_G.nodes[node].get("entity_type")
+                or self.current_G.nodes[node].get("group")
+                or self.current_G.nodes[node].get("title")
+                or "未分类"
+            )
+
+        # 社区首页使用主节点的原始实体类型，避免概览图所有节点都显示为“社区”。
+        社区主节点类型 = {
+            cid: 节点实体类型(代表)
+            for cid, 代表 in 社区代表节点.items()
+            if 代表 in self.current_G
+        }
         # 快速查找原图中的边（无向处理，保留权重最大的一条）
         edge_lookup = {}
         for u, v, data in self.current_G.edges(data=True):
@@ -867,9 +888,12 @@ class KgManager:
             ov_G.add_node(cid,
                           label=代表节点名,
                           size=size,
-                          group=cid,
-                          entity_type="社区",
-                          title=f"社区 {cid}\n节点数: {size}\n代表节点: {代表节点名}")
+                          group=社区主节点类型.get(cid, "未分类"),
+                          entity_type=社区主节点类型.get(cid, "未分类"),
+                          source_blocks=节点出处文本块.get(代表节点名, []),
+                          representative_node=代表节点名,
+                          title=f"社区 {cid}\n节点数: {size}\n代表节点: {代表节点名}\n"
+                                f"主节点类型: {社区主节点类型.get(cid, '未分类')}")
 
         # 构建跨社区边（使用代表节点间的真实关系）
         for cu, cv in itertools.combinations(社区节点计数.keys(), 2):
@@ -900,9 +924,8 @@ class KgManager:
 
         # ---- 4. 生成主页面（概览图） ----
         社区类型选项 = sorted({
-            entity_type
+            社区主节点类型.get(cid, "未分类")
             for cid in 大社区
-            for entity_type in 社区实体类型.get(cid, [])
         })
         社区类型选项HTML = "".join(
             f'<option value="{html.escape(entity_type, quote=True)}">'
@@ -910,12 +933,17 @@ class KgManager:
             for entity_type in 社区类型选项
         )
         导航链接列表 = "".join(
-            f'<a class="community-list-item" href="{html.escape(页面链接(子页面名称[cid]), quote=True)}" '
+            f'<div class="community-list-item" '
             f'data-name="{html.escape(str(社区代表节点.get(cid, f"社区{cid}")), quote=True)}" '
-            f'data-types="{html.escape("|".join(社区实体类型.get(cid, [])), quote=True)}">'
+            f'data-types="{html.escape(社区主节点类型.get(cid, "未分类"), quote=True)}">'
+            f'<a class="community-item-link" href="{html.escape(页面链接(子页面名称[cid]), quote=True)}">'
             f'<span class="community-item-name">{html.escape(str(社区代表节点.get(cid, f"社区{cid}")))}</span>'
             f'<span class="community-item-meta">{社区节点计数.get(cid, 0)} 个节点 · '
-            f'{html.escape("、".join(社区实体类型.get(cid, [])) or "未分类")}</span></a>'
+            f'主节点类型：{html.escape(社区主节点类型.get(cid, "未分类"))}</span></a>'
+            f'<button type="button" class="community-source-link" '
+            f'data-node-id="{html.escape(str(社区代表节点.get(cid, f"社区{cid}")), quote=True)}" '
+            f'data-source-blocks="{html.escape(json.dumps(节点出处文本块.get(社区代表节点.get(cid), []), ensure_ascii=False), quote=True)}">'
+            f'查看原文文本块</button></div>'
             for cid in 大社区
         )
 
@@ -958,6 +986,52 @@ class KgManager:
             print(f"   社区 {cid} 详情页: {子页面路径[cid]}  ({社区节点计数[cid]} 个节点)")
         return self.current_G
 
+    @staticmethod
+    def _计算静态力导向布局(G):
+        """在服务端一次性计算原始 ForceAtlas2 风格布局。
+
+        浏览器不再运行物理引擎，避免打开页面后节点持续弹动；坐标仍由
+        力导向算法生成，因此保留原先自然分布的视觉效果，而不是规则网格
+        或按距离排列的同心环。
+        """
+        if not G:
+            return {}
+
+        无向图 = G.to_undirected()
+        节点总数 = len(无向图)
+        最大迭代次数 = 80 if 节点总数 <= 500 else 50 if 节点总数 <= 2000 else 30
+        forceatlas2 = getattr(nx, "forceatlas2_layout", None)
+        try:
+            if forceatlas2 is not None:
+                positions = forceatlas2(
+                    无向图,
+                    max_iter=最大迭代次数,
+                    scaling_ratio=2.0,
+                    gravity=1.0,
+                    weight="weight",
+                    seed=42,
+                )
+            else:
+                positions = nx.spring_layout(
+                    无向图,
+                    seed=42,
+                    iterations=最大迭代次数,
+                    weight="weight",
+                )
+        except Exception as error:
+            logger.warning("静态力导向布局计算失败，改用弹簧布局: %s", error)
+            positions = nx.spring_layout(
+                无向图,
+                seed=42,
+                iterations=max(30, 最大迭代次数),
+                weight="weight",
+            )
+
+        return {
+            node: (float(position[0]), float(position[1]))
+            for node, position in positions.items()
+        }
+
     def _渲染图(self, G, 文件名, 社区分配, 物理引擎, 导航HTML=""):
         """
         内部渲染函数：将图 G 渲染为单个 HTML 文件
@@ -984,7 +1058,7 @@ class KgManager:
         is_directed = G.is_directed()  # 根据图类型自适应
         net = Network(
             notebook=True,
-            height="750px",
+            height="800px",
             width="100%",
             bgcolor="#ffffff",
             font_color="#1a1a1a",
@@ -995,52 +1069,19 @@ class KgManager:
         )
 
         # 物理引擎配置
-        # ===== 动态物理引擎配置 =====
+        # 大图不启动物理模拟：ForceAtlas2 在节点数较多时会持续占用主线程，
+        # 造成页面打开后长时间弹动、拖拽卡顿。节点会在下方获得一次性计算的
+        # 静态力导向位置，但不设置 fixed，因此用户仍可以自由拖动节点。
+        # 初始位置，但不设置 fixed，因此用户仍可以自由拖动节点。
         节点总数 = len(G.nodes())
-        if 节点总数 > 200:
-            # 大图：强重力、短弹簧、更多迭代，快速稳定
+        大图静态布局 = 节点总数 > 50
+        if 大图静态布局:
             physics = {
-                "forceAtlas2Based": {
-                    "gravitationalConstant": -120,
-                    "centralGravity": 0.01,
-                    "springLength": 100,
-                    "springConstant": 0.12,
-                    "damping": 0.5,
-                    "avoidOverlap": 1.0
-                },
-                "solver": "forceAtlas2Based",
-                "stabilization": {
-                    "enabled": True,
-                    "iterations": 220,
-                    "updateInterval": 25,
-                    "onlyDynamicEdges": False,
-                    "fit": True
-                },
-                "maxVelocity": 30,
-                "minVelocity": 0.1,
-                "timestep": 0.25
-            }
-        elif 节点总数 > 100:
-            # 中图：适度调整
-            physics = {
-                "forceAtlas2Based": {
-                    "gravitationalConstant": -100,
-                    "centralGravity": 0.008,
-                    "springLength": 150,
-                    "springConstant": 0.1,
-                    "damping": 0.45,
-                    "avoidOverlap": 1.0
-                },
-                "solver": "forceAtlas2Based",
-                "stabilization": {
-                    "enabled": True,
-                    "iterations": 180,
-                    "updateInterval": 25,
-                    "fit": True,
-                }
+                "enabled": False,
+                "stabilization": {"enabled": False}
             }
         else:
-            # 小图：保留原精美配置
+            # 50 个及以下：保留原有物理布局作为备用
             physics = {
                 "forceAtlas2Based": {
                     "gravitationalConstant": -80,
@@ -1065,12 +1106,12 @@ class KgManager:
                 "scaling": {"min": 10, "max": 40, "label": {"enabled": True, "min": 14, "max": 24}},
                 "font": {"size": 14, "face": "Microsoft YaHei, SimHei, sans-serif", "color": "#1a1a1a"},
                 "borderWidth": 2, "borderWidthSelected": 4,
-                "shadow": {"enabled": True, "size": 10, "x": 3, "y": 3}
+                "shadow": {"enabled": not 大图静态布局, "size": 10, "x": 3, "y": 3}
             },
             "edges": {
                 "width": 1,
                 "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6},
-                "smooth": {"type": "continuous", "roundness": 0.5},
+                "smooth": False if 大图静态布局 else {"type": "continuous", "roundness": 0.5},
                 "selectionWidth": 3, "hoverWidth": 2,
                 "arrows": {
                     "to": {"enabled": is_directed, "scaleFactor": 0.5}
@@ -1080,15 +1121,23 @@ class KgManager:
             },
             "interaction": {
                 "hover": True, "tooltipDelay": 100, "hideEdgesOnDrag": True,
-                "hideNodesOnDrag": False, "multiselect": True, "navigationButtons": False,
+                "hideNodesOnDrag": False, "dragNodes": True, "dragView": True,
+                "zoomView": True, "multiselect": True, "navigationButtons": False,
                 "keyboard": True
             },
-            "layout": {"improvedLayout": True}
+            "layout": {"improvedLayout": not 大图静态布局}
         }
         options.update({"physics": physics})
         net.set_options(json.dumps(options, indent=2))
 
-        # 添加节点
+        # 添加节点。关闭物理引擎后必须提供分散的初始位置，否则部分旧版
+        # vis-network 会把尚未定位的节点堆在画布中心。这里不设置 fixed，
+        # 所以静态布局只是初始位置，用户仍然可以拖动。
+        if 大图静态布局:
+            静态节点坐标 = self._计算静态力导向布局(G)
+        else:
+            静态节点坐标 = {}
+
         for node, attr in G.nodes(data=True):
             degree = 节点度数.get(node, 0)
             pr = pagerank.get(node, 0)
@@ -1110,6 +1159,7 @@ class KgManager:
                 "value": size,
                 "group": group,
                 "entityType": entity_type,
+                "source_blocks": list(attr.get('source_blocks') or []),
                 "color": {
                     "background": "#ff6b35" if is_hub else "#2196F3",
                     "border": "#e55a2b" if is_hub else "#1976D2",
@@ -1119,6 +1169,12 @@ class KgManager:
                               "border": "#ff6b35" if is_hub else "#2196F3"}
                 }
             }
+            if 大图静态布局 and node in 静态节点坐标:
+                x, y = 静态节点坐标[node]
+                node_options.update({
+                    "x": x,
+                    "y": y,
+                })
             if is_hub:
                 node_options["font"] = {
                     "size": 16, "color": "#1a1a1a",
@@ -1151,7 +1207,7 @@ class KgManager:
                 "hoverWidth": 1.5 + weight * 2,
                 "selectionWidth": 2 + weight * 2
             }
-            if is_hub_edge:
+            if is_hub_edge and not 大图静态布局:
                 edge_options["smooth"] = {"type": "curvedCW", "roundness": 0.3}
             if attr.get('edit_id'):
                 edge_options['id'] = attr['edit_id']

@@ -330,7 +330,9 @@ const jumpToEvidence = (index) => {
 
 const locateEvidenceResults = (sourceBlocks, blocks) => {
   const content = fileContent.value || '';
-  const blockById = new Map(blocks.map((block, index) => [String(block.bid), { ...block, index }]));
+  const normalizedBlocks = (Array.isArray(blocks) ? blocks : [])
+    .filter(block => block && typeof block === 'object');
+  const blockById = new Map(normalizedBlocks.map((block, index) => [String(block.bid), { ...block, index }]));
   const references = (Array.isArray(sourceBlocks) ? sourceBlocks : [])
     .map(reference => {
       if (reference && typeof reference === 'object') {
@@ -347,20 +349,29 @@ const locateEvidenceResults = (sourceBlocks, blocks) => {
   const uniqueReferences = references.filter((reference, index, all) =>
     all.findIndex(candidate => candidate.bid === reference.bid) === index
   );
+  // Build positions against every block in document order. Searching only the
+  // selected results could mistake a repeated block for an earlier occurrence.
   let searchOffset = 0;
-  return uniqueReferences.map(reference => {
-    const block = blockById.get(reference.bid);
+  const positionsById = new Map();
+  normalizedBlocks.forEach(block => {
     const text = String(block.text || '');
     let start = text ? content.indexOf(text, searchOffset) : -1;
     if (start < 0 && text) start = content.indexOf(text);
     const end = start >= 0 ? start + text.length : -1;
     if (start >= 0) searchOffset = end;
+    positionsById.set(String(block.bid), { start, end });
+  });
+
+  return uniqueReferences.map(reference => {
+    const block = blockById.get(reference.bid);
+    const text = String(block.text || '');
+    const position = positionsById.get(reference.bid) || { start: -1, end: -1 };
     return {
       ...reference,
       text,
       index: block.index,
-      start,
-      end,
+      start: position.start,
+      end: position.end,
       preview: text.replace(/\s+/g, ' ').trim().slice(0, 180)
     };
   }).sort((left, right) => left.index - right.index);
@@ -407,6 +418,30 @@ const handleKnowledgeGraphEvidence = async (event) => {
 const knowledgeGraphUrl = ref(null);
 const knowledgeGraphLoading = ref(false);
 const knowledgeGraphFrameRef = ref(null);
+const ragReferenceData = ref({ nodes: [], links: [], blocks: [] });
+let ragReferenceRequestId = 0;
+
+const loadRagReferenceData = async (filename) => {
+  if (!filename) return;
+  const requestId = ++ragReferenceRequestId;
+  try {
+    const [graphResponse, sourceResponse] = await Promise.all([
+      api.get(`/graph-data/${encodePathSegment(filename)}`),
+      api.get(`/graph-sources/${encodePathSegment(filename)}`)
+    ]);
+    if (requestId !== ragReferenceRequestId || currentFile.value?.name !== filename) return;
+    ragReferenceData.value = {
+      nodes: graphResponse.data?.nodes || [],
+      links: graphResponse.data?.links || [],
+      blocks: sourceResponse.data?.blocks || []
+    };
+  } catch (error) {
+    if (requestId === ragReferenceRequestId) {
+      ragReferenceData.value = { nodes: [], links: [], blocks: [] };
+      console.warn('加载 RAG 图谱引用数据失败:', error);
+    }
+  }
+};
 
 const finishKnowledgeGraphLoading = () => {
   if (knowledgeGraphReadyTimer) clearTimeout(knowledgeGraphReadyTimer);
@@ -562,6 +597,141 @@ const formatTextWithLineBreaks = (text) => {
     return text.join('\n');
   }
   return text;
+};
+
+const addRagReferenceCandidate = (candidates, seen, label, payload, priority = 0) => {
+  const normalizedLabel = String(label || '').trim();
+  if (normalizedLabel.length < 2 || seen.has(`${payload.kind}:${payload.id}:${normalizedLabel}`)) return;
+  seen.add(`${payload.kind}:${payload.id}:${normalizedLabel}`);
+  candidates.push({ label: normalizedLabel, payload, priority });
+};
+
+const getRagReferenceCandidates = (text) => {
+  const data = ragReferenceData.value;
+  const candidates = [];
+  const seen = new Set();
+  const links = Array.isArray(data.links) ? data.links : [];
+
+  (Array.isArray(data.blocks) ? data.blocks : []).forEach(block => {
+    const blockText = String(block.text || '').trim();
+    if (!blockText || !String(text || '').includes(blockText)) return;
+    addRagReferenceCandidate(candidates, seen, blockText, {
+      kind: 'evidence', id: String(block.bid), sourceBlocks: [String(block.bid)]
+    }, 100);
+  });
+
+  links.forEach(link => {
+    const sourceBlocks = link.evidence_blocks || (link.source_block ? [link.source_block] : []);
+    const payload = { kind: 'edge', id: String(link.id), sourceBlocks };
+    const source = String(link.source || '');
+    const target = String(link.target || '');
+    const relation = String(link.relation || '');
+    const context = String(link.context || link.evidence || '');
+    const weight = link.weight ?? link.score ?? '';
+    [
+      `Edge from ${source} to ${target}, Relation: ${relation}, context:${context}, weight:${weight}`,
+      `Edge from ${source} to ${target}, Relation: ${relation}, context:${context}`,
+      `${source} -> ${target}，${relation}`
+    ].forEach(label => {
+      if (String(text || '').includes(label)) addRagReferenceCandidate(candidates, seen, label, payload, 90);
+    });
+    if (String(text || '').includes(relation)) {
+      addRagReferenceCandidate(candidates, seen, relation, payload, 60);
+    }
+  });
+
+  (Array.isArray(data.nodes) ? data.nodes : []).forEach(node => {
+    const name = String(node.name || node.id || '');
+    if (String(text || '').includes(name)) {
+      addRagReferenceCandidate(candidates, seen, name, {
+        kind: 'node', id: String(node.id), sourceBlocks: node.source_blocks || []
+      }, 30);
+    }
+  });
+  return candidates;
+};
+
+const renderRagContent = (content) => {
+  const text = formatTextWithLineBreaks(content);
+  if (!text) return '';
+  const candidates = getRagReferenceCandidates(text);
+  const ranges = [];
+  candidates
+    .sort((left, right) => right.label.length - left.label.length || right.priority - left.priority)
+    .forEach(candidate => {
+      let from = 0;
+      while (from < text.length) {
+        const start = text.indexOf(candidate.label, from);
+        if (start < 0) break;
+        const end = start + candidate.label.length;
+        if (!ranges.some(range => start < range.end && end > range.start)) {
+          ranges.push({ start, end, label: candidate.label, payload: candidate.payload });
+        }
+        from = end;
+      }
+    });
+  ranges.sort((left, right) => left.start - right.start);
+  let cursor = 0;
+  return ranges.map(range => {
+    const payload = encodeURIComponent(JSON.stringify(range.payload));
+    const html = escapeDocumentHtml(text.slice(cursor, range.start))
+      + `<a href="#" class="rag-reference" data-reference="${payload}">${escapeDocumentHtml(range.label)}</a>`;
+    cursor = range.end;
+    return html;
+  }).join('') + escapeDocumentHtml(text.slice(cursor));
+};
+
+const postGraphHighlight = (kind, id) => {
+  if (!knowledgeGraphFrameRef.value?.contentWindow || !currentFile.value?.name) return;
+  knowledgeGraphFrameRef.value.contentWindow.postMessage({
+    type: 'knowledge-graph-highlight',
+    graphName: getGraphName(currentFile.value.name),
+    kind,
+    id: String(id)
+  }, '*');
+};
+
+const handleRagReferenceClick = (event) => {
+  const link = event.target?.closest?.('.rag-reference');
+  if (!link) return;
+  event.preventDefault();
+  let reference;
+  try {
+    reference = JSON.parse(decodeURIComponent(link.dataset.reference || ''));
+  } catch {
+    return;
+  }
+  const data = ragReferenceData.value;
+  const sourceBlocks = reference.sourceBlocks || [];
+  const blockIds = new Set(sourceBlocks.map(block =>
+    String(typeof block === 'object' ? block.source_block || block.bid || '' : block)
+  ));
+  let graphTarget = reference.kind === 'edge' ? { kind: 'edge', id: reference.id } : null;
+  if (reference.kind === 'evidence') {
+    const edge = (data.links || []).find(item =>
+      (item.evidence_blocks || []).some(item => blockIds.has(String(item.source_block || item.bid || item)))
+    );
+    const node = (data.nodes || []).find(item =>
+      (item.source_blocks || []).some(block => blockIds.has(String(block)))
+    );
+    graphTarget = edge
+      ? { kind: 'edge', id: edge.id }
+      : node ? { kind: 'node', id: node.id } : null;
+  }
+  if (graphTarget) postGraphHighlight(graphTarget.kind, graphTarget.id);
+  if (!sourceBlocks.length || !data.blocks.length) return;
+
+  const results = locateEvidenceResults(sourceBlocks, data.blocks);
+  evidenceResults.value = results;
+  evidenceKind.value = reference.kind === 'edge' ? 'edge' : 'node';
+  activeEvidenceIndex.value = 0;
+  panelVisible.original = true;
+  activeTab.value = 'original';
+  contentViewMode.value = 'source';
+  nextTick(() => {
+    if (results.length) jumpToEvidence(0);
+    else ElMessage.info('该引用暂无可定位的原文文本块');
+  });
 };
 
 const copyFileContent = async () => {
@@ -1007,6 +1177,9 @@ const sendMessage = async () => {
   if (!currentFile.value?.name) {
     ElMessage.error('请先选择一个文件');
     return;
+  }
+  if (!ragReferenceData.value.links.length && !ragReferenceData.value.blocks.length) {
+    loadRagReferenceData(currentFile.value.name);
   }
 
   // 如果切换了文件，保存当前文件的聊天记录
@@ -1497,6 +1670,8 @@ const viewFileResult = async (file) => {
         ElMessage.error('文件名不存在');
         return;
       }
+      ragReferenceData.value = { nodes: [], links: [], blocks: [] };
+      loadRagReferenceData(file.name);
 
       try {
         const [contentResponse] = await Promise.all([
@@ -1562,6 +1737,8 @@ const closeResultView = () => {
   activeView.value = 'upload';
   finishKnowledgeGraphLoading();
   knowledgeGraphUrl.value = null;
+  ragReferenceRequestId += 1;
+  ragReferenceData.value = { nodes: [], links: [], blocks: [] };
   evidenceRequestId += 1;
   evidenceResults.value = [];
   sourceHighlightHtml.value = '';
@@ -2453,14 +2630,22 @@ onUnmounted(() => {
                         </div>
                         <div v-else>
                           <template v-if="typeof message.content === 'object'">
-                            <div class="answer">{{ formatTextWithLineBreaks(message.content.answer) }}</div>
+                            <div
+                                class="answer"
+                                @click="handleRagReferenceClick"
+                                v-html="renderRagContent(message.content.answer)"
+                            ></div>
                             <div v-if="message.content.material && message.content.material.length > 0" class="material">
                               <div class="material-title">参考资料：</div>
-                              <div class="material-content">{{ message.content.material }}</div>
+                              <div
+                                  class="material-content"
+                                  @click="handleRagReferenceClick"
+                                  v-html="renderRagContent(message.content.material)"
+                              ></div>
                             </div>
                           </template>
                           <template v-else>
-                            {{ message.content }}
+                            <div class="answer" @click="handleRagReferenceClick" v-html="renderRagContent(message.content)"></div>
                           </template>
                         </div>
                       </div>
@@ -3507,6 +3692,7 @@ onUnmounted(() => {
                 flex: 1;
                 min-height: 0;
                 height: 100%;
+                container-type: inline-size;
                 padding: 24px;
                 overflow-y: auto;
                 font-family: system-ui, -apple-system, sans-serif;
@@ -3531,7 +3717,7 @@ onUnmounted(() => {
                   width: min(100%, 920px);
                   min-height: 100%;
                   margin: 0 auto;
-                  padding: 40px 48px 56px;
+                  padding: clamp(18px, 4cqw, 40px) clamp(16px, 5cqw, 48px) clamp(32px, 6cqw, 56px);
                   border: 1px solid var(--el-border-color-lighter);
                   border-radius: 6px;
                   background-color: var(--el-bg-color);
@@ -3545,15 +3731,16 @@ onUnmounted(() => {
                   margin: 0;
                   padding: 20px;
                   overflow: auto;
-                  white-space: pre;
-                  word-break: normal;
+                  white-space: pre-wrap;
+                  overflow-wrap: anywhere;
+                  word-break: break-word;
                   line-height: 1.7;
                   border: 1px solid var(--el-border-color-lighter);
                   border-radius: 6px;
                   background-color: var(--el-fill-color-lighter);
                   color: var(--el-text-color-primary);
                   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-                  font-size: 13px;
+                  font-size: clamp(10px, 1.35cqw, 13px);
 
                   :deep(.source-highlight) {
                     padding: 1px 2px;
@@ -3565,7 +3752,7 @@ onUnmounted(() => {
 
                 :deep(.markdown-body) {
                   color: var(--el-text-color-primary);
-                  font-size: 15px;
+                  font-size: clamp(12px, 1.55cqw, 15px);
                   line-height: 1.8;
                   overflow-wrap: anywhere;
 
@@ -3842,6 +4029,16 @@ onUnmounted(() => {
                       .answer {
                         margin-bottom: 8px;
                         line-height: 1.6;
+
+                        :deep(.rag-reference) {
+                          padding: 1px 3px;
+                          border-bottom: 1px solid var(--el-color-primary);
+                          border-radius: 3px;
+                          background: var(--el-color-primary-light-9);
+                          color: var(--el-color-primary);
+                          cursor: pointer;
+                          text-decoration: none;
+                        }
                       }
 
                       .material {
@@ -3861,6 +4058,16 @@ onUnmounted(() => {
                           color: var(--el-text-color-regular);
                           line-height: 1.5;
                           white-space: pre-wrap;
+
+                          :deep(.rag-reference) {
+                            padding: 1px 3px;
+                            border-bottom: 1px solid var(--el-color-primary);
+                            border-radius: 3px;
+                            background: var(--el-color-primary-light-9);
+                            color: var(--el-color-primary);
+                            cursor: pointer;
+                            text-decoration: none;
+                          }
                         }
                       }
                     }

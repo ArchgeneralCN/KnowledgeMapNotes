@@ -47,6 +47,18 @@ class GraphEditingTests(unittest.TestCase):
         self.assertEqual(len(payload["links"]), 2)
         self.assertEqual(len({link["id"] for link in payload["links"]}), 2)
 
+    def test_payload_exposes_node_and_relation_source_blocks(self):
+        state = sample_state()
+        payload = graph_payload(state)
+        nodes = {node["id"]: node for node in payload["nodes"]}
+        self.assertEqual(nodes["甲"]["source_blocks"], ["block-1"])
+        self.assertEqual(payload["links"][0]["evidence_blocks"], [{
+            "source_block": "block-1",
+            "evidence": "原始关系",
+            "score": 0.8,
+            "edge_id": payload["links"][0]["id"],
+        }])
+
     def test_node_rename_updates_all_relations(self):
         state = sample_state()
         apply_graph_mutation(state, {"operation": "update_node", "node_id": "甲", "name": "丙", "entity_type": "人物"})

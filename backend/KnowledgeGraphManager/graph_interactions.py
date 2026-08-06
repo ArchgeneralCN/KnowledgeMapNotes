@@ -172,7 +172,7 @@ GRAPH_INTERACTION_TEMPLATE = r"""
 </style>
 <script>
 (function () {
-  const GRAPH_EDITOR_VERSION = 2;
+  const GRAPH_EDITOR_VERSION = 3;
   const NODE_COUNT = __NODE_COUNT__;
   const EDGE_COUNT = __EDGE_COUNT__;
   const GRAPH_NAME = __GRAPH_NAME__;
@@ -192,6 +192,8 @@ GRAPH_INTERACTION_TEMPLATE = r"""
   let contextMenu = null;
   const edgeApiIds = new Map();
   const edgeDetails = new Map();
+  const nodeDetails = new Map();
+  let editorMetadataReady = Promise.resolve();
 
   function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>'"]/g, char => ({
@@ -332,12 +334,14 @@ GRAPH_INTERACTION_TEMPLATE = r"""
           if (!node) return;
           network.selectNodes([node.id]);
           network.focus(node.id, { scale: 1.45, animation: { duration: 350 } });
+          requestEvidence('node', node.id);
         } else {
           const edge = network.body.data.edges.get(id)
             || network.body.data.edges.get().find(candidate => String(candidate.id) === id);
           if (!edge) return;
           network.selectEdges([edge.id]);
           network.fit({ nodes: [edge.from, edge.to], animation: { duration: 350 } });
+          requestEvidence('edge', edge.id);
         }
       });
     });
@@ -391,6 +395,9 @@ GRAPH_INTERACTION_TEMPLATE = r"""
     return editorApi(`/graph-data/${encodeURIComponent(GRAPH_NAME)}`)
       .then(payload => {
         editorRevision = Number(payload.revision || 0);
+        nodeDetails.clear();
+        edgeApiIds.clear();
+        (payload.nodes || []).forEach(node => nodeDetails.set(String(node.id), node));
         edgeDetails.clear();
         (payload.links || []).forEach(link => edgeDetails.set(String(link.id), link));
         const apiBySignature = new Map(
@@ -405,6 +412,36 @@ GRAPH_INTERACTION_TEMPLATE = r"""
         });
       })
       .catch(error => console.warn('图谱编辑接口暂不可用:', error.message));
+  }
+
+  function requestEvidence(kind, id) {
+    const requestedId = String(id ?? '');
+    if (!requestedId) return;
+    editorMetadataReady.then(() => {
+      let sourceBlocks = [];
+      if (kind === 'node') {
+        const node = nodeDetails.get(requestedId) || network.body.data.nodes.get(id);
+        sourceBlocks = node?.source_blocks || [];
+      } else if (kind === 'edge') {
+        const edge = network.body.data.edges.get(id)
+          || network.body.data.edges.get().find(candidate => String(candidate.id) === requestedId);
+        const apiId = edgeApiIds.get(requestedId) || requestedId;
+        const detail = edgeDetails.get(String(apiId)) || {};
+        sourceBlocks = detail.evidence_blocks || [];
+        if (!sourceBlocks.length && detail.source_block) sourceBlocks = [detail.source_block];
+        if (edge && !sourceBlocks.length) {
+          const fallback = edgeDetails.get(String(edge.id));
+          sourceBlocks = fallback?.evidence_blocks || [];
+        }
+      }
+      window.parent?.postMessage({
+        type: 'knowledge-graph-evidence',
+        graphName: GRAPH_NAME,
+        kind,
+        id: requestedId,
+        sourceBlocks
+      }, '*');
+    });
   }
 
   function showContextMenu(event, target) {
@@ -508,6 +545,7 @@ GRAPH_INTERACTION_TEMPLATE = r"""
       relation: detail.relation || edge.label || '',
       evidence: detail.evidence || detail.context || edge.title || '',
       sourceBlock: detail.source_block || '无',
+      evidenceBlocks: Array.isArray(detail.evidence_blocks) ? detail.evidence_blocks : [],
       score: detail.score ?? detail.weight ?? edge.weight ?? 0.5,
       origin: detail.origin === 'manual' ? '用户新增' : 'AI抽取'
     };
@@ -526,12 +564,15 @@ GRAPH_INTERACTION_TEMPLATE = r"""
         <div class="graph-editor-field"><label>终点节点</label><input id="edgeEditorTarget" value="${escapeHtml(edge.target)}"${disabled}></div>
         <div class="graph-editor-field"><label>关系名称</label><input id="edgeEditorRelation" value="${escapeHtml(edge.relation)}"${disabled}></div>
         <div class="graph-editor-field"><label>出处依据 / 关系说明</label><textarea id="edgeEditorEvidence"${disabled}>${escapeHtml(edge.evidence)}</textarea></div>
-        <div class="graph-editor-field"><label>出处文本块</label><input value="${escapeHtml(edge.sourceBlock)}" readonly></div>
+        <div class="graph-editor-field"><label>出处文本块（只读）</label><textarea readonly>${escapeHtml(edge.evidenceBlocks.length
+          ? edge.evidenceBlocks.map(item => item.source_block || item).filter(Boolean).join('\n')
+          : edge.sourceBlock)}</textarea></div>
         <div class="graph-editor-field"><label>得分 / 权重（0-1）</label><input id="edgeEditorScore" type="number" min="0" max="1" step="0.01" value="${escapeHtml(edge.score)}"${disabled}></div>
         <div class="graph-editor-field"><label>关系来源</label><input value="${escapeHtml(edge.origin)}" readonly></div>
         <div class="graph-editor-field"><label>关系 ID</label><input value="${escapeHtml(edge.editId)}" readonly></div>
         <div class="graph-editor-actions">
           <button type="button" data-dialog-close>关闭</button>
+          <button type="button" data-dialog-locate>定位出处</button>
           ${readonly ? '' : '<button type="button" class="primary" data-dialog-save>保存修改</button>'}
         </div>
       </section>`;
@@ -539,6 +580,10 @@ GRAPH_INTERACTION_TEMPLATE = r"""
     const close = () => mask.remove();
     mask.addEventListener('click', event => {
       if (event.target === mask || event.target.closest('[data-dialog-close]')) close();
+    });
+    mask.querySelector('[data-dialog-locate]').addEventListener('click', () => {
+      requestEvidence('edge', target.id);
+      close();
     });
     if (!readonly) {
       mask.querySelector('[data-dialog-save]').addEventListener('click', () => {
@@ -574,6 +619,7 @@ GRAPH_INTERACTION_TEMPLATE = r"""
     if (!item) return;
     if (target.type === 'node') {
       window.alert(`节点：${item.label || item.id}\n类型：${entityTypeOf(item)}\n连接数：${network.getConnectedNodes(item.id).length}`);
+      requestEvidence('node', target.id);
     } else {
       showEdgeDialog(target, true);
     }
@@ -625,7 +671,7 @@ GRAPH_INTERACTION_TEMPLATE = r"""
     });
     window.setTimeout(notifyGraphReady, 2500);
     initializeGraphMetadata();
-    syncEditorRevision();
+    editorMetadataReady = syncEditorRevision();
     document.addEventListener('click', hideContextMenu);
     // vis-network's `oncontext` is not emitted consistently across its
     // versions, especially when the canvas is inside a sandboxed iframe.
@@ -931,7 +977,7 @@ document.addEventListener('DOMContentLoaded', function () {
 </script>
 """
         html_content = html_content.replace("</body>", ready_script + "</body>")
-    if graph_name and "const GRAPH_EDITOR_VERSION = 2;" not in html_content:
+    if graph_name and "const GRAPH_EDITOR_VERSION = 3;" not in html_content:
         # Replace an older injected interaction layer instead of appending a
         # second one. Otherwise both old and new context-menu handlers would
         # run on the same right click.

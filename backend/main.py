@@ -380,6 +380,19 @@ async def get_graph_history(filename: str):
     return {"versions": graph_history.list_versions(base_name)}
 
 
+@app.get("/graph-sources/{filename}")
+async def get_graph_sources(filename: str):
+    """Return completed text blocks used to locate graph evidence in the reader."""
+    base_name = get_base_name(filename)
+    manager = _load_editable_graph(base_name)
+    return {
+        "blocks": [
+            {"bid": str(bid), "text": str(text), "index": index}
+            for index, (bid, text) in enumerate(manager.Bolts)
+        ]
+    }
+
+
 @app.post("/graph-mutation/{filename}")
 async def mutate_editable_graph(filename: str, request: GraphMutationRequest):
     base_name = get_base_name(filename)

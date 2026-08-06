@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import tempfile
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping
@@ -269,18 +270,51 @@ def state_from_snapshot(snapshot: Mapping[str, Any]) -> Dict[str, Any]:
 def graph_payload(state: Mapping[str, Any], revision: int = 0) -> Dict[str, Any]:
     mapping = state.get("bidirectional_mapping") or {}
     labels = mapping.get("entity_to_label") or {}
-    nodes = [{"id": name, "name": name, "entityType": label or "未知标签"}
-             for name, label in labels.items()]
+    edge_items = list(_iter_edges(dict(state)))
+    node_blocks: dict[str, list[str]] = defaultdict(list)
+    edge_blocks: dict[str, list[Dict[str, Any]]] = defaultdict(list)
+    for block, index, relation in edge_items:
+        source = relation.get("source")
+        target = relation.get("target")
+        if not source or not target:
+            continue
+        bid = str(block.get("bid", ""))
+        for node in (source, target):
+            if bid and bid not in node_blocks[node]:
+                node_blocks[node].append(bid)
+        group_key = "|".join([
+            str(source), str(target), str(relation.get("relation", "")),
+        ])
+        occurrence = {
+            "source_block": bid,
+            "evidence": relation.get("context", ""),
+            "score": relation.get("weight", 0.5),
+            "edge_id": _edge_id(block, index, relation),
+        }
+        if occurrence not in edge_blocks[group_key]:
+            edge_blocks[group_key].append(occurrence)
+
+    nodes = [{
+        "id": name,
+        "name": name,
+        "entityType": label or "未知标签",
+        "source_blocks": node_blocks.get(name, []),
+    } for name, label in labels.items()]
     known = set(labels)
     links = []
-    for block, index, relation in _iter_edges(dict(state)):
+    for block, index, relation in edge_items:
         source = relation.get("source")
         target = relation.get("target")
         if not source or not target:
             continue
         for endpoint in (source, target):
             if endpoint not in known:
-                nodes.append({"id": endpoint, "name": endpoint, "entityType": "未知标签"})
+                nodes.append({
+                    "id": endpoint,
+                    "name": endpoint,
+                    "entityType": "未知标签",
+                    "source_blocks": node_blocks.get(endpoint, []),
+                })
                 known.add(endpoint)
         links.append({
             "id": _edge_id(block, index, relation),
@@ -290,6 +324,9 @@ def graph_payload(state: Mapping[str, Any], revision: int = 0) -> Dict[str, Any]
             "context": relation.get("context", ""),
             "evidence": relation.get("context", ""),
             "source_block": block.get("bid", ""),
+            "evidence_blocks": edge_blocks.get("|".join([
+                str(source), str(target), str(relation.get("relation", "")),
+            ]), []),
             "weight": relation.get("weight", 0.5),
             "score": relation.get("weight", 0.5),
             "origin": relation.get("origin", "extracted"),

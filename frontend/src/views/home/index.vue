@@ -270,6 +270,12 @@ const openFileContextMenu = (event, file) => {
 // 添加文件内容相关状态
 const fileContent = ref('');
 const fileContentLoading = ref(false);
+const evidenceResults = ref([]);
+const activeEvidenceIndex = ref(0);
+const evidenceKind = ref('node');
+const sourceHighlightHtml = ref('');
+const documentContentRef = ref(null);
+let evidenceRequestId = 0;
 const contentViewMode = ref('preview');
 const contentViewOptions = [
   { label: '预览', value: 'preview' },
@@ -285,6 +291,117 @@ const fileContentStats = computed(() => {
   const lines = fileContent.value.split(/\r?\n/).length;
   return `${characters.toLocaleString()} 字 · ${lines.toLocaleString()} 行`;
 });
+
+const activeEvidence = computed(() => evidenceResults.value[activeEvidenceIndex.value] || null);
+
+const escapeDocumentHtml = (value) => String(value ?? '').replace(/[&<>"']/g, character => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+}[character]));
+
+const getGraphName = (filename) => {
+  const name = String(filename || '');
+  const lastDot = name.lastIndexOf('.');
+  return lastDot > 0 ? name.slice(0, lastDot) : name;
+};
+
+const makeSourceHighlight = (result) => {
+  if (!result || result.start < 0 || result.end <= result.start) return '';
+  const content = fileContent.value;
+  const html = `${escapeDocumentHtml(content.slice(0, result.start))}`
+    + `<mark class="source-highlight">${escapeDocumentHtml(content.slice(result.start, result.end))}</mark>`
+    + `${escapeDocumentHtml(content.slice(result.end))}`;
+  return DOMPurify.sanitize(html, {
+    ALLOWED_TAGS: ['mark'],
+    ALLOWED_ATTR: ['class']
+  });
+};
+
+const jumpToEvidence = (index) => {
+  if (!evidenceResults.value.length) return;
+  const normalizedIndex = (index + evidenceResults.value.length) % evidenceResults.value.length;
+  activeEvidenceIndex.value = normalizedIndex;
+  contentViewMode.value = 'source';
+  sourceHighlightHtml.value = makeSourceHighlight(evidenceResults.value[normalizedIndex]);
+  nextTick(() => {
+    const highlight = documentContentRef.value?.querySelector('.source-highlight');
+    highlight?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  });
+};
+
+const locateEvidenceResults = (sourceBlocks, blocks) => {
+  const content = fileContent.value || '';
+  const blockById = new Map(blocks.map((block, index) => [String(block.bid), { ...block, index }]));
+  const references = (Array.isArray(sourceBlocks) ? sourceBlocks : [])
+    .map(reference => {
+      if (reference && typeof reference === 'object') {
+        return {
+          bid: String(reference.source_block || reference.bid || ''),
+          evidence: reference.evidence || '',
+          score: reference.score
+        };
+      }
+      return { bid: String(reference || ''), evidence: '', score: null };
+    })
+    .filter(reference => reference.bid && blockById.has(reference.bid));
+
+  const uniqueReferences = references.filter((reference, index, all) =>
+    all.findIndex(candidate => candidate.bid === reference.bid) === index
+  );
+  let searchOffset = 0;
+  return uniqueReferences.map(reference => {
+    const block = blockById.get(reference.bid);
+    const text = String(block.text || '');
+    let start = text ? content.indexOf(text, searchOffset) : -1;
+    if (start < 0 && text) start = content.indexOf(text);
+    const end = start >= 0 ? start + text.length : -1;
+    if (start >= 0) searchOffset = end;
+    return {
+      ...reference,
+      text,
+      index: block.index,
+      start,
+      end,
+      preview: text.replace(/\s+/g, ' ').trim().slice(0, 180)
+    };
+  }).sort((left, right) => left.index - right.index);
+};
+
+const handleKnowledgeGraphEvidence = async (event) => {
+  if (
+    event.data?.type !== 'knowledge-graph-evidence'
+    || event.source !== knowledgeGraphFrameRef.value?.contentWindow
+  ) return;
+
+  const filename = currentFile.value?.name;
+  if (!filename) return;
+  const expectedGraphName = getGraphName(filename);
+  if (event.data.graphName && event.data.graphName !== expectedGraphName) return;
+
+  const requestId = ++evidenceRequestId;
+  try {
+    if (!fileContent.value) await loadFileContent(currentFile.value);
+    const response = await api.get(`/graph-sources/${encodePathSegment(filename)}`);
+    if (requestId !== evidenceRequestId) return;
+    const results = locateEvidenceResults(event.data.sourceBlocks, response.data?.blocks || []);
+    evidenceResults.value = results;
+    evidenceKind.value = event.data.kind === 'edge' ? 'edge' : 'node';
+    activeEvidenceIndex.value = 0;
+    sourceHighlightHtml.value = '';
+    panelVisible.original = true;
+    activeTab.value = 'original';
+    contentViewMode.value = 'source';
+    nextTick(() => {
+      if (results.length) jumpToEvidence(0);
+      else ElMessage.info('该节点或关系暂无可定位的出处文本块');
+    });
+  } catch (error) {
+    if (requestId === evidenceRequestId) {
+      evidenceResults.value = [];
+      sourceHighlightHtml.value = '';
+      ElMessage.warning(getApiErrorMessage(error, '加载出处文本块失败'));
+    }
+  }
+};
 
 // 在 script setup 部分添加
 const knowledgeGraphUrl = ref(null);
@@ -304,6 +421,7 @@ const handleKnowledgeGraphReadyMessage = (event) => {
   ) {
     finishKnowledgeGraphLoading();
   }
+  handleKnowledgeGraphEvidence(event);
 };
 
 const handleKnowledgeGraphFrameLoad = () => {
@@ -1364,6 +1482,10 @@ const viewFileResult = async (file) => {
       activeView.value = 'result';
       currentFile.value = file;
       currentChatFile.value = file.name;
+      evidenceRequestId += 1;
+      evidenceResults.value = [];
+      sourceHighlightHtml.value = '';
+      activeEvidenceIndex.value = 0;
       if (window.innerWidth <= 820) {
         fileListExpand.value = false;
       }
@@ -1440,6 +1562,9 @@ const closeResultView = () => {
   activeView.value = 'upload';
   finishKnowledgeGraphLoading();
   knowledgeGraphUrl.value = null;
+  evidenceRequestId += 1;
+  evidenceResults.value = [];
+  sourceHighlightHtml.value = '';
   currentChatFile.value = null;
   chatMessages.value = [];
 }
@@ -2197,6 +2322,27 @@ onUnmounted(() => {
                 </div>
               </div>
               <div class="panel-content">
+                <div v-if="evidenceResults.length" class="evidence-locator">
+                  <div class="evidence-locator-header">
+                    <strong>{{ evidenceKind === 'edge' ? '关系出处' : '节点出处' }}</strong>
+                    <span>{{ activeEvidenceIndex + 1 }} / {{ evidenceResults.length }}</span>
+                    <button type="button" @click="jumpToEvidence(activeEvidenceIndex - 1)">上一个</button>
+                    <button type="button" @click="jumpToEvidence(activeEvidenceIndex + 1)">下一个</button>
+                  </div>
+                  <div class="evidence-result-list">
+                    <button
+                        v-for="(result, index) in evidenceResults"
+                        :key="`${result.bid}-${index}`"
+                        type="button"
+                        class="evidence-result-item"
+                        :class="{ active: index === activeEvidenceIndex }"
+                        @click="jumpToEvidence(index)"
+                    >
+                      <span class="evidence-result-title">{{ result.bid }}</span>
+                      <span class="evidence-result-preview">{{ result.preview || '文本块内容为空' }}</span>
+                    </button>
+                  </div>
+                </div>
                 <div class="original-content">
                   <div v-if="fileContentLoading" class="loading-content">
                     <el-icon class="is-loading"><Loading /></el-icon>
@@ -2208,7 +2354,10 @@ onUnmounted(() => {
                         class="markdown-body"
                         v-html="renderedFileContent"
                     ></article>
-                    <pre v-else class="file-text-content"><code>{{ fileContent }}</code></pre>
+                    <pre v-else ref="documentContentRef" class="file-text-content">
+                      <code v-if="!sourceHighlightHtml">{{ fileContent }}</code>
+                      <code v-else v-html="sourceHighlightHtml"></code>
+                    </pre>
                   </div>
                   <div v-else class="empty-content">
                     <el-empty description="无法加载文件内容" />
@@ -3265,12 +3414,98 @@ onUnmounted(() => {
 
             .panel-content {
               flex: 1;
+              display: flex;
+              flex-direction: column;
               overflow: hidden;
               padding: 0;
               position: relative;
 
+              .evidence-locator {
+                flex: none;
+                padding: 10px 14px;
+                border-bottom: 1px solid var(--el-border-color-lighter);
+                background: var(--el-fill-color-light);
+
+                .evidence-locator-header {
+                  display: flex;
+                  align-items: center;
+                  gap: 8px;
+                  margin-bottom: 8px;
+                  color: var(--el-text-color-secondary);
+                  font-size: 12px;
+
+                  strong {
+                    color: var(--el-text-color-primary);
+                  }
+
+                  span {
+                    margin-right: auto;
+                  }
+
+                  button {
+                    padding: 3px 8px;
+                    border: 1px solid var(--el-border-color);
+                    border-radius: 4px;
+                    background: var(--el-bg-color);
+                    color: var(--el-text-color-regular);
+                    cursor: pointer;
+                  }
+
+                  button:hover {
+                    border-color: var(--el-color-primary);
+                    color: var(--el-color-primary);
+                  }
+                }
+
+                .evidence-result-list {
+                  display: flex;
+                  gap: 6px;
+                  max-width: 100%;
+                  overflow-x: auto;
+                }
+
+                .evidence-result-item {
+                  display: flex;
+                  flex: 0 0 190px;
+                  flex-direction: column;
+                  gap: 3px;
+                  min-width: 0;
+                  padding: 6px 8px;
+                  border: 1px solid var(--el-border-color-lighter);
+                  border-radius: 5px;
+                  background: var(--el-bg-color);
+                  color: var(--el-text-color-regular);
+                  text-align: left;
+                  cursor: pointer;
+                }
+
+                .evidence-result-item.active {
+                  border-color: var(--el-color-primary);
+                  background: var(--el-color-primary-light-9);
+                }
+
+                .evidence-result-title {
+                  overflow: hidden;
+                  color: var(--el-color-primary);
+                  font-size: 11px;
+                  font-weight: 600;
+                  text-overflow: ellipsis;
+                  white-space: nowrap;
+                }
+
+                .evidence-result-preview {
+                  overflow: hidden;
+                  color: var(--el-text-color-secondary);
+                  font-size: 11px;
+                  text-overflow: ellipsis;
+                  white-space: nowrap;
+                }
+              }
+
               .original-content {
                 box-sizing: border-box;
+                flex: 1;
+                min-height: 0;
                 height: 100%;
                 padding: 24px;
                 overflow-y: auto;
@@ -3319,6 +3554,13 @@ onUnmounted(() => {
                   color: var(--el-text-color-primary);
                   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
                   font-size: 13px;
+
+                  :deep(.source-highlight) {
+                    padding: 1px 2px;
+                    border-radius: 2px;
+                    background: #fef08a;
+                    color: inherit;
+                  }
                 }
 
                 :deep(.markdown-body) {

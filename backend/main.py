@@ -8,6 +8,7 @@ import uuid
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 from typing import Any, AsyncGenerator, Deque, Dict, List, Optional
@@ -106,6 +107,13 @@ class GraphMutationRequest(BaseModel):
     relation: Optional[str] = None
     context: Optional[str] = None
     weight: Optional[float] = None
+
+
+class DocumentContentUpdate(BaseModel):
+    """Rich document draft submitted by the document editor."""
+
+    content: str = Field(min_length=1, max_length=10_000_000)
+    rich_content: Optional[str] = Field(default=None, max_length=20_000_000)
 
 
 app = FastAPI(title="图谱笔记", description="大模型知识图谱笔记软件")
@@ -315,6 +323,7 @@ MAX_CUSTOM_PROMPT_LENGTH = 30_000
 
 
 def _graph_manager_state(manager: KgManager) -> Dict[str, Any]:
+    base_name = str(manager.file or "")
     return {
         "file": manager.file,
         "kg_triplet": manager.kg_triplet,
@@ -322,6 +331,7 @@ def _graph_manager_state(manager: KgManager) -> Dict[str, Any]:
         "current_G": manager.current_G,
         "Bolts": manager.Bolts,
         "original_file_type": manager.original_file_type,
+        "document": _document_snapshot(base_name) if base_name else {},
     }
 
 
@@ -518,6 +528,7 @@ async def restore_editable_graph(filename: str, revision: int, request: GraphMut
         before = state_snapshot(_graph_manager_state(manager))
         _restore_manager_state(manager, restored)
         try:
+            _restore_document_snapshot(base_name, restored.get("document"))
             _rebuild_editable_graph(manager)
             manager.save_store()
             new_revision = graph_history.commit(
@@ -533,6 +544,7 @@ async def restore_editable_graph(filename: str, revision: int, request: GraphMut
         except Exception:
             logger.exception("图谱还原失败: %s", base_name)
             _restore_manager_state(manager, state_from_snapshot(before))
+            _restore_document_snapshot(base_name, before.get("document"))
             manager.save_store()
             raise HTTPException(status_code=500, detail="图谱还原失败，原图谱已恢复")
         return {
@@ -1283,6 +1295,105 @@ def get_source_text_path(base_name: str) -> Path:
     return TXT_FOLDER / f"{base_name}.source.txt"
 
 
+def get_document_draft_path(base_name: str) -> Path:
+    return TXT_FOLDER / f"{base_name}.draft.txt"
+
+
+def get_document_rich_path(base_name: str) -> Path:
+    return TXT_FOLDER / f"{base_name}.rich.html"
+
+
+def get_document_history_path(base_name: str) -> Path:
+    return GRAPH_HISTORY_FOLDER / f"{base_name}.document.json"
+
+
+def _read_document_history(base_name: str) -> Dict[str, Any]:
+    path = get_document_history_path(base_name)
+    if not path.is_file():
+        return {"schema": 1, "next_revision": 1, "versions": []}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("文档历史格式无效")
+        data.setdefault("schema", 1)
+        data.setdefault("next_revision", 1)
+        data.setdefault("versions", [])
+        return data
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        logger.warning("读取文档历史失败，将创建新历史: %s", exc)
+        return {"schema": 1, "next_revision": 1, "versions": []}
+
+
+def _write_document_history(base_name: str, data: Dict[str, Any]) -> None:
+    path = get_document_history_path(base_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".document.json.tmp")
+    temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary.replace(path)
+
+
+def _document_snapshot(base_name: str, content: Optional[str] = None, rich_content: Optional[str] = None) -> Dict[str, Any]:
+    draft_path = get_document_draft_path(base_name)
+    if content is None:
+        content_path = draft_path
+        if not content_path.is_file():
+            content_path = TXT_FOLDER / f"{base_name}.txt"
+        content = content_path.read_text(encoding="utf-8") if content_path.is_file() else ""
+    if rich_content is None:
+        rich_path = get_document_rich_path(base_name)
+        rich_content = rich_path.read_text(encoding="utf-8") if rich_path.is_file() else ""
+    return {
+        "content": str(content),
+        "rich_content": str(rich_content or ""),
+        "draft": draft_path.is_file(),
+    }
+
+
+def _restore_document_snapshot(base_name: str, snapshot: Optional[Dict[str, Any]]) -> None:
+    """Restore the document files represented by a combined graph snapshot."""
+    if not snapshot:
+        return
+    content = str(snapshot.get("content") or "")
+    rich_content = str(snapshot.get("rich_content") or "")
+    if snapshot.get("draft"):
+        get_document_draft_path(base_name).write_text(content, encoding="utf-8")
+    else:
+        (TXT_FOLDER / f"{base_name}.txt").write_text(content, encoding="utf-8")
+        get_source_text_path(base_name).write_text(content, encoding="utf-8")
+        get_document_draft_path(base_name).unlink(missing_ok=True)
+    if rich_content:
+        get_document_rich_path(base_name).write_text(rich_content, encoding="utf-8")
+    else:
+        get_document_rich_path(base_name).unlink(missing_ok=True)
+
+
+def _append_document_version(base_name: str, snapshot: Dict[str, Any], operation: str) -> int:
+    data = _read_document_history(base_name)
+    revision = int(data.get("next_revision") or 1)
+    data["versions"].append({
+        "revision": revision,
+        "operation": operation,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        **snapshot,
+    })
+    data["next_revision"] = revision + 1
+    _write_document_history(base_name, data)
+    return revision
+
+
+def _document_operation_label(operation: str) -> str:
+    operation = str(operation or "")
+    if operation.startswith("before:document_edit"):
+        return "文档修改前"
+    if operation.startswith("document_edit"):
+        return "文档修改后"
+    if operation.startswith("before:document_restore"):
+        return "文档还原前"
+    if operation.startswith("document_restore:"):
+        return f"还原文档版本 {operation.split(':', 1)[1]}"
+    return "文档版本"
+
+
 def export_file_transfer_package(base_name: str) -> tuple[bytes, str]:
     """Collect one completed file into a portable, re-importable ZIP package."""
     progress = get_process_status(base_name) or {}
@@ -1825,6 +1936,8 @@ def process_uploaded_file(
 
         source_text_path = get_source_text_path(base_name)
         source_text_path.write_text(text_content, encoding="utf-8")
+        get_document_draft_path(base_name).unlink(missing_ok=True)
+        get_document_rich_path(base_name).unlink(missing_ok=True)
         Path(txt_path).write_text("", encoding="utf-8")
         set_process_status(
             base_name,
@@ -1871,6 +1984,7 @@ def process_update_file(
     use_img2txt: bool = False,
     note_type: str = "general",
     custom_prompts: Optional[Dict[str, str]] = None,
+    edited_text: Optional[str] = None,
 ):
     """处理文件增量更新"""
     try:
@@ -1908,7 +2022,10 @@ def process_update_file(
         # 文件转换处理
         conversion_success = False
         try:
-            if file_ext in FILE_PROCESSORS:
+            if edited_text is not None:
+                Path(new_txt_path).write_text(edited_text, encoding="utf-8")
+                conversion_success = True
+            elif file_ext in FILE_PROCESSORS:
                 # 使用专用处理器转换
                 processor = FILE_PROCESSORS[file_ext](output_dir=TXT_FOLDER, vl_client=vl_client)
                 processor.process([original_path], use_img2txt)
@@ -1960,13 +2077,28 @@ def process_update_file(
             # 删除临时文件
             os.remove(new_txt_path)
 
-            # 更新处理状态为已完成
-            mark_file_processing_completed(base_name)
+            # 文档草稿更新还要经过一次独立重绘，避免前端在重绘前看到
+            # 短暂的 completed 状态而停止轮询。
+            if edited_text is not None:
+                set_process_status(base_name, "redrawing", percentage=100, error_message=None)
+            else:
+                if kg_manager.load_store(base_name):
+                    before_history = state_snapshot(_graph_manager_state(kg_manager))
+                    with graph_edit_lock:
+                        revision = graph_history.commit(
+                            base_name,
+                            before_history,
+                            _graph_manager_state(kg_manager),
+                            "incremental_update",
+                        )
+                    logger.info("无内容变化，已记录增量更新历史 revision=%s: %s", revision, base_name)
+                mark_file_processing_completed(base_name)
             return
 
         # 增量更新前，先加载原有知识图谱
         if not kg_manager.load_store(base_name):
             raise ValueError(f"无法加载原有知识图谱: {base_name}")
+        before_history = state_snapshot(_graph_manager_state(kg_manager))
 
         # 执行增量更新
         logger.info(f"开始执行增量更新: {base_name}")
@@ -1999,9 +2131,14 @@ def process_update_file(
             # 更新完成后，用新文件替换旧文件
             shutil.copy(new_txt_path, txt_path)
             os.remove(new_txt_path)  # 删除临时文件
+            if edited_text is None:
+                get_document_rich_path(base_name).unlink(missing_ok=True)
+                get_document_draft_path(base_name).unlink(missing_ok=True)
 
-            # 更新处理状态为已完成
-            mark_file_processing_completed(base_name)
+            if edited_text is not None:
+                set_process_status(base_name, "redrawing", percentage=100, error_message=None)
+            else:
+                mark_file_processing_completed(base_name)
             return
 
         # 转换为有向图
@@ -2013,6 +2150,9 @@ def process_update_file(
         # 更新完成后，用新文件替换旧文件
         shutil.copy(new_txt_path, txt_path)
         os.remove(new_txt_path)  # 删除临时文件
+        if edited_text is None:
+            get_document_rich_path(base_name).unlink(missing_ok=True)
+            get_document_draft_path(base_name).unlink(missing_ok=True)
 
         # 安全检查：确保Bolts不为空再保存
         if hasattr(kg_manager, 'Bolts') and kg_manager.Bolts:
@@ -2033,8 +2173,18 @@ def process_update_file(
         if not result_file.exists():
             raise FileNotFoundError("未生成结果HTML文件")
 
-        # 更新处理状态为已完成
-        mark_file_processing_completed(base_name)
+        if edited_text is not None:
+            set_process_status(base_name, "redrawing", percentage=100, error_message=None)
+        else:
+            with graph_edit_lock:
+                revision = graph_history.commit(
+                    base_name,
+                    before_history,
+                    _graph_manager_state(kg_manager),
+                    "incremental_update",
+                )
+            logger.info("已记录增量更新联合历史 revision=%s: %s", revision, base_name)
+            mark_file_processing_completed(base_name)
         logger.info(f"知识图谱增量更新完成: {base_name}")
 
     except ProcessingPaused:
@@ -2052,6 +2202,35 @@ def process_update_file(
                 os.remove(new_txt_path)
             except OSError:
                 logger.warning("清理临时文件失败: %s", new_txt_path, exc_info=True)
+
+
+def process_edited_document_update(base_name: str, filename: str) -> None:
+    """Apply a saved document draft through the normal incremental pipeline."""
+    try:
+        draft_path = get_document_draft_path(base_name)
+        if not draft_path.is_file():
+            raise FileNotFoundError("没有待应用的文档草稿")
+        content = draft_path.read_text(encoding="utf-8")
+        progress = get_process_status(base_name) or {}
+        process_update_file(
+            str(UPLOAD_FOLDER / filename),
+            filename,
+            str(TXT_FOLDER / f"{base_name}.txt"),
+            bool(progress.get("use_img2txt")),
+            progress.get("note_type", "general"),
+            progress.get("custom_prompts") or {},
+            edited_text=content,
+        )
+        if (get_process_status(base_name) or {}).get("status") in {"completed", "redrawing"}:
+            draft_path.unlink(missing_ok=True)
+            # Publish a fresh render from the persisted post-update state so
+            # both the legacy HTML and the editable graph reflect the update.
+            set_process_status(base_name, "redrawing", percentage=100, error_message=None)
+            redraw_graph_from_store(base_name)
+            mark_file_processing_completed(base_name)
+    except Exception as exc:
+        mark_file_processing_failed(base_name, exc)
+        logger.error("应用文档草稿失败: %s", base_name, exc_info=True)
 
 
 def process_resume_file(base_name: str) -> None:
@@ -2472,10 +2651,19 @@ async def get_file_content(filename: str):
     txt_filename = f"{get_base_name(filename)}.txt"
     txt_path = os.path.join(TXT_FOLDER, txt_filename)
 
-    if os.path.exists(txt_path):
+    draft_path = get_document_draft_path(get_base_name(filename))
+    content_path = draft_path if draft_path.is_file() else Path(txt_path)
+    if content_path.exists():
         try:
-            content, _ = read_text_file(txt_path)
-            return JSONResponse({"content": content})
+            content, _ = read_text_file(content_path)
+            rich_path = get_document_rich_path(get_base_name(filename))
+            rich_content = rich_path.read_text(encoding="utf-8") if rich_path.is_file() else ""
+            return JSONResponse({
+                "content": content,
+                "rich_content": rich_content,
+                "draft": draft_path.is_file(),
+                "document_revision": _read_document_history(get_base_name(filename)).get("next_revision", 1) - 1,
+            })
         except Exception as e:
             error_msg = str(e)
             logger.error(f"读取文件内容失败: {error_msg}")
@@ -2488,6 +2676,126 @@ async def get_file_content(filename: str):
             status_code=404,
             content={"error": "文件不存在或尚未完成转换"}
         )
+
+
+@app.post("/file-content/{filename}")
+async def save_file_content(filename: str, request: DocumentContentUpdate):
+    """Save a recoverable rich-text draft without changing the graph yet."""
+    filename = get_safe_filename(filename)
+    base_name = get_base_name(filename)
+    _ensure_graph_editable(base_name)
+    if chromadb_store.load_state(base_name) is None:
+        raise HTTPException(status_code=404, detail="图谱状态不存在，无法编辑文档")
+    content = request.content.replace("\x00", "").strip()
+    if not content:
+        raise HTTPException(status_code=422, detail="文档内容不能为空")
+    rich_content = request.rich_content or ""
+    with graph_edit_lock:
+        manager = _load_editable_graph(base_name)
+        before_graph = state_snapshot(_graph_manager_state(manager))
+        before_revision = _append_document_version(
+            base_name,
+            _document_snapshot(base_name),
+            "before:document_edit",
+        )
+        get_document_draft_path(base_name).write_text(content, encoding="utf-8")
+        get_document_rich_path(base_name).write_text(rich_content, encoding="utf-8")
+        revision = _append_document_version(
+            base_name,
+            {"content": content, "rich_content": rich_content, "draft": True},
+            "document_edit",
+        )
+        graph_revision = graph_history.commit(
+            base_name,
+            before_graph,
+            _graph_manager_state(manager),
+            "document_edit",
+        )
+    return {
+        "status": "draft",
+        "filename": filename,
+        "revision": revision,
+        "before_revision": before_revision,
+        "graph_revision": graph_revision,
+        "message": "文档草稿已保存，请从文件列表执行增量更新以应用到图谱",
+    }
+
+
+@app.get("/document-history/{filename}")
+async def get_document_history(filename: str):
+    base_name = get_base_name(get_safe_filename(filename))
+    data = _read_document_history(base_name)
+    return {
+        "versions": [
+            {
+                "revision": item.get("revision"),
+                "operation": item.get("operation"),
+                "created_at": item.get("created_at"),
+                "description": _document_operation_label(item.get("operation", "")),
+            }
+            for item in data.get("versions", [])
+        ]
+    }
+
+
+@app.post("/document-restore/{filename}/{revision}")
+async def restore_document_content(filename: str, revision: int):
+    filename = get_safe_filename(filename)
+    base_name = get_base_name(filename)
+    _ensure_graph_editable(base_name)
+    data = _read_document_history(base_name)
+    selected = next((item for item in data.get("versions", []) if int(item.get("revision", -1)) == revision), None)
+    if selected is None:
+        raise HTTPException(status_code=404, detail="文档历史版本不存在")
+    with graph_edit_lock:
+        manager = _load_editable_graph(base_name)
+        before_graph = state_snapshot(_graph_manager_state(manager))
+        _append_document_version(base_name, _document_snapshot(base_name), f"before:document_restore:{revision}")
+        get_document_draft_path(base_name).write_text(str(selected.get("content") or ""), encoding="utf-8")
+        get_document_rich_path(base_name).write_text(str(selected.get("rich_content") or ""), encoding="utf-8")
+        new_revision = _append_document_version(
+            base_name,
+            _document_snapshot(base_name),
+            f"document_restore:{revision}",
+        )
+        graph_revision = graph_history.commit(
+            base_name,
+            before_graph,
+            _graph_manager_state(manager),
+            f"document_restore:{revision}",
+        )
+    return {
+        "status": "draft",
+        "filename": filename,
+        "revision": new_revision,
+        "graph_revision": graph_revision,
+        "message": "文档已还原为草稿，请从文件列表执行增量更新以同步图谱",
+    }
+
+
+@app.post("/update-document/{filename}")
+async def update_document_from_draft(filename: str, background_tasks: BackgroundTasks):
+    """Apply the selected file's saved editor draft incrementally."""
+    filename = get_safe_filename(filename)
+    base_name = get_base_name(filename)
+    progress = get_process_status(base_name) or {}
+    if progress.get("status", "completed") != "completed":
+        raise HTTPException(status_code=409, detail="文件当前正在处理，暂不能更新文档")
+    if not get_document_draft_path(base_name).is_file():
+        raise HTTPException(status_code=404, detail="没有待应用的文档修改")
+    set_process_status(
+        base_name,
+        "updating",
+        percentage=0,
+        completed_chunks=0,
+        total_chunks=0,
+        error_message=None,
+        original_filename=filename,
+        resume_mode="update",
+        resumable=True,
+    )
+    background_tasks.add_task(process_edited_document_update, base_name, filename)
+    return {"status": "updating", "filename": filename, "message": "已开始增量更新文档"}
 
 
 @app.get("/export-package/{filename}")
@@ -2720,6 +3028,7 @@ async def list_files():
             progress = get_process_status(base_name) or {"status": "completed", "percentage": 100}
             status = progress["status"]
             display_status = status_map.get(status, status)
+            document_history = _read_document_history(base_name)
 
             processed_files.append({
                 "filename": original_filename,
@@ -2732,6 +3041,8 @@ async def list_files():
                 "partial_available": bool(progress.get("partial_available")),
                 "resumable": bool(progress.get("resumable")),
                 "error_message": progress.get("error_message"),
+                "document_modified": get_document_draft_path(base_name).is_file(),
+                "document_revision": int(document_history.get("next_revision") or 1) - 1,
             })
 
         # 再添加仅在PROCESS_STATUS中的文件（正在处理但尚未添加到数据库的文件）
@@ -2740,6 +3051,7 @@ async def list_files():
             if base_name not in db_base_names:
                 status = progress["status"]
                 display_status = status_map.get(status, status)
+                document_history = _read_document_history(base_name)
                 processed_files.append({
                     "filename": progress.get("original_filename") or f"{base_name}.txt",
                     "status": status,
@@ -2751,6 +3063,8 @@ async def list_files():
                     "partial_available": bool(progress.get("partial_available")),
                     "resumable": bool(progress.get("resumable")),
                     "error_message": progress.get("error_message"),
+                    "document_modified": get_document_draft_path(base_name).is_file(),
+                    "document_revision": int(document_history.get("next_revision") or 1) - 1,
                 })
 
         return JSONResponse({"files": processed_files})
@@ -2794,8 +3108,11 @@ async def delete_file(filename: str):
             TXT_FOLDER / f"{base_name}.txt",
             get_source_text_path(base_name),
             TXT_FOLDER / f"{base_name}_new.txt",
+            get_document_draft_path(base_name),
+            get_document_rich_path(base_name),
             STATUS_FOLDER / f"{base_name}.json",
             GRAPH_HISTORY_FOLDER / f"{base_name}.json",
+            get_document_history_path(base_name),
             # Clean up a flat result produced by earlier versions as well.
             RESULT_FOLDER / f"{base_name}.html",
         ):

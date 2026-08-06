@@ -497,7 +497,9 @@ GRAPH_INTERACTION_TEMPLATE = r"""
         graphName: GRAPH_NAME,
         kind: 'node',
         id: button.dataset.nodeId || '',
-        sourceBlocks
+        sourceBlocks,
+        entityTerms: [button.dataset.nodeId || ''].filter(Boolean),
+        relationTerms: []
       }, '*');
     });
   }
@@ -628,9 +630,12 @@ GRAPH_INTERACTION_TEMPLATE = r"""
     if (!requestedId) return;
     editorMetadataReady.then(() => {
       let sourceBlocks = [];
+      let entityTerms = [];
+      let relationTerms = [];
       if (kind === 'node') {
         const node = nodeDetails.get(requestedId) || network.body.data.nodes.get(id);
         sourceBlocks = node?.source_blocks || [];
+        entityTerms = [node?.label || node?.id || requestedId];
       } else if (kind === 'edge') {
         const edge = network.body.data.edges.get(id)
           || network.body.data.edges.get().find(candidate => String(candidate.id) === requestedId);
@@ -642,13 +647,18 @@ GRAPH_INTERACTION_TEMPLATE = r"""
           const fallback = edgeDetails.get(String(edge.id));
           sourceBlocks = fallback?.evidence_blocks || [];
         }
+        entityTerms = [edge?.from, edge?.to].filter(Boolean);
+        entityTerms.push(detail.source, detail.target, detail.relation);
+        relationTerms = [edge?.label, detail.relation];
       }
       window.parent?.postMessage({
         type: 'knowledge-graph-evidence',
         graphName: GRAPH_NAME,
         kind,
         id: requestedId,
-        sourceBlocks
+        sourceBlocks,
+        entityTerms: [...new Set(entityTerms.map(value => String(value || '').trim()).filter(Boolean))],
+        relationTerms: [...new Set(relationTerms.map(value => String(value || '').trim()).filter(Boolean))]
       }, '*');
     });
   }
@@ -901,7 +911,10 @@ GRAPH_INTERACTION_TEMPLATE = r"""
       editorApi(`/graph-restore/${encodeURIComponent(GRAPH_NAME)}/${number}`, {
         method: 'POST',
         body: JSON.stringify({ operation: 'restore', revision: editorRevision })
-      }).then(() => window.location.reload()).catch(error => window.alert(error.message));
+      }).then(() => {
+        window.parent?.postMessage({ type: 'knowledge-graph-restored', filename: GRAPH_NAME }, '*');
+        window.location.reload();
+      }).catch(error => window.alert(error.message));
     }).catch(error => window.alert(error.message));
   }
 

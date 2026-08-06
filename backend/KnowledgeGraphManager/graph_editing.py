@@ -246,7 +246,7 @@ def state_snapshot(state: Mapping[str, Any]) -> Dict[str, Any]:
     graph = state.get("current_G")
     graph_data = graph_to_node_link_data(graph) if hasattr(graph, "nodes") else graph
     mapping = state.get("bidirectional_mapping") or {}
-    return {
+    snapshot = {
         "schema": HISTORY_SCHEMA,
         "file": state.get("file"),
         "kg_triplet": copy.deepcopy(state.get("kg_triplet") or []),
@@ -260,6 +260,12 @@ def state_snapshot(state: Mapping[str, Any]) -> Dict[str, Any]:
         "Bolts": copy.deepcopy(state.get("Bolts") or []),
         "original_file_type": state.get("original_file_type"),
     }
+    # Document content is optional for backwards compatibility with older
+    # graph history files. New combined snapshots carry both graph and source
+    # document state so either side can be restored atomically.
+    if "document" in state:
+        snapshot["document"] = copy.deepcopy(state.get("document"))
+    return snapshot
 
 
 def state_from_snapshot(snapshot: Mapping[str, Any]) -> Dict[str, Any]:

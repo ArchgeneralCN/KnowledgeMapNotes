@@ -260,7 +260,7 @@ const openFileContextMenu = (event, file) => {
   event.preventDefault();
   event.stopPropagation();
   const menuWidth = 176;
-  const menuHeight = 300;
+  const menuHeight = 340;
   fileContextMenu.file = file;
   fileContextMenu.x = Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8));
   fileContextMenu.y = Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8));
@@ -276,13 +276,23 @@ const evidenceKind = ref('node');
 const sourceHighlightHtml = ref('');
 const documentContentRef = ref(null);
 let evidenceRequestId = 0;
+let documentLoadRequestId = 0;
 const contentViewMode = ref('preview');
 const contentViewOptions = [
   { label: '预览', value: 'preview' },
+  { label: '编辑', value: 'edit' },
   { label: '源码', value: 'source' }
 ];
+const documentEditorRef = ref(null);
+const documentEditorHtml = ref('');
+const documentEditorDirty = ref(false);
+const documentSaving = ref(false);
+const documentHistory = ref([]);
+const documentHistoryLoading = ref(false);
+const documentDraft = ref(false);
+const showAllEvidenceHighlights = ref(true);
 const renderedFileContent = computed(() => DOMPurify.sanitize(
-  markdownRenderer.render(fileContent.value || ''),
+  documentEditorHtml.value || markdownRenderer.render(fileContent.value || ''),
   { ADD_ATTR: ['target'] }
 ));
 const fileContentStats = computed(() => {
@@ -307,13 +317,87 @@ const getGraphName = (filename) => {
 const makeSourceHighlight = (result) => {
   if (!result || result.start < 0 || result.end <= result.start) return '';
   const content = fileContent.value;
+  const blockText = content.slice(result.start, result.end);
+  const highlightTerms = result.highlightTerms || {
+    entityTerms: result.entityTerms || [],
+    relationTerms: result.relationTerms || [],
+    evidenceTerms: [],
+    selectedEntityTerms: [],
+    selectedRelationTerms: [],
+    selectedEvidenceTerms: []
+  };
+  const candidates = [
+    ...(highlightTerms.selectedEntityTerms || []).map(term => ({ term, className: 'selected-entity-highlight', priority: 50 })),
+    ...(highlightTerms.selectedRelationTerms || []).map(term => ({ term, className: 'selected-relation-highlight', priority: 50 })),
+    ...(highlightTerms.selectedEvidenceTerms || []).map(term => ({ term, className: 'selected-evidence-highlight', priority: 45 })),
+    ...(showAllEvidenceHighlights.value
+      ? (highlightTerms.entityTerms || []).map(term => ({ term, className: 'entity-highlight', priority: 30 }))
+      : []),
+    ...(showAllEvidenceHighlights.value
+      ? (highlightTerms.relationTerms || []).map(term => ({ term, className: 'relation-highlight', priority: 30 }))
+      : []),
+    ...(showAllEvidenceHighlights.value
+      ? (highlightTerms.evidenceTerms || []).map(term => ({ term, className: 'evidence-highlight', priority: 20 }))
+      : [])
+  ]
+    .map(candidate => ({
+      ...candidate,
+      term: String(candidate.term || '').trim()
+    }))
+    .filter(candidate => candidate.term.length >= 1)
+    .sort((left, right) => right.term.length - left.term.length || right.priority - left.priority)
+    .filter((candidate, index, all) => all.findIndex(item =>
+      item.term === candidate.term && item.className === candidate.className
+    ) === index);
+  const highlightRanges = [];
+  const addUncoveredRanges = (start, end, className) => {
+    let uncovered = [[start, end]];
+    highlightRanges.forEach(existing => {
+      uncovered = uncovered.flatMap(([left, right]) => {
+        if (right <= existing.start || left >= existing.end) return [[left, right]];
+        const pieces = [];
+        if (left < existing.start) pieces.push([left, existing.start]);
+        if (right > existing.end) pieces.push([existing.end, right]);
+        return pieces;
+      });
+    });
+    uncovered.forEach(([left, right]) => {
+      if (right > left) highlightRanges.push({ start: left, end: right, className });
+    });
+  };
+  candidates.forEach(({ term, className }) => {
+    let offset = 0;
+    while (offset < blockText.length) {
+      const start = blockText.indexOf(term, offset);
+      if (start < 0) break;
+      const end = start + term.length;
+      addUncoveredRanges(start, end, className);
+      offset = end;
+    }
+  });
+  highlightRanges.sort((left, right) => left.start - right.start);
+  let highlightCursor = 0;
+  const highlightedBlock = highlightRanges.map(range => {
+    const html = escapeDocumentHtml(blockText.slice(highlightCursor, range.start))
+      + `<mark class="${range.className}">${escapeDocumentHtml(blockText.slice(range.start, range.end))}</mark>`;
+    highlightCursor = range.end;
+    return html;
+  }).join('') + escapeDocumentHtml(blockText.slice(highlightCursor));
   const html = `${escapeDocumentHtml(content.slice(0, result.start))}`
-    + `<mark class="source-highlight">${escapeDocumentHtml(content.slice(result.start, result.end))}</mark>`
+    + `<mark class="source-highlight">${highlightedBlock}</mark>`
     + `${escapeDocumentHtml(content.slice(result.end))}`;
   return DOMPurify.sanitize(html, {
     ALLOWED_TAGS: ['mark'],
     ALLOWED_ATTR: ['class']
   });
+};
+
+const updateEvidenceHighlightMode = (enabled) => {
+  showAllEvidenceHighlights.value = Boolean(enabled);
+  localStorage.setItem('show-all-evidence-highlights', String(showAllEvidenceHighlights.value));
+  if (activeEvidence.value) {
+    sourceHighlightHtml.value = makeSourceHighlight(activeEvidence.value);
+  }
 };
 
 const jumpToEvidence = (index) => {
@@ -328,7 +412,21 @@ const jumpToEvidence = (index) => {
   });
 };
 
-const locateEvidenceResults = (sourceBlocks, blocks) => {
+const locateEvidenceResults = (sourceBlocks, blocks, highlightTerms = {}) => {
+  if (Array.isArray(highlightTerms)) {
+    highlightTerms = { entityTerms: highlightTerms, relationTerms: [] };
+  }
+  const normalizedHighlightTerms = {
+    entityTerms: Array.isArray(highlightTerms.entityTerms) ? highlightTerms.entityTerms : [],
+    relationTerms: Array.isArray(highlightTerms.relationTerms) ? highlightTerms.relationTerms : [],
+    evidenceTerms: Array.isArray(highlightTerms.evidenceTerms) ? highlightTerms.evidenceTerms : [],
+    selectedEntityTerms: Array.isArray(highlightTerms.selectedEntityTerms)
+      ? highlightTerms.selectedEntityTerms : [],
+    selectedRelationTerms: Array.isArray(highlightTerms.selectedRelationTerms)
+      ? highlightTerms.selectedRelationTerms : [],
+    selectedEvidenceTerms: Array.isArray(highlightTerms.selectedEvidenceTerms)
+      ? highlightTerms.selectedEvidenceTerms : []
+  };
   const content = fileContent.value || '';
   const normalizedBlocks = (Array.isArray(blocks) ? blocks : [])
     .filter(block => block && typeof block === 'object');
@@ -368,6 +466,9 @@ const locateEvidenceResults = (sourceBlocks, blocks) => {
     const position = positionsById.get(reference.bid) || { start: -1, end: -1 };
     return {
       ...reference,
+      entityTerms: normalizedHighlightTerms.entityTerms,
+      relationTerms: normalizedHighlightTerms.relationTerms,
+      highlightTerms: normalizedHighlightTerms,
       text,
       index: block.index,
       start: position.start,
@@ -375,6 +476,60 @@ const locateEvidenceResults = (sourceBlocks, blocks) => {
       preview: text.replace(/\s+/g, ' ').trim().slice(0, 180)
     };
   }).sort((left, right) => left.index - right.index);
+};
+
+const inferEvidenceHighlightTerms = (eventData, graphData, sourceBlocks) => {
+  const entityTerms = Array.isArray(eventData?.entityTerms) ? eventData.entityTerms : [];
+  const relationTerms = Array.isArray(eventData?.relationTerms) ? eventData.relationTerms : [];
+
+  const blockIds = new Set((Array.isArray(sourceBlocks) ? sourceBlocks : [])
+    .map(block => String(
+      block && typeof block === 'object'
+        ? block.source_block || block.bid || ''
+        : block || ''
+    ))
+    .filter(Boolean));
+  const hasSourceBlock = blocks => (Array.isArray(blocks) ? blocks : [])
+    .some(block => blockIds.has(String(
+      block && typeof block === 'object'
+        ? block.source_block || block.bid || ''
+        : block || ''
+    )));
+  const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
+  const links = Array.isArray(graphData?.links) ? graphData.links : [];
+  const relatedNodes = nodes.filter(item => hasSourceBlock(item.source_blocks));
+  const relatedLinks = links.filter(item => hasSourceBlock(item.evidence_blocks)
+    || blockIds.has(String(item.source_block || '')));
+  const unique = terms => [...new Set((terms || [])
+    .map(term => String(term || '').trim()).filter(Boolean))];
+  if (eventData?.kind === 'edge') {
+    const selectedLink = links.find(item => String(item.id) === String(eventData.id))
+      || relatedLinks.find(item => entityTerms.includes(item.relation))
+      || relatedLinks[0];
+    return {
+      entityTerms: unique(relatedNodes.flatMap(item => [item.name, item.id])
+        .concat(relatedLinks.flatMap(item => [item.source, item.target]))),
+      relationTerms: unique(relatedLinks.map(item => item.relation)),
+      evidenceTerms: unique(relatedLinks.flatMap(item => [item.context, item.evidence])),
+      selectedEntityTerms: [],
+      selectedRelationTerms: selectedLink
+        ? unique([selectedLink.relation])
+        : unique(relationTerms),
+      selectedEvidenceTerms: selectedLink
+        ? unique([selectedLink.context, selectedLink.evidence])
+        : []
+    };
+  }
+  const selectedNode = nodes.find(item => String(item.id) === String(eventData?.id))
+    || relatedNodes[0];
+  return {
+    entityTerms: unique(relatedNodes.flatMap(item => [item.name, item.id])),
+    relationTerms: unique(relatedLinks.map(item => item.relation)),
+    evidenceTerms: [],
+    selectedEntityTerms: selectedNode ? unique([selectedNode.name || selectedNode.id]) : unique(entityTerms),
+    selectedRelationTerms: [],
+    selectedEvidenceTerms: []
+  };
 };
 
 const handleKnowledgeGraphEvidence = async (event) => {
@@ -391,9 +546,21 @@ const handleKnowledgeGraphEvidence = async (event) => {
   const requestId = ++evidenceRequestId;
   try {
     if (!fileContent.value) await loadFileContent(currentFile.value);
-    const response = await api.get(`/graph-sources/${encodePathSegment(filename)}`);
+    const [sourceResponse, graphResponse] = await Promise.all([
+      api.get(`/graph-sources/${encodePathSegment(filename)}`),
+      api.get(`/graph-data/${encodePathSegment(filename)}`).catch(() => ({ data: {} }))
+    ]);
     if (requestId !== evidenceRequestId) return;
-    const results = locateEvidenceResults(event.data.sourceBlocks, response.data?.blocks || []);
+    const highlightTerms = inferEvidenceHighlightTerms(
+      event.data,
+      graphResponse.data || {},
+      event.data.sourceBlocks || []
+    );
+    const results = locateEvidenceResults(
+      event.data.sourceBlocks,
+      sourceResponse.data?.blocks || [],
+      highlightTerms
+    );
     evidenceResults.value = results;
     evidenceKind.value = event.data.kind === 'edge' ? 'edge' : 'node';
     activeEvidenceIndex.value = 0;
@@ -455,6 +622,18 @@ const handleKnowledgeGraphReadyMessage = (event) => {
     && event.source === knowledgeGraphFrameRef.value?.contentWindow
   ) {
     finishKnowledgeGraphLoading();
+  }
+  if (
+    event.data?.type === 'knowledge-graph-restored'
+    && event.source === knowledgeGraphFrameRef.value?.contentWindow
+    && currentFile.value
+    && getGraphName(currentFile.value.name) === String(event.data.filename || '')
+  ) {
+    contentViewMode.value = 'preview';
+    documentEditorDirty.value = false;
+    loadFileContent(currentFile.value);
+    loadRagReferenceData(currentFile.value.name);
+    ElMessage.success('图谱与文档已同步还原');
   }
   handleKnowledgeGraphEvidence(event);
 };
@@ -721,7 +900,31 @@ const handleRagReferenceClick = (event) => {
   if (graphTarget) postGraphHighlight(graphTarget.kind, graphTarget.id);
   if (!sourceBlocks.length || !data.blocks.length) return;
 
-  const results = locateEvidenceResults(sourceBlocks, data.blocks);
+  const highlightTerms = {
+    entityTerms: [],
+    relationTerms: [],
+    evidenceTerms: [],
+    selectedEntityTerms: [],
+    selectedRelationTerms: [],
+    selectedEvidenceTerms: []
+  };
+  if (graphTarget?.kind === 'edge') {
+    const link = (data.links || []).find(item => String(item.id) === String(graphTarget.id));
+    if (link) {
+      highlightTerms.entityTerms = [link.source, link.target].filter(Boolean);
+      highlightTerms.relationTerms = [link.relation].filter(Boolean);
+      highlightTerms.selectedRelationTerms = [link.relation].filter(Boolean);
+      highlightTerms.evidenceTerms = [link.context, link.evidence].filter(Boolean);
+      highlightTerms.selectedEvidenceTerms = [link.context, link.evidence].filter(Boolean);
+    }
+  } else if (graphTarget?.kind === 'node') {
+    const node = (data.nodes || []).find(item => String(item.id) === String(graphTarget.id));
+    if (node) {
+      highlightTerms.entityTerms = [node.name || node.id].filter(Boolean);
+      highlightTerms.selectedEntityTerms = [node.name || node.id].filter(Boolean);
+    }
+  }
+  const results = locateEvidenceResults(sourceBlocks, data.blocks, highlightTerms);
   evidenceResults.value = results;
   evidenceKind.value = reference.kind === 'edge' ? 'edge' : 'node';
   activeEvidenceIndex.value = 0;
@@ -822,6 +1025,11 @@ onMounted(async () => {
     const savedImg2txtSetting = localStorage.getItem('use-img2txt');
     useImg2txt.value = savedImg2txtSetting === 'true';
 
+    const savedEvidenceHighlightSetting = localStorage.getItem('show-all-evidence-highlights');
+    if (savedEvidenceHighlightSetting !== null) {
+      showAllEvidenceHighlights.value = savedEvidenceHighlightSetting !== 'false';
+    }
+
     const response = await api.get('/list-files');
     if (response.data && Array.isArray(response.data.files)) {
       // 将历史文件添加到文件列表，保持原始文件名和状态
@@ -837,7 +1045,9 @@ onMounted(async () => {
         estimatedRemainingSeconds: file.estimated_remaining_seconds,
         partialAvailable: Boolean(file.partial_available),
         resumable: Boolean(file.resumable),
-        errorMessage: file.error_message || ''
+        errorMessage: file.error_message || '',
+        document_modified: Boolean(file.document_modified),
+        document_revision: file.document_revision || 0
       }));
 
       // 初始化过滤后的文件列表
@@ -1514,6 +1724,7 @@ const checkFileProcessingStatus = async (file) => {
 // 添加一个更新文件状态的函数
 const updateFileStatus = async (file) => {
   try {
+    const wasUpdating = ['updating', 'redrawing'].includes(file.status);
     const response = await api.get(`/processing-status/${encodePathSegment(file.name)}`);
     if (response.data) {
       // 更新文件状态
@@ -1526,6 +1737,16 @@ const updateFileStatus = async (file) => {
       file.partialAvailable = Boolean(response.data.partial_available);
       file.resumable = Boolean(response.data.resumable);
       file.errorMessage = response.data.error_message || '';
+      const completedAfterUpdate = wasUpdating && response.data.status === 'completed';
+      if (completedAfterUpdate && file.document_modified) {
+        file.document_modified = false;
+        if (currentFile.value?.name === file.name) documentDraft.value = false;
+      }
+      if (completedAfterUpdate && currentFile.value?.name === file.name) {
+        knowledgeGraphUrl.value = null;
+        await nextTick();
+        await fetchKnowledgeGraph(file.name);
+      }
       if (response.data.display_status) {
         file.display_status = response.data.display_status;
       } else {
@@ -1663,9 +1884,38 @@ const handleFileContextAction = async (action) => {
   if (action === 'resume') await resumeFileProcessing(file);
   if (action === 'view') await viewFileResult(file);
   if (action === 'redraw') await redrawFileGraph(file);
+  if (action === 'update-document') await applyEditedDocument(file);
   if (action === 'download-package') await downloadTransferPackage(file);
   if (action === 'clear-history') await deleteRagHistory(file);
   if (action === 'delete') await deleteFile(file);
+};
+
+const confirmDocumentSwitch = async (nextFile) => {
+  if (!nextFile?.name || currentFile.value?.name === nextFile.name) return true;
+  if (contentViewMode.value !== 'edit' || !documentEditorDirty.value) return true;
+
+  try {
+    await ElMessageBox.confirm(
+      '当前文档有未保存修改，请选择保存后切换或放弃修改。',
+      '切换文件',
+      {
+        confirmButtonText: '保存并切换',
+        cancelButtonText: '放弃修改',
+        distinguishCancelAndClose: true,
+        type: 'warning'
+      }
+    );
+    await saveDocumentDraft();
+    return !documentEditorDirty.value;
+  } catch (reason) {
+    if (reason === 'cancel') {
+      documentEditorDirty.value = false;
+      documentEditorHtml.value = '';
+      contentViewMode.value = 'preview';
+      return true;
+    }
+    return false;
+  }
 };
 
 // 添加handleSearch函数，这个函数在搜索框输入时被调用，但之前未定义
@@ -1675,6 +1925,7 @@ const handleSearch = () => {
 
 // 查看文件结果
 const viewFileResult = async (file) => {
+  if (!(await confirmDocumentSwitch(file))) return;
   if (
     file.status === 'completed'
     || (['paused', 'interrupted'].includes(file.status) && file.partialAvailable)
@@ -1706,6 +1957,12 @@ const viewFileResult = async (file) => {
 
       fileContentLoading.value = true;
       fileContent.value = '';
+      documentEditorHtml.value = '';
+      documentDraft.value = false;
+      documentEditorDirty.value = false;
+      documentHistory.value = [];
+      contentViewMode.value = 'preview';
+      const loadRequestId = ++documentLoadRequestId;
 
       if (!file.name) {
         ElMessage.error('文件名不存在');
@@ -1724,14 +1981,23 @@ const viewFileResult = async (file) => {
           fetchKnowledgeGraph(file.name)  // 使用原始文件名获取知识图谱
         ]);
 
+        if (loadRequestId !== documentLoadRequestId || currentFile.value?.name !== file.name) return;
         if (contentResponse.data && contentResponse.data.content) {
           fileContent.value = contentResponse.data.content;
+          documentEditorHtml.value = DOMPurify.sanitize(contentResponse.data.rich_content || '');
+          documentDraft.value = Boolean(contentResponse.data.draft);
+          documentEditorDirty.value = false;
+          currentFile.value.document_modified = documentDraft.value;
+          currentFile.value.document_revision = contentResponse.data.document_revision || 0;
+          loadDocumentHistory(file.name);
         }
       } catch (error) {
         console.error('获取文件内容失败:', error);
         ElMessage.warning('获取原文件内容失败');
       } finally {
-        fileContentLoading.value = false;
+        if (loadRequestId === documentLoadRequestId && currentFile.value?.name === file.name) {
+          fileContentLoading.value = false;
+        }
       }
 
       // 使用新函数加载聊天历史记录
@@ -2099,21 +2365,156 @@ const prepareChatState = (file) => {
 
 // 加载文件内容
 const loadFileContent = async (file) => {
+  const loadRequestId = ++documentLoadRequestId;
   fileContentLoading.value = true;
   fileContent.value = '';
 
   try {
     const response = await api.get(`/file-content/${encodePathSegment(file.name)}`);
+    if (loadRequestId !== documentLoadRequestId) return;
     if (response.data && response.data.content) {
       fileContent.value = response.data.content;
+      documentEditorHtml.value = DOMPurify.sanitize(response.data.rich_content || '');
+      documentDraft.value = Boolean(response.data.draft);
+      documentEditorDirty.value = false;
+      if (file) {
+        file.document_modified = documentDraft.value;
+        file.document_revision = response.data.document_revision || 0;
+      }
+      loadDocumentHistory(file.name);
     }
   } catch (error) {
     console.error('获取文件内容失败:', error);
     ElMessage.warning('获取文件内容失败');
   } finally {
-    fileContentLoading.value = false;
+    if (loadRequestId === documentLoadRequestId) fileContentLoading.value = false;
   }
 };
+
+const syncDocumentEditor = async () => {
+  await nextTick();
+  if (!documentEditorRef.value) return;
+  documentEditorRef.value.innerHTML = documentEditorHtml.value || renderedFileContent.value || '';
+};
+
+const handleDocumentEditorInput = () => {
+  documentEditorDirty.value = true;
+};
+
+const execRichCommand = (command, value = null) => {
+  if (!documentEditorRef.value) return;
+  documentEditorRef.value.focus();
+  document.execCommand(command, false, value);
+  documentEditorDirty.value = true;
+};
+
+const editorHtmlToText = (html) => {
+  const container = document.createElement('div');
+  container.innerHTML = DOMPurify.sanitize(html || '', { ALLOWED_TAGS: ['p', 'br', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'blockquote', 'strong', 'em', 'u', 'code', 'pre', 'a'] });
+  return (container.innerText || container.textContent || '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+};
+
+const loadDocumentHistory = async (filename = currentFile.value?.name) => {
+  if (!filename) return;
+  documentHistoryLoading.value = true;
+  try {
+    const response = await api.get(`/document-history/${encodePathSegment(filename)}`);
+    documentHistory.value = response.data?.versions || [];
+  } catch (error) {
+    console.warn('加载文档历史失败:', error.message);
+  } finally {
+    documentHistoryLoading.value = false;
+  }
+};
+
+const saveDocumentDraft = async () => {
+  if (!currentFile.value?.name || !documentEditorRef.value) return;
+  const richContent = DOMPurify.sanitize(documentEditorRef.value.innerHTML || '');
+  const content = editorHtmlToText(richContent);
+  if (!content) {
+    ElMessage.warning('文档内容不能为空');
+    return;
+  }
+  documentSaving.value = true;
+  try {
+    const response = await api.post(`/file-content/${encodePathSegment(currentFile.value.name)}`, {
+      content,
+      rich_content: richContent
+    });
+    fileContent.value = content;
+    documentEditorHtml.value = richContent;
+    documentEditorDirty.value = false;
+    documentDraft.value = true;
+    currentFile.value.document_modified = true;
+    currentFile.value.document_revision = response.data?.revision || currentFile.value.document_revision;
+    await loadDocumentHistory();
+    contentViewMode.value = 'preview';
+    ElMessage.success('文档草稿已保存，请在文件列表中执行增量更新');
+  } catch (error) {
+    ElMessage.error(getApiErrorMessage(error, '保存文档草稿失败'));
+  } finally {
+    documentSaving.value = false;
+  }
+};
+
+const restoreDocumentVersion = async (version) => {
+  if (!currentFile.value?.name || !version?.revision) return;
+  try {
+    await ElMessageBox.confirm(
+      `确认还原文档版本 ${version.revision} 吗？还原后需要从文件列表执行增量更新。`,
+      '还原文档',
+      { confirmButtonText: '还原', cancelButtonText: '取消', type: 'warning' }
+    );
+    await api.post(`/document-restore/${encodePathSegment(currentFile.value.name)}/${version.revision}`);
+    await loadFileContent(currentFile.value);
+    const response = await api.get(`/file-content/${encodePathSegment(currentFile.value.name)}`);
+    documentEditorHtml.value = DOMPurify.sanitize(response.data?.rich_content || '') || renderedFileContent.value;
+    documentDraft.value = true;
+    documentEditorDirty.value = false;
+    currentFile.value.document_modified = true;
+    await loadDocumentHistory();
+    ElMessage.success('文档已还原为草稿');
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') {
+      ElMessage.error(getApiErrorMessage(error, '还原文档失败'));
+    }
+  }
+};
+
+const handleDocumentHistorySelect = (revision) => {
+  const version = documentHistory.value.find(item => item.revision === revision);
+  if (version) restoreDocumentVersion(version);
+};
+
+const applyEditedDocument = async (file) => {
+  if (!file?.name || file.status !== 'completed' || !file.document_modified) return;
+  try {
+    await ElMessageBox.confirm(
+      `确认将文件 ${file.name} 的文档修改增量更新到知识图谱吗？`,
+      '增量更新文档',
+      { confirmButtonText: '开始更新', cancelButtonText: '取消', type: 'info' }
+    );
+  } catch {
+    return;
+  }
+  stopFileStatusPolling(file.name);
+  file.status = 'updating';
+  file.display_status = '增量更新中';
+  try {
+    await api.post(`/update-document/${encodePathSegment(file.name)}`);
+    checkFileProcessingStatus(file);
+  } catch (error) {
+    await updateFileStatus(file);
+    ElMessage.error(getApiErrorMessage(error, '增量更新文档失败'));
+  }
+};
+
+watch(contentViewMode, mode => {
+  if (mode === 'edit') syncDocumentEditor();
+});
 
 // 加载知识图谱
 const loadKnowledgeGraph = async (file) => {
@@ -2511,35 +2912,76 @@ onUnmounted(() => {
                 :style="getPanelStyle('original')"
                 data-panel="original"
             >
-              <div class="panel-header">
-                <div class="panel-title">
-                  <h3>文档内容</h3>
-                  <span v-if="fileContentStats" class="content-stats">{{ fileContentStats }}</span>
-                </div>
-                <div class="document-tools">
-                  <el-segmented
-                      v-model="contentViewMode"
-                      :options="contentViewOptions"
-                      size="small"
-                  />
-                  <el-tooltip content="复制内容" placement="bottom">
-                    <el-button
-                        :icon="CopyDocument"
-                        circle
-                        size="small"
-                        :disabled="!fileContent"
-                        @click="copyFileContent"
-                    />
-                  </el-tooltip>
-                  <el-tooltip content="下载 Markdown" placement="bottom">
-                    <el-button
-                        :icon="Download"
-                        circle
-                        size="small"
-                        :disabled="!fileContent"
-                        @click="downloadFileContent"
-                    />
-                  </el-tooltip>
+                <div class="panel-header">
+                  <div class="panel-title">
+                    <h3>文档内容</h3>
+                    <span v-if="fileContentStats" class="content-stats">{{ fileContentStats }}</span>
+                    <span v-if="documentDraft" class="draft-indicator">有未应用修改</span>
+                  </div>
+                  <div class="document-tools">
+                    <div class="document-view-tools">
+                      <el-segmented
+                          v-model="contentViewMode"
+                          :options="contentViewOptions"
+                          size="small"
+                      />
+                      <el-tooltip
+                          :content="showAllEvidenceHighlights ? '显示文本块中的全部实体、关系和依据高亮' : '只显示当前查询对象，其他内容不特殊高亮'"
+                          placement="bottom"
+                      >
+                        <el-switch
+                            v-model="showAllEvidenceHighlights"
+                            inline-prompt
+                            active-text="全部"
+                            inactive-text="当前"
+                            size="small"
+                            @change="updateEvidenceHighlightMode"
+                        />
+                      </el-tooltip>
+                    </div>
+                    <div class="document-action-tools">
+                      <el-tooltip content="复制内容" placement="bottom">
+                        <el-button
+                            :icon="CopyDocument"
+                            circle
+                            size="small"
+                            :disabled="!fileContent"
+                            @click="copyFileContent"
+                        />
+                      </el-tooltip>
+                      <el-tooltip content="下载 Markdown" placement="bottom">
+                        <el-button
+                            :icon="Download"
+                            circle
+                            size="small"
+                            :disabled="!fileContent"
+                            @click="downloadFileContent"
+                        />
+                      </el-tooltip>
+                    </div>
+                    <div v-if="contentViewMode === 'edit'" class="document-edit-tools">
+                      <el-button
+                          type="primary"
+                          size="small"
+                          :loading="documentSaving"
+                          :disabled="!documentEditorDirty"
+                          @click="saveDocumentDraft"
+                      >保存草稿</el-button>
+                      <el-select
+                          v-if="documentHistory.length"
+                          size="small"
+                          class="document-history-select"
+                          placeholder="还原版本"
+                          @change="handleDocumentHistorySelect"
+                      >
+                        <el-option
+                            v-for="version in documentHistory.slice().reverse()"
+                            :key="version.revision"
+                            :label="`版本 ${version.revision} · ${version.description || '文档修改'}`"
+                            :value="version.revision"
+                        />
+                      </el-select>
+                    </div>
                 </div>
               </div>
               <div class="panel-content">
@@ -2575,6 +3017,23 @@ onUnmounted(() => {
                         class="markdown-body"
                         v-html="renderedFileContent"
                     ></article>
+                    <div v-else-if="contentViewMode === 'edit'" class="rich-editor-shell">
+                      <div class="rich-editor-toolbar" role="toolbar" aria-label="富文本编辑工具">
+                        <button type="button" title="粗体" @mousedown.prevent @click="execRichCommand('bold')"><strong>B</strong></button>
+                        <button type="button" title="斜体" @mousedown.prevent @click="execRichCommand('italic')"><em>I</em></button>
+                        <button type="button" title="下划线" @mousedown.prevent @click="execRichCommand('underline')"><u>U</u></button>
+                        <button type="button" title="项目列表" @mousedown.prevent @click="execRichCommand('insertUnorderedList')">列表</button>
+                        <button type="button" title="引用" @mousedown.prevent @click="execRichCommand('formatBlock', 'blockquote')">引用</button>
+                        <button type="button" title="清除格式" @mousedown.prevent @click="execRichCommand('removeFormat')">清除</button>
+                      </div>
+                      <div
+                          ref="documentEditorRef"
+                          class="rich-editor-content markdown-body"
+                          contenteditable="true"
+                          spellcheck="false"
+                          @input="handleDocumentEditorInput"
+                      ></div>
+                    </div>
                     <pre v-else ref="documentContentRef" class="file-text-content">
                       <code v-if="!sourceHighlightHtml">{{ fileContent }}</code>
                       <code v-else v-html="sourceHighlightHtml"></code>
@@ -2794,6 +3253,12 @@ onUnmounted(() => {
           class="context-menu-item"
           @click="handleFileContextAction('redraw')"
         >重新绘制图谱</button>
+        <button
+          v-if="fileContextMenu.file.status === 'completed' && fileContextMenu.file.document_modified"
+          type="button"
+          class="context-menu-item"
+          @click="handleFileContextAction('update-document')"
+        >应用文档修改并增量更新</button>
         <button
           v-if="fileContextMenu.file.status === 'completed'"
           type="button"
@@ -3605,17 +4070,63 @@ onUnmounted(() => {
               .document-tools {
                 display: flex;
                 align-items: center;
+                justify-content: flex-end;
+                flex-wrap: wrap;
                 gap: 6px;
                 flex-shrink: 0;
+                max-width: 100%;
+
+                .document-view-tools,
+                .document-action-tools,
+                .document-edit-tools {
+                  display: flex;
+                  align-items: center;
+                  gap: 6px;
+                  min-height: 28px;
+                }
+
+                .document-view-tools {
+                  flex: 1 1 270px;
+                }
+
+                .document-action-tools {
+                  flex: 0 0 auto;
+                }
+
+                .document-edit-tools {
+                  flex: 1 1 100%;
+                  justify-content: flex-end;
+                }
 
                 :deep(.el-segmented) {
-                  --el-segmented-item-selected-bg-color: var(--el-bg-color);
-                  min-width: 108px;
+                  --el-segmented-item-selected-bg-color: var(--el-color-primary-light-9);
+                  --el-segmented-item-selected-color: var(--el-color-primary);
+                  width: 216px;
+                  min-width: 216px;
+                }
+
+                :deep(.el-segmented__item) {
+                  min-width: 68px;
+                  white-space: nowrap;
+                  text-align: center;
                 }
 
                 .el-button + .el-button {
                   margin-left: 0;
                 }
+
+                .document-history-select {
+                  width: 150px;
+                }
+              }
+
+              .draft-indicator {
+                padding: 2px 7px;
+                border: 1px solid #fdba74;
+                border-radius: 10px;
+                background: #fff7ed;
+                color: #c2410c;
+                font-size: 11px;
               }
 
               .el-button {
@@ -3797,7 +4308,92 @@ onUnmounted(() => {
                     border-radius: 2px;
                     background: #fef08a;
                     color: inherit;
+
                   }
+
+                  :deep(.source-highlight .entity-highlight),
+                  :deep(.source-highlight .relation-highlight) {
+                    padding: 1px 3px;
+                    border-radius: 3px;
+                    background: #93c5fd;
+                    color: #1e3a8a;
+                    font-weight: 700;
+                    box-shadow: 0 0 0 1px rgb(37 99 235 / 35%);
+                  }
+
+                  :deep(.source-highlight .selected-entity-highlight),
+                  :deep(.source-highlight .selected-relation-highlight) {
+                    padding: 1px 3px;
+                    border-radius: 3px;
+                    background: #f87171;
+                    color: #7f1d1d;
+                    font-weight: 700;
+                    box-shadow: 0 0 0 1px rgb(185 28 28 / 45%);
+                  }
+
+                  :deep(.source-highlight .selected-evidence-highlight) {
+                    padding: 1px 2px;
+                    border-radius: 2px;
+                    background: #a78bfa;
+                    color: #312e81;
+                    font-weight: 700;
+                    box-shadow: 0 0 0 1px rgb(91 33 182 / 45%);
+                  }
+
+                  :deep(.source-highlight .evidence-highlight) {
+                    padding: 1px 2px;
+                    border-radius: 2px;
+                    background: #c4b5fd;
+                    color: #3730a3;
+                    box-shadow: 0 0 0 1px rgb(109 40 217 / 30%);
+                  }
+                }
+
+                .rich-editor-shell {
+                  width: min(100%, 920px);
+                  min-height: 100%;
+                  margin: 0 auto;
+                  border: 1px solid var(--el-border-color-lighter);
+                  border-radius: 6px;
+                  background: var(--el-bg-color);
+                  overflow: hidden;
+                }
+
+                .rich-editor-toolbar {
+                  display: flex;
+                  flex-wrap: wrap;
+                  gap: 4px;
+                  padding: 8px 10px;
+                  border-bottom: 1px solid var(--el-border-color-lighter);
+                  background: var(--el-fill-color-light);
+
+                  button {
+                    min-width: 30px;
+                    height: 28px;
+                    padding: 0 8px;
+                    border: 1px solid var(--el-border-color);
+                    border-radius: 4px;
+                    background: var(--el-bg-color);
+                    color: var(--el-text-color-primary);
+                    cursor: pointer;
+                  }
+
+                  button:hover {
+                    border-color: var(--el-color-primary);
+                    color: var(--el-color-primary);
+                  }
+                }
+
+                .rich-editor-content {
+                  box-sizing: border-box;
+                  min-height: 520px;
+                  padding: 28px 34px;
+                  outline: none;
+                  color: var(--el-text-color-primary);
+                }
+
+                .rich-editor-content:focus {
+                  box-shadow: inset 0 0 0 2px var(--el-color-primary-light-8);
                 }
 
                 :deep(.markdown-body) {
@@ -4874,6 +5470,12 @@ onUnmounted(() => {
               min-height: 58px;
               height: auto;
               padding: 8px 12px;
+
+              .document-tools {
+                flex-wrap: wrap;
+                justify-content: flex-end;
+                max-width: 100%;
+              }
 
               .content-stats {
                 display: none;

@@ -45,6 +45,7 @@ https://github.com/user-attachments/assets/5e9e6ffd-4e18-4915-b3a4-85198eb8bb0f
 - 对 RAG 问答使用到的节点和关系进行高亮定位
 - 允许在线编辑笔记文件，并支持同步更新图谱等内容
 - 新增历史版本控制功能
+- 完成文档内容懒加载和预加载骨架等提高用户体验
 
 ## 技术栈
 
@@ -476,16 +477,6 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 
 环境变量在后端启动时加载。修改后需要重启后端；Docker 环境可以执行 `docker compose restart backend`。
 
-## 外部功能整合
-
-项目可配合 [QAlite](https://github.com/Xikcn/QAlite) 和对应 MCP 服务整理 QA 类型笔记。
-
-![QAlite](readme_img/img.png)
-
-旧版演示视频：
-
-https://github.com/user-attachments/assets/5b62e85b-1340-4b79-814c-994380a8e146
-
 ## Roadmap
 
 - 当本地知识图谱无法回答时，按需联网补充相关知识。
@@ -496,4 +487,3 @@ https://github.com/user-attachments/assets/5b62e85b-1340-4b79-814c-994380a8e146
 ## 许可证
 
 MIT
-

@@ -824,11 +824,22 @@ class KgManager:
                 节点出处文本块.get(node, self.current_G.nodes[node].get("source_blocks", []))
             )
 
+        # 分页后首页只包含社区节点，不能用首页节点数判断是否为大图。
+        # 原图超过 50 个节点时，首页和所有社区子页面都使用静态布局。
+        原图强制静态布局 = len(self.current_G) > 50
+
         启用分页 = (聚类算法 == "louvain") and (社区数量 > 1) and (最大社区大小 >= MIN_SIZE)
 
         if not 启用分页:
             # 原逻辑：生成单一全图页面
-            self._渲染图(self.current_G, 主页面路径, 社区分配, 物理引擎, 导航HTML="")
+            self._渲染图(
+                self.current_G,
+                主页面路径,
+                社区分配,
+                物理引擎,
+                导航HTML="",
+                强制静态布局=原图强制静态布局,
+            )
             print(f"✅ 知识图谱已生成: {主页面路径}")
             print(f"   节点数: {len(self.current_G.nodes())}, 边数: {len(self.current_G.edges())}")
             return self.current_G
@@ -965,7 +976,14 @@ class KgManager:
             </div>
         </div>
         """
-        self._渲染图(ov_G, 主页面路径, 社区分配={}, 物理引擎=物理引擎, 导航HTML=导航HTML_主)
+        self._渲染图(
+            ov_G,
+            主页面路径,
+            社区分配={},
+            物理引擎=物理引擎,
+            导航HTML=导航HTML_主,
+            强制静态布局=原图强制静态布局,
+        )
 
         # ---- 5. 为每个大社区生成子页面 ----
         for cid in 大社区:
@@ -979,7 +997,14 @@ class KgManager:
                 <span>{html.escape(str(代表名))}（{len(子节点)} 个节点）</span>
             </div>
             """
-            self._渲染图(子图, 子页面路径[cid], 社区分配={}, 物理引擎=物理引擎, 导航HTML=导航HTML_子)
+            self._渲染图(
+                子图,
+                子页面路径[cid],
+                社区分配={},
+                物理引擎=物理引擎,
+                导航HTML=导航HTML_子,
+                强制静态布局=原图强制静态布局,
+            )
 
         print(f"✅ 知识图谱已生成（社区分页）:")
         print(f"   主页面（跨社区关系）: {主页面路径}  ({社区数量} 个社区, {ov_G.number_of_edges()} 条跨社区边)")
@@ -994,7 +1019,7 @@ class KgManager:
         浏览器不再运行物理引擎，避免打开页面后节点持续弹动；坐标仍由
         力导向算法生成，因此保留原先自然分布的视觉效果，而不是规则网格
         或按距离排列的同心环。没有任何连接的节点不参加力导向计算，
-        最后统一放到关系图外围。
+        关系节点会经过碰撞消解，最后再把孤立节点统一放到关系图外围。
         """
         if not G:
             return {}
@@ -1038,13 +1063,34 @@ class KgManager:
                     weight="weight",
                 )
 
-            # 将有关系节点整体平移到坐标中心，便于把孤立节点放到外圈。
+            # ForceAtlas2 的输出通常是归一化坐标，直接写入 vis-network
+            # 会让几十像素大小的节点挤在一起。先放大到适合画布的尺度。
             center_x = sum(float(position[0]) for position in raw_positions.values()) / len(raw_positions)
             center_y = sum(float(position[1]) for position in raw_positions.values()) / len(raw_positions)
-            positions = {
+            centered = {
                 node: (float(position[0]) - center_x, float(position[1]) - center_y)
                 for node, position in raw_positions.items()
             }
+            max_extent = max(
+                (max(abs(x), abs(y)) for x, y in centered.values()),
+                default=1.0,
+            ) or 1.0
+            desired_extent = max(280.0, math.sqrt(布局节点数) * 90.0)
+            scale = max(1.0, desired_extent / max_extent)
+            positions = {
+                node: (x * scale, y * scale)
+                for node, (x, y) in centered.items()
+            }
+
+            # ForceAtlas2 只负责给出整体结构；用空间网格做轻量碰撞消解，
+            # 避免节点标签和关系端点重叠，同时避免 O(n^2) 的全量两两比较。
+            degrees = dict(布局图.degree())
+            max_degree = max(degrees.values(), default=1) or 1
+            node_radii = {
+                node: 28.0 + 22.0 * degrees.get(node, 0) / max_degree
+                for node in positions
+            }
+            positions = KgManager._消除静态节点重叠(positions, node_radii)
             connected_radius = max(
                 math.hypot(x, y) for x, y in positions.values()
             )
@@ -1072,7 +1118,84 @@ class KgManager:
 
         return positions
 
-    def _渲染图(self, G, 文件名, 社区分配, 物理引擎, 导航HTML=""):
+    @staticmethod
+    def _消除静态节点重叠(positions, node_radii, gap=24.0):
+        """Resolve overlaps in a static layout using a spatial hash grid."""
+        if len(positions) < 2:
+            return positions
+
+        nodes = list(positions)
+        max_radius = max((float(node_radii.get(node, 30.0)) for node in nodes), default=30.0)
+        cell_size = max(2.0 * max_radius + gap, 1.0)
+        max_iterations = 140 if len(nodes) <= 500 else 50 if len(nodes) <= 2000 else 25
+
+        for _ in range(max_iterations):
+            buckets = defaultdict(list)
+            for index, node in enumerate(nodes):
+                x, y = positions[node]
+                cell = (math.floor(x / cell_size), math.floor(y / cell_size))
+                buckets[cell].append(index)
+
+            moved = False
+            for index, node in enumerate(nodes):
+                x, y = positions[node]
+                cell_x = math.floor(x / cell_size)
+                cell_y = math.floor(y / cell_size)
+                radius = float(node_radii.get(node, 30.0))
+                for neighbour_x in range(cell_x - 1, cell_x + 2):
+                    for neighbour_y in range(cell_y - 1, cell_y + 2):
+                        for other_index in buckets.get((neighbour_x, neighbour_y), ()):
+                            if other_index <= index:
+                                continue
+                            other = nodes[other_index]
+                            other_x, other_y = positions[other]
+                            dx = other_x - x
+                            dy = other_y - y
+                            distance = math.hypot(dx, dy)
+                            required = radius + float(node_radii.get(other, 30.0)) + gap
+                            if distance >= required:
+                                continue
+                            if distance < 1e-9:
+                                angle = (index + 1) * 2.399963229728653
+                                dx, dy = math.cos(angle), math.sin(angle)
+                                distance = 0.0
+                            else:
+                                dx, dy = dx / distance, dy / distance
+                            push = (required - distance) * 0.5
+                            positions[node] = (x - dx * push, y - dy * push)
+                            positions[other] = (other_x + dx * push, other_y + dy * push)
+                            x, y = positions[node]
+                            moved = True
+            if not moved:
+                break
+
+        # The iterative pass is intentionally local and fast. For the graph
+        # sizes rendered in one page, finish with one uniform expansion so the
+        # requested clearance is mathematically satisfied for every pair.
+        if len(nodes) <= 2000:
+            center_x = sum(positions[node][0] for node in nodes) / len(nodes)
+            center_y = sum(positions[node][1] for node in nodes) / len(nodes)
+            expansion = 1.0
+            for index, node in enumerate(nodes):
+                x, y = positions[node]
+                radius = float(node_radii.get(node, 30.0))
+                for other in nodes[index + 1:]:
+                    other_x, other_y = positions[other]
+                    distance = math.hypot(other_x - x, other_y - y)
+                    required = radius + float(node_radii.get(other, 30.0)) + gap
+                    if distance > 1e-9:
+                        expansion = max(expansion, required / distance)
+            if expansion > 1.0:
+                positions = {
+                    node: (
+                        center_x + (x - center_x) * expansion,
+                        center_y + (y - center_y) * expansion,
+                    )
+                    for node, (x, y) in positions.items()
+                }
+        return positions
+
+    def _渲染图(self, G, 文件名, 社区分配, 物理引擎, 导航HTML="", 强制静态布局=False):
         """
         内部渲染函数：将图 G 渲染为单个 HTML 文件
         社区分配: 节点 -> 社区ID 的字典，空字典则全部归为0组
@@ -1109,19 +1232,20 @@ class KgManager:
         )
 
         # 物理引擎配置
-        # 大图不启动物理模拟：ForceAtlas2 在节点数较多时会持续占用主线程，
+        # 大图或包含孤立节点的图不启动物理模拟：ForceAtlas2 在节点数较多时会持续占用主线程，
         # 造成页面打开后长时间弹动、拖拽卡顿。节点会在下方获得一次性计算的
         # 静态力导向位置，但不设置 fixed，因此用户仍可以自由拖动节点。
         # 初始位置，但不设置 fixed，因此用户仍可以自由拖动节点。
         节点总数 = len(G.nodes())
-        大图静态布局 = 节点总数 > 50
+        包含孤立节点 = any(degree == 0 for degree in 节点度数.values())
+        大图静态布局 = 强制静态布局 or 节点总数 > 50 or 包含孤立节点
         if 大图静态布局:
             physics = {
                 "enabled": False,
                 "stabilization": {"enabled": False}
             }
         else:
-            # 50 个及以下：保留原有物理布局作为备用
+            # 50 个及以下且没有孤立节点：保留原有物理布局作为备用
             physics = {
                 "forceAtlas2Based": {
                     "gravitationalConstant": -80,

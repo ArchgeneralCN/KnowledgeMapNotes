@@ -231,15 +231,25 @@ GRAPH_INTERACTION_TEMPLATE = r"""
     const nodes = network.body.data.nodes.get();
     const isolated = nodes.filter(node => network.getConnectedNodes(node.id).length === 0);
     const connected = nodes.filter(node => network.getConnectedNodes(node.id).length > 0);
-    if (!isolated.length || !connected.length) return;
-    const connectedPositions = network.getPositions(connected.map(node => node.id));
-    const values = Object.values(connectedPositions);
-    if (!values.length) return;
-    const centerX = values.reduce((sum, position) => sum + position.x, 0) / values.length;
-    const centerY = values.reduce((sum, position) => sum + position.y, 0) / values.length;
-    const connectedRadius = Math.max(...values.map(position =>
-      Math.hypot(position.x - centerX, position.y - centerY)
-    ));
+    if (!isolated.length) return;
+    // A graph can consist entirely of isolated nodes. Use all current
+    // positions only to choose a stable center, then place every node on rings.
+    const referenceNodes = connected.length ? connected : nodes;
+    const connectedPositions = network.getPositions(referenceNodes.map(node => node.id));
+    const values = Object.values(connectedPositions).filter(position =>
+      Number.isFinite(position?.x) && Number.isFinite(position?.y)
+    );
+    const centerX = values.length
+      ? values.reduce((sum, position) => sum + position.x, 0) / values.length
+      : 0;
+    const centerY = values.length
+      ? values.reduce((sum, position) => sum + position.y, 0) / values.length
+      : 0;
+    const connectedRadius = connected.length && values.length
+      ? Math.max(...values.map(position =>
+        Math.hypot(position.x - centerX, position.y - centerY)
+      ))
+      : 0;
     const ringSpacing = 180;
     const radius = Math.max(connectedRadius + 260, 360);
     const updates = [];
@@ -266,6 +276,17 @@ GRAPH_INTERACTION_TEMPLATE = r"""
   function prepareLegacyStaticForceLayout(nodeCount) {
     const graphContainer = document.getElementById('mynetwork');
     if (!graphContainer) return false;
+    // Keep degree-zero nodes out of the hidden ForceAtlas2 run. They are
+    // positioned after the related graph has stabilized, on the outer rings.
+    const isolatedNodes = network.body.data.nodes.get().filter(node =>
+      network.getConnectedNodes(node.id).length === 0
+    );
+    if (isolatedNodes.length) {
+      network.body.data.nodes.update(isolatedNodes.map(node => ({
+        id: node.id,
+        physics: false
+      })));
+    }
     graphContainer.style.visibility = 'hidden';
     let finished = false;
     const finish = () => {
@@ -282,6 +303,14 @@ GRAPH_INTERACTION_TEMPLATE = r"""
       physics: {
         enabled: true,
         solver: 'forceAtlas2Based',
+        forceAtlas2Based: {
+          gravitationalConstant: -80,
+          centralGravity: 0.01,
+          springLength: 200,
+          springConstant: 0.08,
+          damping: 0.4,
+          avoidOverlap: 1.0
+        },
         stabilization: {
           enabled: true,
           iterations: nodeCount > 500 ? 50 : 80,
@@ -299,7 +328,8 @@ GRAPH_INTERACTION_TEMPLATE = r"""
   function applyLargeGraphPerformance() {
     const nodes = network.body?.data?.nodes?.get?.() || [];
     const edges = network.body?.data?.edges?.get?.() || [];
-    if (nodes.length <= 50) return false;
+    const hasIsolatedNodes = nodes.some(node => network.getConnectedNodes(node.id).length === 0);
+    if (nodes.length <= 50 && !hasIsolatedNodes) return false;
 
     // Newly generated pages already contain server-side ForceAtlas2 coordinates.
     // Legacy pages are stabilized while hidden, then physics is disabled before
@@ -315,7 +345,7 @@ GRAPH_INTERACTION_TEMPLATE = r"""
     const hasCoordinates = nodes.length > 0 && nodes.every(node =>
       Number.isFinite(Number(node.x)) && Number.isFinite(Number(node.y))
     );
-    if (GRAPH_STATIC_LAYOUT_VERSION < 1 || !hasCoordinates) {
+    if (GRAPH_STATIC_LAYOUT_VERSION < 2 || !hasCoordinates) {
       prepareLegacyStaticForceLayout(nodes.length);
     }
     updateVisibleStatus(nodes.length, edges.length);
@@ -1117,7 +1147,7 @@ def build_graph_interaction_html(
     node_count: int,
     edge_count: int,
     graph_name: str = "",
-    static_layout_version: int = 1,
+    static_layout_version: int = 2,
 ) -> str:
     """Build the static interaction layer with escaped numeric counters."""
     return (
@@ -1226,7 +1256,9 @@ document.addEventListener('DOMContentLoaded', function () {
     if graph_name and (
         "const GRAPH_EDITOR_VERSION = 3;" not in html_content
         or "function applyLargeGraphPerformance()" not in html_content
+        or "function moveLegacyIsolatedNodesOutside()" not in html_content
         or "const GRAPH_STATIC_LAYOUT_VERSION =" not in html_content
+        or "GRAPH_STATIC_LAYOUT_VERSION < 2" not in html_content
     ):
         # Replace an older injected interaction layer instead of appending a
         # second one. Otherwise both old and new context-menu handlers would

@@ -225,7 +225,16 @@ def restore_process_statuses() -> None:
         try:
             restored = json.loads(status_path.read_text(encoding="utf-8"))
             base_name = status_path.stem
-            if restored.get("status") in active_statuses:
+            if restored.get("status") == "redrawing":
+                has_existing_graph = (RESULT_FOLDER / base_name / f"{base_name}.html").is_file()
+                restored["status"] = "completed" if has_existing_graph else "error"
+                restored["error_message"] = (
+                    "重新绘制被服务中断，已保留原图"
+                    if has_existing_graph else "重新绘制被服务中断，图谱页面不存在"
+                )
+                restored["pause_requested"] = False
+                persist_process_status(base_name, restored)
+            elif restored.get("status") in active_statuses:
                 completed = int(restored.get("completed_chunks") or 0)
                 was_pausing = restored.get("status") == "pausing" or restored.get("pause_requested")
                 restored["status"] = "paused" if was_pausing else (
@@ -346,7 +355,7 @@ def _current_graph_revision(base_name: str) -> int:
 
 def _ensure_graph_editable(base_name: str) -> None:
     status = (get_process_status(base_name) or {}).get("status")
-    if status in {"uploading", "processing", "updating", "resuming", "pausing"}:
+    if status in {"uploading", "processing", "updating", "resuming", "pausing", "redrawing"}:
         raise HTTPException(status_code=409, detail="文件正在处理，暂不能编辑图谱")
 
 
@@ -371,6 +380,58 @@ async def get_editable_graph(filename: str):
     return {
         **graph_payload(_graph_manager_state(manager), _current_graph_revision(base_name)),
         "legacy_url": f"/api/result/{quote(base_name + '.html', safe='')}"
+    }
+
+
+@app.post("/redraw-graph/{filename}")
+async def redraw_graph(filename: str):
+    """Redraw one file's complete graph from its saved state."""
+    filename = get_safe_filename(filename)
+    base_name = get_base_name(filename)
+    progress = get_process_status(base_name) or {}
+    status = progress.get("status", "completed")
+    if status in {"uploading", "processing", "updating", "resuming", "pausing", "redrawing"}:
+        raise HTTPException(status_code=409, detail="文件正在处理，暂不能重新绘制图谱")
+    if status != "completed":
+        raise HTTPException(status_code=409, detail="只有已完成的文件才能重新绘制图谱")
+    if chromadb_store.load_state(base_name) is None:
+        raise HTTPException(status_code=404, detail="图谱状态不存在，无法重新绘制")
+
+    set_process_status(
+        base_name,
+        "redrawing",
+        percentage=100,
+        estimated_remaining_seconds=None,
+        error_message=None,
+    )
+    try:
+        history_revision = await asyncio.to_thread(redraw_graph_from_store, base_name)
+    except HTTPException:
+        set_process_status(
+            base_name,
+            "completed",
+            percentage=100,
+            estimated_remaining_seconds=0,
+            error_message="图谱重新绘制失败",
+        )
+        raise
+    except Exception as exc:
+        logger.error("重新绘制图谱失败: %s", base_name, exc_info=True)
+        set_process_status(
+            base_name,
+            "completed",
+            percentage=100,
+            estimated_remaining_seconds=0,
+            error_message=f"图谱重新绘制失败: {exc}",
+        )
+        raise HTTPException(status_code=500, detail="图谱重新绘制失败，原图谱仍然保留") from exc
+
+    mark_file_processing_completed(base_name)
+    return {
+        "status": "completed",
+        "filename": filename,
+        "message": "图谱已根据当前保存的图谱状态重新绘制",
+        "history_revision": history_revision,
     }
 
 
@@ -1432,8 +1493,25 @@ def render_graph_atomically(manager: KgManager, base_name: str) -> None:
         generated_files.sort(key=lambda path: path.name == main_page)
         for generated_file in generated_files:
             generated_file.replace(target_directory / generated_file.name)
+        generated_names = {path.name for path in generated_files}
+        for stale_page in target_directory.glob("*.html"):
+            if stale_page.name not in generated_names:
+                stale_page.unlink()
     finally:
         shutil.rmtree(temporary_root, ignore_errors=True)
+
+
+def redraw_graph_from_store(base_name: str) -> int:
+    """Render the persisted graph again without re-running document extraction."""
+    with graph_edit_lock:
+        manager = _load_editable_graph(base_name)
+        revision = graph_history.commit_snapshot(
+            base_name,
+            _graph_manager_state(manager),
+            "redraw_graph",
+        )
+        render_graph_atomically(manager, base_name)
+        return revision
 
 
 def persist_graph_checkpoint(
@@ -2340,6 +2418,7 @@ async def get_processing_status(filename: str):
         "updating": "增量更新中",
         "resuming": "继续处理中",
         "pausing": "暂停中",
+        "redrawing": "重新绘制图谱中",
         "paused": "已暂停",
         "completed": "已完成",
         "interrupted": "部分完成，可继续",
@@ -2604,7 +2683,7 @@ async def list_files():
 
         # 获取当前正在处理的文件（从PROCESS_STATUS获取）
         tracked_statuses = {
-            "uploading", "processing", "updating", "resuming", "pausing",
+            "uploading", "processing", "updating", "resuming", "pausing", "redrawing",
             "paused", "interrupted", "error",
         }
         with process_status_lock:
@@ -2621,6 +2700,7 @@ async def list_files():
             "updating": "增量更新中",
             "resuming": "继续处理中",
             "pausing": "暂停中",
+            "redrawing": "重新绘制图谱中",
             "paused": "已暂停",
             "completed": "已完成",
             "interrupted": "部分完成，可继续",

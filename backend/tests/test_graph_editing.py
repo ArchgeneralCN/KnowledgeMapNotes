@@ -91,6 +91,23 @@ class GraphEditingTests(unittest.TestCase):
             self.assertEqual(versions[1]["description"], "新增节点")
             self.assertIsNotNone(state_from_snapshot(state_snapshot(after))["current_G"])
 
+    def test_history_snapshot_creates_one_before_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            history = GraphHistory(Path(directory))
+            state = sample_state()
+            revision = history.commit_snapshot("test", state, "redraw_graph")
+
+            self.assertEqual(revision, 1)
+            versions = history.list_versions("test")
+            self.assertEqual(len(versions), 1)
+            self.assertEqual(versions[0]["description"], "修改前快照：重新绘制图谱")
+            restored = history.get_version("test", revision)
+            self.assertEqual(restored["kg_triplet"], state["kg_triplet"])
+            self.assertEqual(
+                set(restored["current_G"].nodes),
+                set(state["current_G"].nodes),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

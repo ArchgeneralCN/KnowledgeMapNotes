@@ -260,7 +260,7 @@ const openFileContextMenu = (event, file) => {
   event.preventDefault();
   event.stopPropagation();
   const menuWidth = 176;
-  const menuHeight = 260;
+  const menuHeight = 300;
   fileContextMenu.file = file;
   fileContextMenu.x = Math.max(8, Math.min(event.clientX, window.innerWidth - menuWidth - 8));
   fileContextMenu.y = Math.max(8, Math.min(event.clientY, window.innerHeight - menuHeight - 8));
@@ -1614,6 +1614,46 @@ const downloadTransferPackage = async (file) => {
   }
 };
 
+const redrawFileGraph = async (file) => {
+  if (!file?.name || file.status !== 'completed') {
+    ElMessage.warning('只有已完成的文件才能重新绘制图谱');
+    return;
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `确定根据当前保存的图谱状态重新绘制文件 ${file.name} 的全部图谱页面吗？不会重新调用 AI。`,
+      '重新绘制图谱',
+      {
+        confirmButtonText: '重新绘制',
+        cancelButtonText: '取消',
+        type: 'info'
+      }
+    );
+  } catch {
+    return;
+  }
+
+  stopFileStatusPolling(file.name);
+  file.status = 'redrawing';
+  file.display_status = '重新绘制图谱中';
+  file.errorMessage = '';
+  try {
+    await api.post(`/redraw-graph/${encodePathSegment(file.name)}`);
+    await updateFileStatus(file);
+    if (currentFile.value?.name === file.name) {
+      finishKnowledgeGraphLoading();
+      knowledgeGraphUrl.value = null;
+      await nextTick();
+      await fetchKnowledgeGraph(file.name);
+    }
+    ElMessage.success('图谱已重新绘制');
+  } catch (error) {
+    await updateFileStatus(file);
+    ElMessage.error(getApiErrorMessage(error, '重新绘制图谱失败'));
+  }
+};
+
 const handleFileContextAction = async (action) => {
   const file = fileContextMenu.file;
   closeFileContextMenu();
@@ -1622,6 +1662,7 @@ const handleFileContextAction = async (action) => {
   if (action === 'pause') await pauseFileProcessing(file);
   if (action === 'resume') await resumeFileProcessing(file);
   if (action === 'view') await viewFileResult(file);
+  if (action === 'redraw') await redrawFileGraph(file);
   if (action === 'download-package') await downloadTransferPackage(file);
   if (action === 'clear-history') await deleteRagHistory(file);
   if (action === 'delete') await deleteFile(file);
@@ -1804,6 +1845,8 @@ const getStatusText = (status) => {
       return '继续处理中';
     case 'pausing':
       return '暂停中';
+    case 'redrawing':
+      return '重新绘制图谱中';
     case 'paused':
       return '已暂停';
     case 'completed':
@@ -1818,7 +1861,7 @@ const getStatusText = (status) => {
 };
 
 const isFileProcessing = (status) => {
-  return ['uploading', 'processing', 'updating', 'resuming', 'pausing'].includes(status);
+  return ['uploading', 'processing', 'updating', 'resuming', 'pausing', 'redrawing'].includes(status);
 };
 
 const formatRemainingTime = (seconds) => {
@@ -1837,6 +1880,7 @@ const formatRemainingTime = (seconds) => {
 };
 
 const getFileProgressSummary = (file) => {
+  if (file.status === 'redrawing') return '正在重新绘制全部图谱页面';
   if (file.status === 'uploading') return `上传 ${file.percentage || 0}%`;
   if (!file.totalChunks) return '正在准备分块';
 
@@ -2744,6 +2788,12 @@ onUnmounted(() => {
           class="context-menu-item"
           @click="handleFileContextAction('view')"
         >查看原文与图谱</button>
+        <button
+          v-if="fileContextMenu.file.status === 'completed'"
+          type="button"
+          class="context-menu-item"
+          @click="handleFileContextAction('redraw')"
+        >重新绘制图谱</button>
         <button
           v-if="fileContextMenu.file.status === 'completed'"
           type="button"

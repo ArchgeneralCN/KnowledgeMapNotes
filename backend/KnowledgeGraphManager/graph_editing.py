@@ -29,6 +29,7 @@ HISTORY_OPERATION_LABELS = {
     "add_edge": "新增关系",
     "update_edge": "修改关系",
     "delete_edge": "删除关系",
+    "redraw_graph": "重新绘制图谱",
 }
 
 
@@ -390,6 +391,20 @@ class GraphHistory:
         data["next_revision"] = after_revision + 1
         self._write(base_name, data)
         return after_revision
+
+    def commit_snapshot(self, base_name: str, state: Mapping[str, Any], operation: str) -> int:
+        """Persist one recoverable state before an operation changes presentation."""
+        data = self._read(base_name)
+        revision = int(data.get("next_revision") or 1)
+        data["versions"].append({
+            "revision": revision,
+            "operation": f"before:{operation}",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "snapshot": state_snapshot(state),
+        })
+        data["next_revision"] = revision + 1
+        self._write(base_name, data)
+        return revision
 
     def list_versions(self, base_name: str) -> list[Dict[str, Any]]:
         return [

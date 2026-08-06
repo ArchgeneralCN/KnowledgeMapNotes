@@ -4078,7 +4078,8 @@ onUnmounted(() => {
                 align-items: center;
                 justify-content: flex-end;
                 flex-wrap: wrap;
-                gap: 6px;
+                column-gap: 10px;
+                row-gap: 8px;
                 flex-shrink: 0;
                 max-width: 100%;
 
@@ -4092,11 +4093,15 @@ onUnmounted(() => {
                 }
 
                 .document-view-tools {
-                  flex: 1 1 270px;
+                  flex: 0 1 286px;
+                  min-width: 286px;
+                  gap: 10px;
                 }
 
                 .document-action-tools {
                   flex: 0 0 auto;
+                  padding-left: 8px;
+                  border-left: 1px solid var(--el-border-color-lighter);
                 }
 
                 .document-edit-tools {
@@ -5408,6 +5413,16 @@ onUnmounted(() => {
         padding: 30px 28px 42px;
       }
     }
+
+    .content-panels .panel .panel-header {
+      flex-wrap: wrap;
+
+      .document-tools {
+        flex: 1 0 100%;
+        width: 100%;
+        justify-content: flex-start;
+      }
+    }
   }
 }
 
@@ -5476,6 +5491,21 @@ onUnmounted(() => {
                 flex-wrap: wrap;
                 justify-content: flex-end;
                 max-width: 100%;
+
+                .document-view-tools {
+                  flex: 1 1 100%;
+                  min-width: 0;
+                }
+
+                :deep(.document-view-tools .el-segmented) {
+                  width: min(216px, calc(100% - 56px));
+                  min-width: 0;
+                }
+
+                :deep(.document-view-tools .el-segmented__item) {
+                  min-width: 0;
+                  flex: 1 1 0;
+                }
               }
 
               .content-stats {

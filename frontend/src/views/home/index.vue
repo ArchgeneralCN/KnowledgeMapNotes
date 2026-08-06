@@ -428,7 +428,7 @@ const fetchKnowledgeGraph = async (filename) => {
       const mainPageName = `${graphName}.html`;
       knowledgeGraphUrl.value = apiUrl(
         `/result-page/${encodePathSegment(graphName)}/${encodePathSegment(mainPageName)}`
-      );
+      ) + '?graph-editor=1';
     }
   } catch (error) {
     console.error('获取知识图谱失败:', error);
@@ -2233,34 +2233,34 @@ onUnmounted(() => {
                 :class="{ active: activeTab === 'knowledge-graph' }"
                 :style="getPanelStyle('knowledge-graph')"
                 data-panel="knowledge-graph"
-            >
-              <div class="panel-header">
-                <h3>知识图谱</h3>
-              </div>
-              <div class="panel-content" style="overflow: hidden;">
-                <div v-if="knowledgeGraphUrl" class="knowledge-graph-content">
-                  <iframe
-                      ref="knowledgeGraphFrameRef"
-                      :src="knowledgeGraphUrl"
-                      sandbox="allow-scripts"
-                      class="result-iframe"
-                      frameborder="0"
-                      @load="handleKnowledgeGraphFrameLoad"
-                  ></iframe>
-                  <div v-if="knowledgeGraphLoading" class="graph-loading-overlay">
+              >
+                <div class="panel-header">
+                  <h3>知识图谱</h3>
+                </div>
+                <div class="panel-content" style="overflow: hidden;">
+                  <div v-if="knowledgeGraphUrl" class="knowledge-graph-content">
+                    <iframe
+                        ref="knowledgeGraphFrameRef"
+                        :src="knowledgeGraphUrl"
+                        sandbox="allow-scripts allow-modals"
+                        class="result-iframe"
+                        frameborder="0"
+                        @load="handleKnowledgeGraphFrameLoad"
+                    ></iframe>
+                    <div v-if="knowledgeGraphLoading" class="graph-loading-overlay">
+                      <el-icon class="is-loading"><Loading /></el-icon>
+                      <span>正在加载图谱并计算节点布局...</span>
+                    </div>
+                  </div>
+                  <div v-else-if="knowledgeGraphLoading" class="loading-content">
                     <el-icon class="is-loading"><Loading /></el-icon>
-                    <span>正在加载图谱并计算节点布局...</span>
+                    <span>正在准备知识图谱...</span>
+                  </div>
+                  <div v-else class="empty-content">
+                    <el-empty description="暂无知识图谱数据" />
                   </div>
                 </div>
-                <div v-else-if="knowledgeGraphLoading" class="loading-content">
-                  <el-icon class="is-loading"><Loading /></el-icon>
-                  <span>正在准备知识图谱...</span>
-                </div>
-                <div v-else class="empty-content">
-                  <el-empty description="暂无知识图谱数据" />
-                </div>
               </div>
-            </div>
 
             <div
                 v-if="panelVisible['knowledge-graph'] && getNextVisiblePanel('knowledge-graph')"

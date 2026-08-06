@@ -405,7 +405,7 @@ class KgManager:
 
         # 收集所有具有相同实体的关系
         for relation in relations:
-            for rel in relation['relation']:
+            for relation_index, rel in enumerate(relation['relation']):
                 source = rel['source']
                 target = rel['target']
                 # 使用排序后的实体对作为键，确保(source,target)和(target,source)被视为相同
@@ -603,7 +603,7 @@ class KgManager:
         knowledge_graph = self.bidirectional_mapping
         self.current_G = nx.DiGraph()
         for relation in relations:
-            for rel in relation['relation']:
+            for relation_index, rel in enumerate(relation['relation']):
                 source = rel['source']
                 target = rel['target']
                 context = rel['context']
@@ -632,6 +632,9 @@ class KgManager:
                 self.current_G.add_edge(source, target,
                                         title=context,
                                         label=relation_text,
+                                        edit_id=rel.get('edit_id') or self._graph_edge_id(
+                                            relation.get('bid'), relation_index, rel
+                                        ),
                                         weight=weight,  # 添加权重
                                         font={"size": 0},  # 初始标签隐藏
                                         color='#97c2fc',
@@ -644,6 +647,21 @@ class KgManager:
                                             }
                                         })
         return self.current_G
+
+    @staticmethod
+    def _graph_edge_id(bid, index, relation):
+        """Use the same stable edge key as the graph editor/history API."""
+        import hashlib
+
+        payload = json.dumps({
+            "bid": bid,
+            "index": index,
+            "source": relation.get("source"),
+            "target": relation.get("target"),
+            "relation": relation.get("relation"),
+            "context": relation.get("context"),
+        }, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        return "edge-" + hashlib.sha1(payload).hexdigest()[:20]
 
     # 增量更新找到要处理的块
     def _replace_blocks_and_find_changes(self, original_blocks, new_text, split_text_fun):
@@ -966,7 +984,7 @@ class KgManager:
         is_directed = G.is_directed()  # 根据图类型自适应
         net = Network(
             notebook=True,
-            height="700px",
+            height="750px",
             width="100%",
             bgcolor="#ffffff",
             font_color="#1a1a1a",
@@ -1135,6 +1153,8 @@ class KgManager:
             }
             if is_hub_edge:
                 edge_options["smooth"] = {"type": "curvedCW", "roundness": 0.3}
+            if attr.get('edit_id'):
+                edge_options['id'] = attr['edit_id']
             net.add_edge(source, target, **edge_options)
 
         # 写入HTML
@@ -1145,7 +1165,10 @@ class KgManager:
 
     def _注入交互增强(self, html_file, 节点总数, 边总数, nav_html=""):
         """注入高级交互功能 + 可选导航HTML（修复版）"""
-        interaction_html = build_graph_interaction_html(节点总数, 边总数)
+        # Community pages live beside the main page, so their parent directory
+        # is the stable file identifier used by the edit/history API.
+        graph_name = Path(html_file).parent.name
+        interaction_html = build_graph_interaction_html(节点总数, 边总数, graph_name)
         with open(html_file, "r+", encoding="utf-8") as graph_html:
             content = graph_html.read()
             content = content.replace(

@@ -39,8 +39,16 @@ from KnowledgeGraphManager.graph_interactions import (
     get_local_vis_asset_path,
     prepare_legacy_graph_html,
 )
+from KnowledgeGraphManager.graph_editing import (
+    GraphEditError,
+    GraphHistory,
+    apply_graph_mutation,
+    graph_payload,
+    state_from_snapshot,
+    state_snapshot,
+)
 
-os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
 load_dotenv(dotenv_path="./.env")
 
@@ -84,6 +92,22 @@ class AISettingsUpdate(BaseModel):
     fallback_model_name: Optional[str] = None
 
 
+class GraphMutationRequest(BaseModel):
+    """One atomic edit sent by the PyVis graph editor."""
+
+    operation: str
+    revision: Optional[int] = None
+    node_id: Optional[str] = None
+    name: Optional[str] = None
+    entity_type: Optional[str] = None
+    edge_id: Optional[str] = None
+    source: Optional[str] = None
+    target: Optional[str] = None
+    relation: Optional[str] = None
+    context: Optional[str] = None
+    weight: Optional[float] = None
+
+
 app = FastAPI(title="图谱笔记", description="大模型知识图谱笔记软件")
 app.add_middleware(GZipMiddleware, minimum_size=1_000, compresslevel=5)
 
@@ -125,6 +149,7 @@ UPLOAD_FOLDER = Path(os.getenv("UPLOAD_FOLDER", "uploads"))
 TXT_FOLDER = Path(os.getenv("TXT_FOLDER", "txt_files"))
 RESULT_FOLDER = Path(os.getenv("RESULT_FOLDER", "results"))
 STATUS_FOLDER = Path(os.getenv("STATUS_FOLDER", "processing_states"))
+GRAPH_HISTORY_FOLDER = Path(os.getenv("GRAPH_HISTORY_FOLDER", "graph_history"))
 MAX_TRANSFER_PACKAGE_SIZE = 100 * 1024 * 1024
 DEFAULT_EXAMPLE_FOLDER = Path(__file__).resolve().parent / "default_examples"
 try:
@@ -189,7 +214,7 @@ def create_chunk_progress_callback(base_name: str, status: str = "processing"):
     return update_progress
 
 # Ensure configured runtime directories exist before accepting requests.
-for folder in [UPLOAD_FOLDER, TXT_FOLDER, RESULT_FOLDER, STATUS_FOLDER]:
+for folder in [UPLOAD_FOLDER, TXT_FOLDER, RESULT_FOLDER, STATUS_FOLDER, GRAPH_HISTORY_FOLDER]:
     folder.mkdir(parents=True, exist_ok=True)
 
 
@@ -274,8 +299,172 @@ else:
 
 # 创建两个独立的存储工具
 chromadb_store = StoreTool(storage_path= os.getenv("CHROMADB_PATH"), embedding_function=embeddings)
+graph_history = GraphHistory(GRAPH_HISTORY_FOLDER)
+graph_edit_lock = Lock()
 
 MAX_CUSTOM_PROMPT_LENGTH = 30_000
+
+
+def _graph_manager_state(manager: KgManager) -> Dict[str, Any]:
+    return {
+        "file": manager.file,
+        "kg_triplet": manager.kg_triplet,
+        "bidirectional_mapping": manager.bidirectional_mapping,
+        "current_G": manager.current_G,
+        "Bolts": manager.Bolts,
+        "original_file_type": manager.original_file_type,
+    }
+
+
+def _load_editable_graph(base_name: str) -> KgManager:
+    manager = KgManager(
+        agent=kg_agent,
+        splitter=kg_splitter,
+        embedding_model=embeddings,
+        store=chromadb_store,
+    )
+    if not manager.load_store(base_name):
+        raise HTTPException(status_code=404, detail="图谱状态不存在")
+    return manager
+
+
+def _restore_manager_state(manager: KgManager, state: Dict[str, Any]) -> None:
+    manager.file = state.get("file") or manager.file
+    manager.kg_triplet = state.get("kg_triplet") or []
+    manager.bidirectional_mapping = state.get("bidirectional_mapping") or {
+        "entity_to_label": {}, "label_to_entities": defaultdict(list)
+    }
+    manager.current_G = state.get("current_G") or nx.DiGraph()
+    manager.Bolts = state.get("Bolts") or []
+    manager.original_file_type = state.get("original_file_type") or ".txt"
+
+
+def _current_graph_revision(base_name: str) -> int:
+    versions = graph_history.list_versions(base_name)
+    return int(versions[-1]["revision"]) if versions else 0
+
+
+def _ensure_graph_editable(base_name: str) -> None:
+    status = (get_process_status(base_name) or {}).get("status")
+    if status in {"uploading", "processing", "updating", "resuming", "pausing"}:
+        raise HTTPException(status_code=409, detail="文件正在处理，暂不能编辑图谱")
+
+
+def _rebuild_editable_graph(manager: KgManager) -> None:
+    """Rebuild the legacy NetworkX projection, including isolated edited nodes."""
+    manager.三元组转有向图nx(manager.kg_triplet)
+    labels = manager.bidirectional_mapping.get("entity_to_label", {})
+    for name, label in labels.items():
+        if name not in manager.current_G:
+            manager.current_G.add_node(name, title=label, group=label)
+
+
+@app.get("/graph-data/{filename}")
+async def get_editable_graph(filename: str):
+    """Return graph JSON for the PyVis editor.
+
+    The legacy PyVis result endpoints remain unchanged and continue to serve
+    the original graph renderer.
+    """
+    base_name = get_base_name(filename)
+    manager = _load_editable_graph(base_name)
+    return {
+        **graph_payload(_graph_manager_state(manager), _current_graph_revision(base_name)),
+        "legacy_url": f"/api/result/{quote(base_name + '.html', safe='')}"
+    }
+
+
+@app.get("/graph-history/{filename}")
+async def get_graph_history(filename: str):
+    base_name = get_base_name(filename)
+    return {"versions": graph_history.list_versions(base_name)}
+
+
+@app.post("/graph-mutation/{filename}")
+async def mutate_editable_graph(filename: str, request: GraphMutationRequest):
+    base_name = get_base_name(filename)
+    _ensure_graph_editable(base_name)
+    with graph_edit_lock:
+        manager = _load_editable_graph(base_name)
+        current_revision = _current_graph_revision(base_name)
+        if request.revision is not None and request.revision != current_revision:
+            raise HTTPException(
+                status_code=409,
+                detail=f"图谱版本已变化，请先重新加载（当前版本 {current_revision}）",
+            )
+        before = state_snapshot(_graph_manager_state(manager))
+        mutation = request.model_dump(exclude_none=True)
+        try:
+            operation = apply_graph_mutation(_graph_manager_state(manager), mutation)
+            _rebuild_editable_graph(manager)
+            manager.save_store()
+            revision = graph_history.commit(
+                base_name,
+                before,
+                _graph_manager_state(manager),
+                operation,
+            )
+            # Keep the old renderer useful as a fallback after an edit.
+            try:
+                render_graph_atomically(manager, base_name)
+            except Exception:
+                # The persisted graph state is authoritative for this new
+                # feature; an old HTML fallback can be regenerated later.
+                logger.exception("编辑后更新传统图谱页面失败: %s", base_name)
+        except GraphEditError as exc:
+            _restore_manager_state(manager, state_from_snapshot(before))
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception:
+            logger.exception("图谱编辑失败: %s", base_name)
+            try:
+                _restore_manager_state(manager, state_from_snapshot(before))
+                manager.save_store()
+            except Exception:
+                logger.exception("图谱编辑失败后的状态恢复失败: %s", base_name)
+            raise HTTPException(status_code=500, detail="图谱编辑失败，原图谱已尽量恢复")
+        return {
+            **graph_payload(_graph_manager_state(manager), revision),
+            "message": "图谱修改已保存",
+        }
+
+
+@app.post("/graph-restore/{filename}/{revision}")
+async def restore_editable_graph(filename: str, revision: int, request: GraphMutationRequest | None = None):
+    base_name = get_base_name(filename)
+    _ensure_graph_editable(base_name)
+    with graph_edit_lock:
+        manager = _load_editable_graph(base_name)
+        current_revision = _current_graph_revision(base_name)
+        requested_revision = request.revision if request and request.revision is not None else current_revision
+        if requested_revision != current_revision:
+            raise HTTPException(status_code=409, detail="图谱版本已变化，请先重新加载")
+        restored = graph_history.get_version(base_name, revision)
+        if restored is None:
+            raise HTTPException(status_code=404, detail="历史版本不存在")
+        before = state_snapshot(_graph_manager_state(manager))
+        _restore_manager_state(manager, restored)
+        try:
+            _rebuild_editable_graph(manager)
+            manager.save_store()
+            new_revision = graph_history.commit(
+                base_name,
+                before,
+                _graph_manager_state(manager),
+                f"restore:{revision}",
+            )
+            try:
+                render_graph_atomically(manager, base_name)
+            except Exception:
+                logger.exception("还原后更新传统图谱页面失败: %s", base_name)
+        except Exception:
+            logger.exception("图谱还原失败: %s", base_name)
+            _restore_manager_state(manager, state_from_snapshot(before))
+            manager.save_store()
+            raise HTTPException(status_code=500, detail="图谱还原失败，原图谱已恢复")
+        return {
+            **graph_payload(_graph_manager_state(manager), new_revision),
+            "message": f"已还原到版本 {revision}，并创建新版本 {new_revision}",
+        }
 
 
 def get_default_processing_prompts() -> Dict[str, str]:
@@ -2283,6 +2472,7 @@ def get_graph_html_response(result_path: Path, graph_name: str, page_name: str) 
     html_content = prepare_legacy_graph_html(
         html_content,
         asset_base_url="/api/graph-assets",
+        graph_name=graph_name,
     )
     if "<head>" in html_content:
         html_content = html_content.replace(
@@ -2512,6 +2702,7 @@ async def delete_file(filename: str):
             get_source_text_path(base_name),
             TXT_FOLDER / f"{base_name}_new.txt",
             STATUS_FOLDER / f"{base_name}.json",
+            GRAPH_HISTORY_FOLDER / f"{base_name}.json",
             # Clean up a flat result produced by earlier versions as well.
             RESULT_FOLDER / f"{base_name}.html",
         ):

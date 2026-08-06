@@ -1,6 +1,7 @@
 """Reusable interaction layer injected into every generated graph page."""
 
 import re
+import json
 from functools import lru_cache
 from html import escape
 from pathlib import Path
@@ -128,6 +129,40 @@ GRAPH_INTERACTION_TEMPLATE = r"""
   #node-tooltip .edge-item { padding: 4px 0; border-bottom: 1px dashed #e5e7eb; }
   #node-tooltip .edge-label { color: #2563eb; font-weight: 600; }
   #node-tooltip .edge-meta { color: #94a3b8; font-size: 9px; }
+  .graph-context-menu {
+    position: fixed; z-index: 12000; display: none; min-width: 150px;
+    padding: 4px; border: 1px solid #dbe2ea; border-radius: 8px;
+    background: rgba(255,255,255,.98); box-shadow: 0 8px 24px rgba(15,23,42,.18);
+  }
+  .graph-context-menu button {
+    display: block; width: 100%; padding: 7px 9px; border: 0; border-radius: 5px;
+    background: transparent; color: #334155; text-align: left; cursor: pointer; font-size: 11px;
+  }
+  .graph-context-menu button:hover { background: #eff6ff; color: #1d4ed8; }
+  .graph-context-menu button.danger:hover { background: #fef2f2; color: #dc2626; }
+  .graph-editor-dialog-mask {
+    position: fixed; z-index: 13000; inset: 0; display: flex; align-items: center; justify-content: center;
+    padding: 16px; background: rgba(15,23,42,.42);
+  }
+  .graph-editor-dialog {
+    width: min(560px, calc(100vw - 32px)); max-height: min(88vh, 720px); overflow-y: auto;
+    box-sizing: border-box; padding: 16px; border-radius: 10px; background: #fff;
+    color: #334155; box-shadow: 0 18px 50px rgba(15,23,42,.3); font-size: 12px;
+  }
+  .graph-editor-dialog h3 { margin: 0 0 14px; font-size: 15px; color: #0f172a; }
+  .graph-editor-field { margin-bottom: 10px; }
+  .graph-editor-field label { display: block; margin-bottom: 4px; color: #64748b; font-weight: 600; }
+  .graph-editor-field input, .graph-editor-field textarea {
+    box-sizing: border-box; width: 100%; padding: 7px 8px; border: 1px solid #dbe2ea;
+    border-radius: 6px; outline: none; color: #334155; background: #fff; font: inherit;
+  }
+  .graph-editor-field textarea { min-height: 96px; resize: vertical; }
+  .graph-editor-field input:focus, .graph-editor-field textarea:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px #dbeafe; }
+  .graph-editor-field input[readonly], .graph-editor-field textarea[readonly] { background: #f8fafc; }
+  .graph-editor-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+  .graph-editor-actions button { padding: 7px 13px; border: 1px solid #dbe2ea; border-radius: 6px; background: #f8fafc; color: #475569; cursor: pointer; }
+  .graph-editor-actions button.primary { border-color: #2563eb; background: #2563eb; color: #fff; }
+  .graph-editor-actions button:hover { filter: brightness(.97); }
 
   @media (max-width: 720px) {
     .search-panel, .filter-panel { width: 230px; }
@@ -137,8 +172,10 @@ GRAPH_INTERACTION_TEMPLATE = r"""
 </style>
 <script>
 (function () {
+  const GRAPH_EDITOR_VERSION = 2;
   const NODE_COUNT = __NODE_COUNT__;
   const EDGE_COUNT = __EDGE_COUNT__;
+  const GRAPH_NAME = __GRAPH_NAME__;
   let searchTimer = null;
   let minimumWeight = 0.5;
   let focusKeepNodes = null;
@@ -150,6 +187,11 @@ GRAPH_INTERACTION_TEMPLATE = r"""
   const edgeOriginalWidths = {};
   const nodeDegrees = {};
   const hubNodes = new Set();
+  let editorRevision = 0;
+  let contextTarget = { type: 'canvas', id: null };
+  let contextMenu = null;
+  const edgeApiIds = new Map();
+  const edgeDetails = new Map();
 
   function escapeHtml(value) {
     return String(value ?? '').replace(/[&<>'"]/g, char => ({
@@ -329,6 +371,243 @@ GRAPH_INTERACTION_TEMPLATE = r"""
     typeFilter?.addEventListener('change', apply);
   }
 
+  function editorApi(path, options = {}) {
+    return fetch(`/api${path}`, {
+      ...options,
+      headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }
+    }).then(async response => {
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || payload.error || '图谱操作失败');
+      return payload;
+    });
+  }
+
+  function edgeSignature(edge) {
+    return [edge.from, edge.to, edge.label || '', edge.title || ''].join('|');
+  }
+
+  function syncEditorRevision() {
+    if (!GRAPH_NAME) return Promise.resolve();
+    return editorApi(`/graph-data/${encodeURIComponent(GRAPH_NAME)}`)
+      .then(payload => {
+        editorRevision = Number(payload.revision || 0);
+        edgeDetails.clear();
+        (payload.links || []).forEach(link => edgeDetails.set(String(link.id), link));
+        const apiBySignature = new Map(
+          (payload.links || []).map(link => [
+            [link.source, link.target, link.relation || '', link.context || ''].join('|'),
+            link.id
+          ])
+        );
+        network.body.data.edges.get().forEach(edge => {
+          const apiId = apiBySignature.get(edgeSignature(edge));
+          if (apiId) edgeApiIds.set(String(edge.id), apiId);
+        });
+      })
+      .catch(error => console.warn('图谱编辑接口暂不可用:', error.message));
+  }
+
+  function showContextMenu(event, target) {
+    contextTarget = target;
+    if (!contextMenu) {
+      contextMenu = document.createElement('div');
+      contextMenu.className = 'graph-context-menu';
+      document.body.appendChild(contextMenu);
+      contextMenu.addEventListener('click', event => {
+        const action = event.target.closest('button')?.dataset.action;
+        if (!action) return;
+        hideContextMenu();
+        runGraphAction(action, contextTarget);
+      });
+    }
+    const nodeActions = `
+      <button data-action="view-node">查看节点</button>
+      <button data-action="edit-node">编辑节点</button>
+      <button data-action="add-edge">从此节点新增关系</button>
+      <button class="danger" data-action="delete-node">删除节点</button>`;
+    const edgeActions = `
+      <button data-action="view-edge">查看关系</button>
+      <button data-action="edit-edge">编辑关系</button>
+      <button class="danger" data-action="delete-edge">删除关系</button>`;
+    const canvasActions = '<button data-action="add-node">新增节点</button>';
+    contextMenu.innerHTML = `${target.type === 'node' ? nodeActions : target.type === 'edge' ? edgeActions : canvasActions}
+      <button data-action="history">历史记录与还原</button>`;
+    contextMenu.style.display = 'block';
+    contextMenu.style.left = `${Math.min(event.clientX, window.innerWidth - 170)}px`;
+    contextMenu.style.top = `${Math.min(event.clientY, window.innerHeight - 180)}px`;
+  }
+
+  function hideContextMenu() {
+    if (contextMenu) contextMenu.style.display = 'none';
+  }
+
+  function askText(label, value = '') {
+    const result = window.prompt(label, value);
+    return result === null ? null : result.trim();
+  }
+
+  function mutation(operation, payload = {}) {
+    if (!GRAPH_NAME) return Promise.reject(new Error('当前图谱页面缺少文件标识'));
+    return editorApi(`/graph-mutation/${encodeURIComponent(GRAPH_NAME)}`, {
+      method: 'POST',
+      body: JSON.stringify({ operation, revision: editorRevision, ...payload })
+    }).then(() => window.location.reload());
+  }
+
+  function selectedNode(target) {
+    return network.body.data.nodes.get(target.id);
+  }
+
+  function selectedEdge(target) {
+    return network.body.data.edges.get(target.id);
+  }
+
+  function editNode(target) {
+    const node = selectedNode(target);
+    if (!node) return;
+    const name = askText('节点名称：', node.label || node.id);
+    if (!name) return;
+    const entityType = askText('节点类型：', entityTypeOf(node));
+    if (!entityType) return;
+    mutation('update_node', { node_id: String(node.id), name, entity_type: entityType })
+      .catch(error => window.alert(error.message));
+  }
+
+  function addNode() {
+    const name = askText('新节点名称：');
+    if (!name) return;
+    const entityType = askText('节点类型：', '未知标签');
+    if (!entityType) return;
+    mutation('add_node', { name, entity_type: entityType })
+      .catch(error => window.alert(error.message));
+  }
+
+  function addEdge(target) {
+    const source = String(target.id);
+    const nodeNames = network.body.data.nodes.get().map(node => node.label || node.id).join('、');
+    const targetName = askText(`关系终点节点（已有节点：${nodeNames}）：`);
+    if (!targetName) return;
+    const relation = askText('关系名称：');
+    if (!relation) return;
+    const context = askText('关系说明：', relation) || relation;
+    mutation('add_edge', { source, target: targetName, relation, context, weight: 0.5 })
+      .catch(error => window.alert(error.message));
+  }
+
+  function edgeRecord(target) {
+    const edge = selectedEdge(target);
+    if (!edge) return null;
+    const edgeId = edgeApiIds.get(String(edge.id)) || edge.id;
+    const detail = edgeDetails.get(String(edgeId)) || {};
+    return {
+      ...edge,
+      ...detail,
+      editId: edgeId,
+      source: detail.source || edge.from,
+      target: detail.target || edge.to,
+      relation: detail.relation || edge.label || '',
+      evidence: detail.evidence || detail.context || edge.title || '',
+      sourceBlock: detail.source_block || '无',
+      score: detail.score ?? detail.weight ?? edge.weight ?? 0.5,
+      origin: detail.origin === 'manual' ? '用户新增' : 'AI抽取'
+    };
+  }
+
+  function showEdgeDialog(target, readonly = false) {
+    const edge = edgeRecord(target);
+    if (!edge) return;
+    const mask = document.createElement('div');
+    mask.className = 'graph-editor-dialog-mask';
+    const disabled = readonly ? ' readonly' : '';
+    mask.innerHTML = `
+      <section class="graph-editor-dialog" role="dialog" aria-modal="true">
+        <h3>${readonly ? '关系详情' : '编辑关系'}</h3>
+        <div class="graph-editor-field"><label>起点节点</label><input id="edgeEditorSource" value="${escapeHtml(edge.source)}"${disabled}></div>
+        <div class="graph-editor-field"><label>终点节点</label><input id="edgeEditorTarget" value="${escapeHtml(edge.target)}"${disabled}></div>
+        <div class="graph-editor-field"><label>关系名称</label><input id="edgeEditorRelation" value="${escapeHtml(edge.relation)}"${disabled}></div>
+        <div class="graph-editor-field"><label>出处依据 / 关系说明</label><textarea id="edgeEditorEvidence"${disabled}>${escapeHtml(edge.evidence)}</textarea></div>
+        <div class="graph-editor-field"><label>出处文本块</label><input value="${escapeHtml(edge.sourceBlock)}" readonly></div>
+        <div class="graph-editor-field"><label>得分 / 权重（0-1）</label><input id="edgeEditorScore" type="number" min="0" max="1" step="0.01" value="${escapeHtml(edge.score)}"${disabled}></div>
+        <div class="graph-editor-field"><label>关系来源</label><input value="${escapeHtml(edge.origin)}" readonly></div>
+        <div class="graph-editor-field"><label>关系 ID</label><input value="${escapeHtml(edge.editId)}" readonly></div>
+        <div class="graph-editor-actions">
+          <button type="button" data-dialog-close>关闭</button>
+          ${readonly ? '' : '<button type="button" class="primary" data-dialog-save>保存修改</button>'}
+        </div>
+      </section>`;
+    document.body.appendChild(mask);
+    const close = () => mask.remove();
+    mask.addEventListener('click', event => {
+      if (event.target === mask || event.target.closest('[data-dialog-close]')) close();
+    });
+    if (!readonly) {
+      mask.querySelector('[data-dialog-save]').addEventListener('click', () => {
+        const score = Number(mask.querySelector('#edgeEditorScore').value);
+        if (!Number.isFinite(score) || score < 0 || score > 1) return window.alert('得分必须在0到1之间');
+        mutation('update_edge', {
+          edge_id: edge.editId,
+          source: mask.querySelector('#edgeEditorSource').value.trim(),
+          target: mask.querySelector('#edgeEditorTarget').value.trim(),
+          relation: mask.querySelector('#edgeEditorRelation').value.trim(),
+          context: mask.querySelector('#edgeEditorEvidence').value.trim(),
+          weight: score
+        }).catch(error => window.alert(error.message));
+      });
+    }
+  }
+
+  function editEdge(target) {
+    showEdgeDialog(target, false);
+  }
+
+  function deleteTarget(target) {
+    const isNode = target.type === 'node';
+    const item = isNode ? selectedNode(target) : selectedEdge(target);
+    if (!item || !window.confirm(isNode ? '删除节点会同时删除相连关系，是否继续？' : '是否删除这条关系？')) return;
+    const id = isNode ? item.id : (edgeApiIds.get(String(item.id)) || item.id);
+    mutation(isNode ? 'delete_node' : 'delete_edge', isNode ? { node_id: String(id) } : { edge_id: id })
+      .catch(error => window.alert(error.message));
+  }
+
+  function viewTarget(target) {
+    const item = target.type === 'node' ? selectedNode(target) : selectedEdge(target);
+    if (!item) return;
+    if (target.type === 'node') {
+      window.alert(`节点：${item.label || item.id}\n类型：${entityTypeOf(item)}\n连接数：${network.getConnectedNodes(item.id).length}`);
+    } else {
+      showEdgeDialog(target, true);
+    }
+  }
+
+  function showHistory() {
+    editorApi(`/graph-history/${encodeURIComponent(GRAPH_NAME)}`).then(payload => {
+      const versions = payload.versions || [];
+      if (!versions.length) return window.alert('暂无图谱修改历史');
+      const description = versions.map(version =>
+        `${version.revision}: ${version.description || version.operation || '图谱修改'} (${version.created_at})`).join('\n');
+      const revision = askText(`历史版本（输入版本号还原）：\n${description}`);
+      if (!revision) return;
+      const number = Number(revision);
+      if (!Number.isInteger(number)) return window.alert('版本号必须是整数');
+      if (!window.confirm(`确认还原到版本 ${number}？还原会创建新的历史版本。`)) return;
+      editorApi(`/graph-restore/${encodeURIComponent(GRAPH_NAME)}/${number}`, {
+        method: 'POST',
+        body: JSON.stringify({ operation: 'restore', revision: editorRevision })
+      }).then(() => window.location.reload()).catch(error => window.alert(error.message));
+    }).catch(error => window.alert(error.message));
+  }
+
+  function runGraphAction(action, target) {
+    if (action === 'add-node') return addNode();
+    if (action === 'edit-node') return editNode(target);
+    if (action === 'delete-node') return deleteTarget(target);
+    if (action === 'add-edge') return addEdge(target);
+    if (action === 'edit-edge') return editEdge(target);
+    if (action === 'delete-edge') return deleteTarget(target);
+    if (action === 'view-node' || action === 'view-edge') return viewTarget(target);
+    if (action === 'history') return showHistory();
+  }
+
   document.addEventListener('DOMContentLoaded', function () {
     const graphContainer = document.getElementById('mynetwork');
     if (!graphContainer || typeof network === 'undefined') return;
@@ -346,6 +625,38 @@ GRAPH_INTERACTION_TEMPLATE = r"""
     });
     window.setTimeout(notifyGraphReady, 2500);
     initializeGraphMetadata();
+    syncEditorRevision();
+    document.addEventListener('click', hideContextMenu);
+    // vis-network's `oncontext` is not emitted consistently across its
+    // versions, especially when the canvas is inside a sandboxed iframe.
+    // Bind the native DOM event as the authoritative browser-menu blocker.
+    graphContainer.addEventListener('contextmenu', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = graphContainer.getBoundingClientRect();
+      const pointer = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+      const nodeId = network.getNodeAt(pointer);
+      const hasNode = nodeId !== undefined && nodeId !== null;
+      const edgeId = hasNode ? undefined : network.getEdgeAt(pointer);
+      const hasEdge = edgeId !== undefined && edgeId !== null;
+      showContextMenu(event, hasNode
+        ? { type: 'node', id: nodeId }
+        : hasEdge
+          ? { type: 'edge', id: edgeId }
+          : { type: 'canvas', id: null });
+    }, true);
+    network.on('oncontext', params => {
+      params.event?.srcEvent?.preventDefault?.();
+      const nodeId = params.nodes?.[0];
+      const edgeId = params.edges?.[0];
+      const sourceEvent = params.event?.srcEvent;
+      if (!sourceEvent) return;
+      showContextMenu(sourceEvent, nodeId !== undefined
+        ? { type: 'node', id: nodeId }
+        : edgeId !== undefined
+          ? { type: 'edge', id: edgeId }
+          : { type: 'canvas', id: null });
+    });
 
     const searchPanel = createPanel('search-panel', '🔍 实体与关系', `
       <input type="search" id="searchInput" class="graph-text-input" placeholder="搜索实体或关系...">
@@ -362,6 +673,7 @@ GRAPH_INTERACTION_TEMPLATE = r"""
         <button id="fitBtn" class="control-btn">适应画布</button>
         <button id="resetBtn" class="control-btn">重置</button>
       </div>
+      <div class="status-bar">右键节点、关系或空白处，可进行增删改查</div>
       <div class="status-bar">已标记关系：<strong id="counter">0</strong></div>`);
     host.insertBefore(controlPanel, graphContainer);
 
@@ -515,12 +827,13 @@ GRAPH_INTERACTION_TEMPLATE = r"""
 """
 
 
-def build_graph_interaction_html(node_count: int, edge_count: int) -> str:
+def build_graph_interaction_html(node_count: int, edge_count: int, graph_name: str = "") -> str:
     """Build the static interaction layer with escaped numeric counters."""
     return (
         GRAPH_INTERACTION_TEMPLATE
         .replace("__NODE_COUNT__", escape(str(int(node_count))))
         .replace("__EDGE_COUNT__", escape(str(int(edge_count))))
+        .replace("__GRAPH_NAME__", json.dumps(str(graph_name), ensure_ascii=False))
     )
 
 
@@ -548,6 +861,7 @@ def get_local_vis_asset_path(asset_name: str) -> Path:
 def prepare_legacy_graph_html(
     html_content: str,
     asset_base_url: str | None = None,
+    graph_name: str = "",
 ) -> str:
     """Make older CDN-based graph pages local and notify the parent on first draw."""
     if "cdnjs.cloudflare.com/ajax/libs/vis-network/" in html_content:
@@ -617,4 +931,18 @@ document.addEventListener('DOMContentLoaded', function () {
 </script>
 """
         html_content = html_content.replace("</body>", ready_script + "</body>")
+    if graph_name and "const GRAPH_EDITOR_VERSION = 2;" not in html_content:
+        # Replace an older injected interaction layer instead of appending a
+        # second one. Otherwise both old and new context-menu handlers would
+        # run on the same right click.
+        old_layer = re.compile(
+            r'<style>\s*div\.vis-configuration-wrapper.*?</style>\s*'
+            r'<script>\s*\(function \(\) \{\s*const NODE_COUNT = .*?</script>',
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        html_content = old_layer.sub('', html_content, count=1)
+        # Older generated pages predate the editor. Inject the current layer
+        # on delivery so they gain the same CRUD and history behavior.
+        editor_html = build_graph_interaction_html(0, 0, graph_name)
+        html_content = html_content.replace("</body>", editor_html + "</body>", 1)
     return html_content

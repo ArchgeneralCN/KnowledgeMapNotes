@@ -50,6 +50,18 @@ class GraphInteractionTests(unittest.TestCase):
         self.assertIn("network.once('stabilized'", html)
         self.assertIn("const NODE_COUNT = 12;", html)
         self.assertIn("const EDGE_COUNT = 18;", html)
+        self.assertIn("graph-context-menu", html)
+        self.assertIn("data-action=\"edit-node\"", html)
+        self.assertIn("data-action=\"edit-edge\"", html)
+        self.assertIn("network.on('oncontext'", html)
+        self.assertIn("graphContainer.addEventListener('contextmenu'", html)
+        self.assertIn("右键节点、关系或空白处", html)
+
+    def test_old_graph_page_receives_editor_on_delivery(self):
+        legacy = "<html><body><div id=\"mynetwork\"></div><script>var network = {};</script></body></html>"
+        prepared = prepare_legacy_graph_html(legacy, graph_name="旧图谱")
+        self.assertIn('const GRAPH_NAME = "旧图谱";', prepared)
+        self.assertIn("graph-context-menu", prepared)
 
     def test_rendered_graph_exposes_entity_type_metadata(self):
         manager = KgManager(agent=None, splitter=None, embedding_model=None, store=None)
@@ -72,6 +84,7 @@ class GraphInteractionTests(unittest.TestCase):
         rendered_types = {node["entityType"] for node in rendered_nodes}
         self.assertEqual(rendered_types, {"人物", "政权"})
         self.assertIn("id=\"entityTypeOptions\"", result)
+        self.assertIn('const GRAPH_NAME = "三国";', result)
         self.assertIn("/api/graph-assets/vis-network.min.js", delivered_result)
         self.assertNotIn("cdnjs.cloudflare.com", delivered_result)
         self.assertNotIn("cdn.jsdelivr.net/npm/bootstrap", delivered_result)

@@ -3290,6 +3290,12 @@ onUnmounted(() => {
 </template>
 
 <style lang="scss" scoped>
+:global(html),
+:global(body),
+:global(#app) {
+  transition: background-color 240ms ease, color 240ms ease;
+}
+
 .file-context-menu {
   position: fixed;
   z-index: 5000;
@@ -3888,8 +3894,8 @@ onUnmounted(() => {
               height: 32px;
               flex: 0 0 32px;
               border-radius: 6px;
-              color: #087f5b;
-              background-color: #e6fcf5;
+              color: var(--km-file-mark-text);
+              background-color: var(--km-file-mark-bg);
 
               svg {
                 width: 17px;
@@ -4122,10 +4128,10 @@ onUnmounted(() => {
 
               .draft-indicator {
                 padding: 2px 7px;
-                border: 1px solid #fdba74;
+                border: 1px solid var(--km-draft-border);
                 border-radius: 10px;
-                background: #fff7ed;
-                color: #c2410c;
+                background: var(--km-draft-bg);
+                color: var(--km-draft-text);
                 font-size: 11px;
               }
 
@@ -4134,7 +4140,7 @@ onUnmounted(() => {
                   &:not(.is-disabled) {
                     background-color: var(--el-color-primary);
                     border-color: var(--el-color-primary);
-                    color: #ffffff;
+                    color: var(--km-on-primary);
 
                     &:hover {
                       background-color: var(--el-color-primary-light-3);
@@ -4306,7 +4312,7 @@ onUnmounted(() => {
                   :deep(.source-highlight) {
                     padding: 1px 2px;
                     border-radius: 2px;
-                    background: #fef08a;
+                    background: var(--km-highlight-block);
                     color: inherit;
 
                   }
@@ -4315,37 +4321,37 @@ onUnmounted(() => {
                   :deep(.source-highlight .relation-highlight) {
                     padding: 1px 3px;
                     border-radius: 3px;
-                    background: #93c5fd;
-                    color: #1e3a8a;
+                    background: var(--km-highlight-entity);
+                    color: var(--km-highlight-text);
                     font-weight: 700;
-                    box-shadow: 0 0 0 1px rgb(37 99 235 / 35%);
+                    box-shadow: 0 0 0 1px color-mix(in srgb, var(--km-highlight-border) 60%, transparent);
                   }
 
                   :deep(.source-highlight .selected-entity-highlight),
                   :deep(.source-highlight .selected-relation-highlight) {
                     padding: 1px 3px;
                     border-radius: 3px;
-                    background: #f87171;
-                    color: #7f1d1d;
+                    background: var(--km-highlight-selected);
+                    color: var(--km-highlight-text);
                     font-weight: 700;
-                    box-shadow: 0 0 0 1px rgb(185 28 28 / 45%);
+                    box-shadow: 0 0 0 1px color-mix(in srgb, var(--km-highlight-border) 75%, transparent);
                   }
 
                   :deep(.source-highlight .selected-evidence-highlight) {
                     padding: 1px 2px;
                     border-radius: 2px;
-                    background: #a78bfa;
-                    color: #312e81;
+                    background: color-mix(in srgb, var(--km-highlight-evidence) 82%, var(--km-highlight-selected));
+                    color: var(--km-highlight-text);
                     font-weight: 700;
-                    box-shadow: 0 0 0 1px rgb(91 33 182 / 45%);
+                    box-shadow: 0 0 0 1px color-mix(in srgb, var(--km-highlight-border) 70%, transparent);
                   }
 
                   :deep(.source-highlight .evidence-highlight) {
                     padding: 1px 2px;
                     border-radius: 2px;
-                    background: #c4b5fd;
-                    color: #3730a3;
-                    box-shadow: 0 0 0 1px rgb(109 40 217 / 30%);
+                    background: var(--km-highlight-evidence);
+                    color: var(--km-highlight-text);
+                    box-shadow: 0 0 0 1px color-mix(in srgb, var(--km-highlight-border) 55%, transparent);
                   }
                 }
 
@@ -4487,7 +4493,7 @@ onUnmounted(() => {
                   blockquote {
                     margin: 20px 0;
                     padding: 12px 16px;
-                    border-left: 4px solid #20a67a;
+                    border-left: 4px solid var(--km-blockquote-border);
                     background-color: var(--el-fill-color-lighter);
                     color: var(--el-text-color-regular);
                   }
@@ -4500,7 +4506,7 @@ onUnmounted(() => {
                     padding: 2px 6px;
                     border-radius: 4px;
                     background-color: var(--el-fill-color-dark);
-                    color: #c2415d;
+                    color: var(--km-inline-code-text);
                     font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
                     font-size: 0.9em;
                   }
@@ -4511,14 +4517,14 @@ onUnmounted(() => {
                     overflow: auto;
                     border: 1px solid var(--el-border-color-lighter);
                     border-radius: 6px;
-                    background-color: #171a21;
+                    background-color: var(--km-code-bg);
                     line-height: 1.65;
                   }
 
                   pre code {
                     padding: 0;
                     background: transparent;
-                    color: #e6edf3;
+                    color: var(--km-code-text);
                     font-size: 13px;
                   }
 
@@ -4635,12 +4641,12 @@ onUnmounted(() => {
 
                       &.user-avatar {
                         background-color: var(--el-color-primary);
-                        color: white;
+                        color: var(--km-on-primary);
                       }
 
                       &.assistant-avatar {
-                        background-color: #087f5b;
-                        color: white;
+                        background-color: var(--km-assistant-avatar);
+                        color: var(--km-on-primary);
                       }
                     }
 
@@ -5056,20 +5062,20 @@ onUnmounted(() => {
       flex-shrink: 0;
 
       &.default {
-        background-color: #ffffff;
+        background-color: var(--km-theme-preview-bg);
       }
 
       &.dark {
-        background-color: #1a1a1a;
-        border-color: #ffffff;
+        background-color: #20262b;
+        border-color: var(--el-border-color-dark);
       }
 
       &.blue {
-        background-color: #409eff;
+        background-color: #668baa;
       }
 
       &.green {
-        background-color: #67c23a;
+        background-color: #6d9277;
       }
     }
 
@@ -5173,14 +5179,9 @@ onUnmounted(() => {
 :deep(.el-popover.custom-popover) {
   padding: 0 0 12px 0;
   border-radius: 8px;
-  background-color: #fff;
-  border: none;
-
-  [data-theme="dark"] & {
-    background-color: #2b2b2b;
-    border: 1px solid #3a3a3a;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-  }
+  background-color: var(--km-popover-bg);
+  border: 1px solid var(--km-popover-border);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--el-text-color-primary) 12%, transparent);
 }
 
 // 修改暗色主题下的样式
@@ -5210,35 +5211,35 @@ onUnmounted(() => {
 
   // 主题切换界面样式
   .theme-header {
-    color: #e5e5e5;
-    border-bottom: 1px solid #3a3a3a;
-    background-color: #2b2b2b;
+    color: var(--el-text-color-primary);
+    border-bottom: 1px solid var(--el-border-color);
+    background-color: var(--el-bg-color);
     margin: 0;
     padding: 16px 24px;
   }
 
   .theme-content {
-    background-color: #2b2b2b;
+    background-color: var(--el-bg-color);
 
     .theme-item {
-      color: #b0b0b0;
+      color: var(--el-text-color-secondary);
       transition: all 0.3s ease;
 
       &:hover {
-        background-color: #363636;
-        color: #e5e5e5;
+        background-color: var(--el-fill-color-dark);
+        color: var(--el-text-color-primary);
       }
 
       &.active {
-        background-color: #363636;
+        background-color: var(--el-fill-color-dark);
         color: var(--el-color-primary);
       }
 
       .theme-preview {
-        border-color: #4a4a4a;
+        border-color: var(--el-border-color);
 
         &.dark {
-          border-color: #5a5a5a;
+          border-color: var(--el-border-color-dark);
         }
       }
 

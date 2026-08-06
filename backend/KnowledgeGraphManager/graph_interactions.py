@@ -227,6 +227,42 @@ GRAPH_INTERACTION_TEMPLATE = r"""
     });
   }
 
+  function moveLegacyIsolatedNodesOutside() {
+    const nodes = network.body.data.nodes.get();
+    const isolated = nodes.filter(node => network.getConnectedNodes(node.id).length === 0);
+    const connected = nodes.filter(node => network.getConnectedNodes(node.id).length > 0);
+    if (!isolated.length || !connected.length) return;
+    const connectedPositions = network.getPositions(connected.map(node => node.id));
+    const values = Object.values(connectedPositions);
+    if (!values.length) return;
+    const centerX = values.reduce((sum, position) => sum + position.x, 0) / values.length;
+    const centerY = values.reduce((sum, position) => sum + position.y, 0) / values.length;
+    const connectedRadius = Math.max(...values.map(position =>
+      Math.hypot(position.x - centerX, position.y - centerY)
+    ));
+    const ringSpacing = 180;
+    const radius = Math.max(connectedRadius + 260, 360);
+    const updates = [];
+    let offset = 0;
+    let ringIndex = 0;
+    while (offset < isolated.length) {
+      const ringRadius = radius + ringIndex * ringSpacing;
+      const capacity = Math.max(8, Math.floor(2 * Math.PI * ringRadius / ringSpacing));
+      const ringNodes = isolated.slice(offset, offset + capacity);
+      ringNodes.forEach((node, index) => {
+        const angle = 2 * Math.PI * index / ringNodes.length - Math.PI / 2;
+        updates.push({
+          id: node.id,
+          x: centerX + ringRadius * Math.cos(angle),
+          y: centerY + ringRadius * Math.sin(angle)
+        });
+      });
+      offset += ringNodes.length;
+      ringIndex += 1;
+    }
+    network.body.data.nodes.update(updates);
+  }
+
   function prepareLegacyStaticForceLayout(nodeCount) {
     const graphContainer = document.getElementById('mynetwork');
     if (!graphContainer) return false;
@@ -235,6 +271,7 @@ GRAPH_INTERACTION_TEMPLATE = r"""
     const finish = () => {
       if (finished) return;
       finished = true;
+      moveLegacyIsolatedNodesOutside();
       network.setOptions({ physics: { enabled: false } });
       graphContainer.style.visibility = 'visible';
       updateVisibleStatus(nodeCount, network.body.data.edges.get().length);

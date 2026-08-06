@@ -2,6 +2,7 @@ import json
 import os
 import re
 import itertools
+import math
 import time
 import html
 from collections import defaultdict
@@ -992,45 +993,84 @@ class KgManager:
 
         浏览器不再运行物理引擎，避免打开页面后节点持续弹动；坐标仍由
         力导向算法生成，因此保留原先自然分布的视觉效果，而不是规则网格
-        或按距离排列的同心环。
+        或按距离排列的同心环。没有任何连接的节点不参加力导向计算，
+        最后统一放到关系图外围。
         """
         if not G:
             return {}
 
         无向图 = G.to_undirected()
-        节点总数 = len(无向图)
-        最大迭代次数 = 80 if 节点总数 <= 500 else 50 if 节点总数 <= 2000 else 30
-        forceatlas2 = getattr(nx, "forceatlas2_layout", None)
-        try:
-            if forceatlas2 is not None:
-                positions = forceatlas2(
-                    无向图,
-                    max_iter=最大迭代次数,
-                    scaling_ratio=2.0,
-                    gravity=1.0,
-                    weight="weight",
-                    seed=42,
-                )
-            else:
-                positions = nx.spring_layout(
-                    无向图,
-                    seed=42,
-                    iterations=最大迭代次数,
-                    weight="weight",
-                )
-        except Exception as error:
-            logger.warning("静态力导向布局计算失败，改用弹簧布局: %s", error)
-            positions = nx.spring_layout(
-                无向图,
-                seed=42,
-                iterations=max(30, 最大迭代次数),
-                weight="weight",
-            )
+        有连接节点 = [node for node, degree in 无向图.degree() if degree > 0]
+        孤立节点 = sorted(
+            (node for node, degree in 无向图.degree() if degree == 0),
+            key=lambda node: str(node),
+        )
+        positions = {}
 
-        return {
-            node: (float(position[0]), float(position[1]))
-            for node, position in positions.items()
-        }
+        if 有连接节点:
+            布局图 = 无向图.subgraph(有连接节点).copy()
+            布局节点数 = len(布局图)
+            最大迭代次数 = 80 if 布局节点数 <= 500 else 50 if 布局节点数 <= 2000 else 30
+            forceatlas2 = getattr(nx, "forceatlas2_layout", None)
+            try:
+                if forceatlas2 is not None:
+                    raw_positions = forceatlas2(
+                        布局图,
+                        max_iter=最大迭代次数,
+                        scaling_ratio=2.0,
+                        gravity=1.0,
+                        weight="weight",
+                        seed=42,
+                    )
+                else:
+                    raw_positions = nx.spring_layout(
+                        布局图,
+                        seed=42,
+                        iterations=最大迭代次数,
+                        weight="weight",
+                    )
+            except Exception as error:
+                logger.warning("静态力导向布局计算失败，改用弹簧布局: %s", error)
+                raw_positions = nx.spring_layout(
+                    布局图,
+                    seed=42,
+                    iterations=max(30, 最大迭代次数),
+                    weight="weight",
+                )
+
+            # 将有关系节点整体平移到坐标中心，便于把孤立节点放到外圈。
+            center_x = sum(float(position[0]) for position in raw_positions.values()) / len(raw_positions)
+            center_y = sum(float(position[1]) for position in raw_positions.values()) / len(raw_positions)
+            positions = {
+                node: (float(position[0]) - center_x, float(position[1]) - center_y)
+                for node, position in raw_positions.items()
+            }
+            connected_radius = max(
+                math.hypot(x, y) for x, y in positions.values()
+            )
+        else:
+            connected_radius = 0.0
+
+        if 孤立节点:
+            # 分批放在外围多个环上，避免大量孤立节点挤在同一圈。
+            ring_spacing = 180.0
+            radius = max(connected_radius + 260.0, 360.0)
+            remaining = list(孤立节点)
+            ring_index = 0
+            while remaining:
+                ring_radius = radius + ring_index * ring_spacing
+                capacity = max(8, int(2 * math.pi * ring_radius / ring_spacing))
+                ring_nodes = remaining[:capacity]
+                del remaining[:capacity]
+                for index, node in enumerate(ring_nodes):
+                    angle = (2 * math.pi * index / len(ring_nodes)) - math.pi / 2
+                    positions[node] = (
+                        ring_radius * math.cos(angle),
+                        ring_radius * math.sin(angle),
+                    )
+                ring_index += 1
+
+        return positions
 
     def _渲染图(self, G, 文件名, 社区分配, 物理引擎, 导航HTML=""):
         """

@@ -807,6 +807,8 @@ class KgManager:
         # 为原图节点建立稳定的出处文本块索引。社区子图复制节点时会
         # 一并携带该字段，右键查看节点即可定位它在本社区中的原文出处。
         节点出处文本块 = defaultdict(list)
+        关系出处文本块 = defaultdict(list)
+        关系来源 = {}
         for block in self.kg_triplet or []:
             if not isinstance(block, dict):
                 continue
@@ -819,9 +821,49 @@ class KgManager:
                 for endpoint in (relation.get("source"), relation.get("target")):
                     if endpoint and bid not in 节点出处文本块[endpoint]:
                         节点出处文本块[endpoint].append(bid)
+                source = relation.get("source")
+                target = relation.get("target")
+                if not source or not target:
+                    continue
+                relation_key = (source, target, str(relation.get("relation", "")))
+                occurrence = {
+                    "source_block": bid,
+                    "evidence": relation.get("context", ""),
+                    "score": relation.get("weight", 0.5),
+                }
+                if occurrence not in 关系出处文本块[relation_key]:
+                    关系出处文本块[relation_key].append(occurrence)
+                关系来源.setdefault(relation_key, relation.get("origin", "extracted"))
         for node in self.current_G.nodes:
             self.current_G.nodes[node]["source_blocks"] = list(
                 节点出处文本块.get(node, self.current_G.nodes[node].get("source_blocks", []))
+            )
+
+        def 节点出处(node):
+            if node not in self.current_G:
+                return []
+            return list(self.current_G.nodes[node].get("source_blocks") or [])
+
+        def 关系出处(source, target, edge_data):
+            relation_name = str(edge_data.get("label", ""))
+            relation_key = (source, target, relation_name)
+            occurrences = list(关系出处文本块.get(relation_key, []))
+            if not occurrences:
+                reverse_key = (target, source, relation_name)
+                occurrences = list(关系出处文本块.get(reverse_key, []))
+                if occurrences:
+                    relation_key = reverse_key
+            if not occurrences:
+                occurrences = list(edge_data.get("evidence_blocks") or [])
+            source_block = edge_data.get("source_block")
+            if not occurrences and source_block:
+                occurrences = [{
+                    "source_block": str(source_block),
+                    "evidence": edge_data.get("title", ""),
+                    "score": edge_data.get("weight", 0.5),
+                }]
+            return occurrences, 关系来源.get(
+                relation_key, edge_data.get("origin", "extracted")
             )
 
         # 分页后首页只包含社区节点，不能用首页节点数判断是否为大图。
@@ -891,19 +933,20 @@ class KgManager:
         edge_lookup = {}
         for u, v, data in self.current_G.edges(data=True):
             key = (u, v) if u < v else (v, u)
-            if key not in edge_lookup or data.get('weight', 0.5) > edge_lookup[key].get('weight', 0.5):
-                edge_lookup[key] = data
+            if key not in edge_lookup or data.get('weight', 0.5) > edge_lookup[key][2].get('weight', 0.5):
+                edge_lookup[key] = (u, v, data)
 
         ov_G = nx.Graph()
         for cid, size in 社区节点计数.items():
             代表节点名 = 社区代表节点.get(cid, str(cid))
-            ov_G.add_node(cid,
+            ov_G.add_node(代表节点名,
                           label=代表节点名,
                           size=size,
                           group=社区主节点类型.get(cid, "未分类"),
                           entity_type=社区主节点类型.get(cid, "未分类"),
-                          source_blocks=节点出处文本块.get(代表节点名, []),
+                          source_blocks=节点出处(代表节点名),
                           representative_node=代表节点名,
+                          community_id=cid,
                           title=f"社区 {cid}\n节点数: {size}\n代表节点: {代表节点名}\n"
                                 f"主节点类型: {社区主节点类型.get(cid, '未分类')}")
 
@@ -913,25 +956,38 @@ class KgManager:
             rep_v = 社区代表节点[cv]
             # 优先取代表节点之间的边
             lookup_key = (rep_u, rep_v) if rep_u < rep_v else (rep_v, rep_u)
-            edge_data = edge_lookup.get(lookup_key)
-            if edge_data is None:
+            edge_record = edge_lookup.get(lookup_key)
+            if edge_record is None:
                 # 若代表节点间没有直接边，则取两个社区间任意一条权重最大的边
                 best_edge = None
                 best_weight = -1
                 for u in 社区节点列表.get(cu, []):
                     for v in 社区节点列表.get(cv, []):
                         key = (u, v) if u < v else (v, u)
-                        data = edge_lookup.get(key)
-                        if data and data.get('weight', 0.5) > best_weight:
-                            best_edge = data
-                            best_weight = data.get('weight', 0.5)
-                edge_data = best_edge
+                        record = edge_lookup.get(key)
+                        if record and record[2].get('weight', 0.5) > best_weight:
+                            best_edge = record
+                            best_weight = record[2].get('weight', 0.5)
+                edge_record = best_edge
 
-            if edge_data:
-                ov_G.add_edge(cu, cv,
+            if edge_record:
+                evidence_source, evidence_target, edge_data = edge_record
+                evidence_blocks, origin = 关系出处(
+                    evidence_source, evidence_target, edge_data
+                )
+                ov_G.add_edge(rep_u, rep_v,
                               weight=edge_data.get('weight', 0.5),
                               title=edge_data.get('title', ''),
                               label=edge_data.get('label', ''),
+                              evidence_blocks=evidence_blocks,
+                              source_block=(
+                                  evidence_blocks[0].get("source_block", "")
+                                  if evidence_blocks and isinstance(evidence_blocks[0], dict)
+                                  else evidence_blocks[0] if evidence_blocks else ""
+                              ),
+                              evidence_source=evidence_source,
+                              evidence_target=evidence_target,
+                              origin=origin,
                               arrows='none')  # 无向概览图不显示箭头
 
         # ---- 4. 生成主页面（概览图） ----
@@ -947,6 +1003,9 @@ class KgManager:
         导航链接列表 = "".join(
             f'<div class="community-list-item" '
             f'data-name="{html.escape(str(社区代表节点.get(cid, f"社区{cid}")), quote=True)}" '
+            f'data-representative-node="{html.escape(str(社区代表节点.get(cid, f"社区{cid}")), quote=True)}" '
+            f'data-community-name="{html.escape(f"社区{cid}", quote=True)}" '
+            f'data-member-names="{html.escape(json.dumps([str(node) for node in 社区节点列表.get(cid, [])], ensure_ascii=False), quote=True)}" '
             f'data-types="{html.escape(社区主节点类型.get(cid, "未分类"), quote=True)}">'
             f'<a class="community-item-link" href="{html.escape(页面链接(子页面名称[cid]), quote=True)}">'
             f'<span class="community-item-name">{html.escape(str(社区代表节点.get(cid, f"社区{cid}")))}</span>'
@@ -954,7 +1013,7 @@ class KgManager:
             f'主节点类型：{html.escape(社区主节点类型.get(cid, "未分类"))}</span></a>'
             f'<button type="button" class="community-source-link" '
             f'data-node-id="{html.escape(str(社区代表节点.get(cid, f"社区{cid}")), quote=True)}" '
-            f'data-source-blocks="{html.escape(json.dumps(节点出处文本块.get(社区代表节点.get(cid), []), ensure_ascii=False), quote=True)}">'
+            f'data-source-blocks="{html.escape(json.dumps(节点出处(社区代表节点.get(cid)), ensure_ascii=False), quote=True)}">'
             f'查看原文文本块</button></div>'
             for cid in 大社区
         )
@@ -967,12 +1026,12 @@ class KgManager:
                 <button class="graph-panel-collapse" type="button" aria-label="收起社区详情">−</button>
             </div>
             <div class="graph-panel-body">
-                <input id="communitySearchInput" class="graph-text-input" type="search" placeholder="搜索社区代表实体...">
+                <input id="communitySearchInput" class="graph-text-input" type="search" placeholder="搜索社区或内部节点...">
                 <select id="communityTypeFilter" class="graph-select">
                     <option value="">全部实体类型</option>{社区类型选项HTML}
                 </select>
                 <div class="community-list" id="communityList">{导航链接列表}</div>
-                <div class="graph-empty-state" id="communityEmptyState" hidden>没有匹配的社区</div>
+                <div class="graph-empty-state" id="communityEmptyState" hidden>没有匹配的社区，已保留原列表</div>
             </div>
         </div>
         """
@@ -1361,6 +1420,11 @@ class KgManager:
                 "title": attr.get('title', ''),
                 "label": attr.get('label', ''),
                 "weight": weight,
+                "source_block": attr.get('source_block', ''),
+                "evidence_blocks": list(attr.get('evidence_blocks') or []),
+                "evidence_source": attr.get('evidence_source', source),
+                "evidence_target": attr.get('evidence_target', target),
+                "origin": attr.get('origin', 'extracted'),
                 "width": width,
                 "font": {"size": 0},
                 "color": {
@@ -1393,7 +1457,7 @@ class KgManager:
             content = graph_html.read()
             content = content.replace(
                 "</body>",
-                interaction_html + nav_html + "</body>",
+                nav_html + interaction_html + "</body>",
             )
             # PyVis includes Bootstrap even though this page does not use its
             # controls. Remove those remaining remote dependencies.

@@ -98,6 +98,7 @@ GRAPH_INTERACTION_TEMPLATE = r"""
     margin-bottom: 6px; color: #334155;
   }
   .community-list-item:hover { border-color: #93c5fd; background: #eff6ff; }
+  .community-list-item.search-match { border-color: #60a5fa; background: #eff6ff; }
   .community-item-link { display: block; color: #334155; text-decoration: none; }
   .community-item-name { display: block; font-size: 11px; font-weight: 700; }
   .community-item-meta {
@@ -210,6 +211,57 @@ GRAPH_INTERACTION_TEMPLATE = r"""
 
   function entityTypeOf(node) {
     return String(node.entityType || node.group || '未分类');
+  }
+
+  function normalizeCommunitySearchText(value) {
+    return String(value || '').normalize('NFKC').toLocaleLowerCase('zh-CN')
+      .replace(/[\s.,，。！？!?、:：;；'"“”‘’()[\]{}<>《》【】_+*\/\\|@#$%^&=~`·-]+/g, '');
+  }
+
+  function fuzzyCommunityNameScore(name, query) {
+    const normalizedName = normalizeCommunitySearchText(name);
+    const normalizedQuery = normalizeCommunitySearchText(query);
+    if (!normalizedQuery) return 0;
+    if (normalizedName === normalizedQuery) return 1000;
+    if (normalizedName.startsWith(normalizedQuery)) return 900 - normalizedName.length;
+    const substringIndex = normalizedName.indexOf(normalizedQuery);
+    if (substringIndex >= 0) return 800 - substringIndex;
+    let queryIndex = 0;
+    let firstMatch = -1;
+    let lastMatch = -1;
+    let nameIndex = 0;
+    for (const character of normalizedName) {
+      if (character === normalizedQuery[queryIndex]) {
+        if (firstMatch < 0) firstMatch = nameIndex;
+        lastMatch = nameIndex;
+        queryIndex += 1;
+      }
+      if (queryIndex === normalizedQuery.length) {
+        return 600 - (lastMatch - firstMatch) - firstMatch;
+      }
+      nameIndex += 1;
+    }
+    return -1;
+  }
+
+  function communitySearchRank(item, query) {
+    const representative = item.dataset.representativeNode || item.dataset.name || '';
+    const communityName = item.dataset.communityName || '';
+    let memberNames = [];
+    try {
+      memberNames = JSON.parse(item.dataset.memberNames || '[]');
+    } catch (error) {
+      console.warn('社区节点名列表格式无效:', error);
+    }
+    const primaryScore = Math.max(
+      fuzzyCommunityNameScore(representative, query),
+      fuzzyCommunityNameScore(communityName, query)
+    );
+    const memberScore = memberNames.reduce((best, name) =>
+      Math.max(best, fuzzyCommunityNameScore(name, query)), -1);
+    if (primaryScore >= 0) return 2000 + primaryScore;
+    if (memberScore >= 0) return 1000 + memberScore;
+    return -1;
   }
 
   function initializeGraphMetadata() {
@@ -511,7 +563,7 @@ GRAPH_INTERACTION_TEMPLATE = r"""
       || [...nodeDetails.values()].find(node => String(node.name || node.id) === String(label));
     const types = new Set();
     directory.querySelectorAll('.community-list-item').forEach(item => {
-      const representative = item.dataset.name || '';
+      const representative = item.dataset.representativeNode || item.dataset.name || '';
       const detail = findNodeDetail(representative);
       if (!detail) return;
       const type = String(detail.entityType || '未分类');
@@ -531,7 +583,10 @@ GRAPH_INTERACTION_TEMPLATE = r"""
         item.appendChild(sourceButton);
       }
       sourceButton.dataset.nodeId = String(detail.id);
-      sourceButton.dataset.sourceBlocks = JSON.stringify(detail.source_blocks || []);
+      const detailSourceBlocks = Array.isArray(detail.source_blocks) ? detail.source_blocks : [];
+      if (detailSourceBlocks.length) {
+        sourceButton.dataset.sourceBlocks = JSON.stringify(detailSourceBlocks);
+      }
       bindCommunitySourceButton(sourceButton);
     });
     const typeFilter = document.getElementById('communityTypeFilter');
@@ -546,7 +601,7 @@ GRAPH_INTERACTION_TEMPLATE = r"""
         ...node,
         entityType: detail.entityType || '未分类',
         group: detail.entityType || '未分类',
-        source_blocks: detail.source_blocks || []
+        source_blocks: detail.source_blocks?.length ? detail.source_blocks : (node.source_blocks || [])
       } : node;
     });
     network.body.data.nodes.update(communityNodes);
@@ -565,22 +620,32 @@ GRAPH_INTERACTION_TEMPLATE = r"""
     });
     const search = document.getElementById('communitySearchInput');
     const typeFilter = document.getElementById('communityTypeFilter');
+    const list = document.getElementById('communityList');
     const items = [...directory.querySelectorAll('.community-list-item')];
+    const originalOrder = new Map(items.map((item, index) => [item, index]));
     const empty = document.getElementById('communityEmptyState');
     directory.querySelectorAll('.community-source-link').forEach(bindCommunitySourceButton);
     editorMetadataReady.then(refreshCommunityMetadata);
     const apply = () => {
       const term = (search?.value || '').toLowerCase().trim();
       const type = typeFilter?.value || '';
-      let visible = 0;
+      const rankedItems = [];
       items.forEach(item => {
-        const matchesName = !term || (item.dataset.name || '').toLowerCase().includes(term);
+        const rank = term ? communitySearchRank(item, term) : 0;
         const types = (item.dataset.types || '').split('|');
         const matchesType = !type || types.includes(type);
-        item.hidden = !(matchesName && matchesType);
-        if (!item.hidden) visible += 1;
+        item.hidden = !matchesType;
+        item.classList.toggle('search-match', Boolean(term) && rank >= 0 && matchesType);
+        rankedItems.push({ item, rank: matchesType ? rank : -1 });
       });
-      if (empty) empty.hidden = visible > 0;
+      rankedItems.sort((left, right) =>
+        right.rank - left.rank
+        || originalOrder.get(left.item) - originalOrder.get(right.item));
+      rankedItems.forEach(({ item }) => list?.appendChild(item));
+      const matchedCount = term
+        ? rankedItems.filter(({ item, rank }) => !item.hidden && rank >= 0).length
+        : rankedItems.filter(({ item }) => !item.hidden).length;
+      if (empty) empty.hidden = matchedCount > 0;
     };
     search?.addEventListener('input', apply);
     typeFilter?.addEventListener('change', apply);
@@ -633,9 +698,13 @@ GRAPH_INTERACTION_TEMPLATE = r"""
       let entityTerms = [];
       let relationTerms = [];
       if (kind === 'node') {
-        const node = nodeDetails.get(requestedId) || network.body.data.nodes.get(id);
-        sourceBlocks = node?.source_blocks || [];
-        entityTerms = [node?.label || node?.id || requestedId];
+        const detail = nodeDetails.get(requestedId);
+        const graphNode = network.body.data.nodes.get(id)
+          || network.body.data.nodes.get().find(candidate => String(candidate.id) === requestedId);
+        sourceBlocks = detail?.source_blocks?.length
+          ? detail.source_blocks
+          : (graphNode?.source_blocks || []);
+        entityTerms = [detail?.name || graphNode?.label || graphNode?.id || requestedId];
       } else if (kind === 'edge') {
         const edge = network.body.data.edges.get(id)
           || network.body.data.edges.get().find(candidate => String(candidate.id) === requestedId);
@@ -647,7 +716,13 @@ GRAPH_INTERACTION_TEMPLATE = r"""
           const fallback = edgeDetails.get(String(edge.id));
           sourceBlocks = fallback?.evidence_blocks || [];
         }
-        entityTerms = [edge?.from, edge?.to].filter(Boolean);
+        if (edge && !sourceBlocks.length) {
+          sourceBlocks = edge.evidence_blocks || [];
+          if (!sourceBlocks.length && edge.source_block) sourceBlocks = [edge.source_block];
+        }
+        entityTerms = [
+          edge?.from, edge?.to, edge?.evidence_source, edge?.evidence_target
+        ].filter(Boolean);
         entityTerms.push(detail.source, detail.target, detail.relation);
         relationTerms = [edge?.label, detail.relation];
       }
@@ -667,7 +742,8 @@ GRAPH_INTERACTION_TEMPLATE = r"""
     const node = network.body.data.nodes.get(target.id);
     if (!node) return;
     const detail = nodeDetails.get(String(node.id)) || {};
-    const sourceBlocks = Array.isArray(detail.source_blocks) ? detail.source_blocks : [];
+    const detailSourceBlocks = Array.isArray(detail.source_blocks) ? detail.source_blocks : [];
+    const sourceBlocks = detailSourceBlocks.length ? detailSourceBlocks : (node.source_blocks || []);
     const mask = document.createElement('div');
     mask.className = 'graph-editor-dialog-mask';
     mask.innerHTML = `
@@ -817,10 +893,12 @@ GRAPH_INTERACTION_TEMPLATE = r"""
       target: detail.target || edge.to,
       relation: detail.relation || edge.label || '',
       evidence: detail.evidence || detail.context || edge.title || '',
-      sourceBlock: detail.source_block || '无',
-      evidenceBlocks: Array.isArray(detail.evidence_blocks) ? detail.evidence_blocks : [],
+      sourceBlock: detail.source_block || edge.source_block || '无',
+      evidenceBlocks: Array.isArray(detail.evidence_blocks) && detail.evidence_blocks.length
+        ? detail.evidence_blocks
+        : (Array.isArray(edge.evidence_blocks) ? edge.evidence_blocks : []),
       score: detail.score ?? detail.weight ?? edge.weight ?? 0.5,
-      origin: detail.origin === 'manual' ? '用户新增' : 'AI抽取'
+      origin: (detail.origin || edge.origin) === 'manual' ? '用户新增' : 'AI抽取'
     };
   }
 

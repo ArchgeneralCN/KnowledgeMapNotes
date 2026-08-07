@@ -3,6 +3,7 @@ import re
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import networkx as nx
 
@@ -119,6 +120,8 @@ class GraphInteractionTests(unittest.TestCase):
         self.assertIn('id="communityTypeFilter"', overview)
         self.assertIn('class="community-list-item"', overview)
         self.assertIn('class="community-source-link"', overview)
+        self.assertIn('data-community-name="社区', overview)
+        self.assertIn('data-member-names="', overview)
         self.assertNotIn('"entityType": "社区"', overview)
         self.assertGreaterEqual(len(community_pages), 2)
 
@@ -137,6 +140,99 @@ class GraphInteractionTests(unittest.TestCase):
             community_pages = list(graph_dir.glob("小社区_community_*.html"))
 
         self.assertEqual(len(community_pages), 3)
+
+    def test_community_overview_uses_representative_entities_for_nodes_edges_and_sources(self):
+        manager = KgManager(agent=None, splitter=None, embedding_model=None, store=None)
+        graph = nx.DiGraph()
+        graph.add_node("主节点甲", group="人物", source_blocks=["block-main-a"])
+        graph.add_node("甲成员", group="人物")
+        graph.add_node("主节点乙", group="地点", source_blocks=["block-main-b"])
+        graph.add_node("乙成员", group="地点")
+        graph.add_edges_from([
+            ("主节点甲", "甲成员", {"label": "包含", "weight": 0.8}),
+            ("甲成员", "主节点甲", {"label": "属于", "weight": 0.8}),
+            ("主节点乙", "乙成员", {"label": "包含", "weight": 0.8}),
+            ("乙成员", "主节点乙", {"label": "属于", "weight": 0.8}),
+            ("主节点甲", "主节点乙", {"label": "跨社区关系", "weight": 0.9}),
+        ])
+        manager.current_G = graph
+        partition = {"主节点甲": 10, "甲成员": 10, "主节点乙": 20, "乙成员": 20}
+
+        with tempfile.TemporaryDirectory() as output_dir, patch(
+            "community.best_partition", return_value=partition
+        ) as best_partition:
+            manager.绘制知识图谱("社区语义", 输出目录=output_dir, 社区最小规模=1)
+            overview = Path(output_dir, "社区语义", "社区语义.html").read_text(encoding="utf-8")
+
+        best_partition.assert_called_once()
+        node_match = re.search(r"nodes = new vis\.DataSet\((\[.*?\])\);", overview)
+        edge_match = re.search(r"edges = new vis\.DataSet\((\[.*?\])\);", overview)
+        self.assertIsNotNone(node_match)
+        self.assertIsNotNone(edge_match)
+        nodes = {node["id"]: node for node in json.loads(node_match.group(1))}
+        edges = json.loads(edge_match.group(1))
+
+        self.assertEqual(set(nodes), {"主节点甲", "主节点乙"})
+        self.assertEqual(nodes["主节点甲"]["source_blocks"], ["block-main-a"])
+        self.assertEqual(nodes["主节点乙"]["source_blocks"], ["block-main-b"])
+        self.assertEqual({edges[0]["from"], edges[0]["to"]}, {"主节点甲", "主节点乙"})
+        self.assertNotIn(10, {edges[0]["from"], edges[0]["to"]})
+        self.assertIn('data-representative-node="主节点甲"', overview)
+        self.assertIn("item.dataset.representativeNode || item.dataset.name", overview)
+        self.assertIn("communitySearchRank(item, term)", overview)
+        self.assertIn("JSON.parse(item.dataset.memberNames || '[]')", overview)
+        self.assertIn("rankedItems.forEach(({ item }) => list?.appendChild(item))", overview)
+
+    def test_community_overview_edge_carries_original_relation_evidence(self):
+        manager = KgManager(agent=None, splitter=None, embedding_model=None, store=None)
+        graph = nx.DiGraph()
+        graph.add_node("主节点甲", group="人物")
+        graph.add_node("甲成员", group="人物")
+        graph.add_node("主节点乙", group="地点")
+        graph.add_node("乙成员", group="地点")
+        graph.add_edges_from([
+            ("主节点甲", "甲成员", {"label": "包含", "weight": 0.8}),
+            ("甲成员", "主节点甲", {"label": "属于", "weight": 0.8}),
+            ("主节点乙", "乙成员", {"label": "包含", "weight": 0.8}),
+            ("乙成员", "主节点乙", {"label": "属于", "weight": 0.8}),
+            ("主节点甲", "主节点乙", {
+                "label": "跨社区关系", "title": "甲与乙的原文依据", "weight": 0.9,
+            }),
+        ])
+        manager.current_G = graph
+        manager.kg_triplet = [{
+            "bid": "relation-block-1",
+            "relation": [{
+                "source": "主节点甲",
+                "target": "主节点乙",
+                "relation": "跨社区关系",
+                "context": "甲与乙的原文依据",
+                "weight": 0.9,
+                "origin": "extracted",
+            }],
+        }]
+        partition = {"主节点甲": 10, "甲成员": 10, "主节点乙": 20, "乙成员": 20}
+
+        with tempfile.TemporaryDirectory() as output_dir, patch(
+            "community.best_partition", return_value=partition
+        ):
+            manager.绘制知识图谱("社区关系出处", 输出目录=output_dir, 社区最小规模=1)
+            overview = Path(
+                output_dir, "社区关系出处", "社区关系出处.html"
+            ).read_text(encoding="utf-8")
+
+        edge_match = re.search(r"edges = new vis\.DataSet\((\[.*?\])\);", overview)
+        self.assertIsNotNone(edge_match)
+        edge = json.loads(edge_match.group(1))[0]
+        self.assertEqual(edge["source_block"], "relation-block-1")
+        self.assertEqual(edge["evidence_blocks"], [{
+            "source_block": "relation-block-1",
+            "evidence": "甲与乙的原文依据",
+            "score": 0.9,
+        }])
+        self.assertEqual(edge["evidence_source"], "主节点甲")
+        self.assertEqual(edge["evidence_target"], "主节点乙")
+        self.assertIn("sourceBlocks = edge.evidence_blocks || []", overview)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,1537 @@
+<html>
+    <head>
+        <meta charset="utf-8">
+
+            <script>function neighbourhoodHighlight(params) {
+  // console.log("in nieghbourhoodhighlight");
+  allNodes = nodes.get({ returnType: "Object" });
+  // originalNodes = JSON.parse(JSON.stringify(allNodes));
+  // if something is selected:
+  if (params.nodes.length > 0) {
+    highlightActive = true;
+    var i, j;
+    var selectedNode = params.nodes[0];
+    var degrees = 2;
+
+    // mark all nodes as hard to read.
+    for (let nodeId in allNodes) {
+      // nodeColors[nodeId] = allNodes[nodeId].color;
+      allNodes[nodeId].color = "rgba(200,200,200,0.5)";
+      if (allNodes[nodeId].hiddenLabel === undefined) {
+        allNodes[nodeId].hiddenLabel = allNodes[nodeId].label;
+        allNodes[nodeId].label = undefined;
+      }
+    }
+    var connectedNodes = network.getConnectedNodes(selectedNode);
+    var allConnectedNodes = [];
+
+    // get the second degree nodes
+    for (i = 1; i < degrees; i++) {
+      for (j = 0; j < connectedNodes.length; j++) {
+        allConnectedNodes = allConnectedNodes.concat(
+          network.getConnectedNodes(connectedNodes[j])
+        );
+      }
+    }
+
+    // all second degree nodes get a different color and their label back
+    for (i = 0; i < allConnectedNodes.length; i++) {
+      // allNodes[allConnectedNodes[i]].color = "pink";
+      allNodes[allConnectedNodes[i]].color = "rgba(150,150,150,0.75)";
+      if (allNodes[allConnectedNodes[i]].hiddenLabel !== undefined) {
+        allNodes[allConnectedNodes[i]].label =
+          allNodes[allConnectedNodes[i]].hiddenLabel;
+        allNodes[allConnectedNodes[i]].hiddenLabel = undefined;
+      }
+    }
+
+    // all first degree nodes get their own color and their label back
+    for (i = 0; i < connectedNodes.length; i++) {
+      // allNodes[connectedNodes[i]].color = undefined;
+      allNodes[connectedNodes[i]].color = nodeColors[connectedNodes[i]];
+      if (allNodes[connectedNodes[i]].hiddenLabel !== undefined) {
+        allNodes[connectedNodes[i]].label =
+          allNodes[connectedNodes[i]].hiddenLabel;
+        allNodes[connectedNodes[i]].hiddenLabel = undefined;
+      }
+    }
+
+    // the main node gets its own color and its label back.
+    // allNodes[selectedNode].color = undefined;
+    allNodes[selectedNode].color = nodeColors[selectedNode];
+    if (allNodes[selectedNode].hiddenLabel !== undefined) {
+      allNodes[selectedNode].label = allNodes[selectedNode].hiddenLabel;
+      allNodes[selectedNode].hiddenLabel = undefined;
+    }
+  } else if (highlightActive === true) {
+    // console.log("highlightActive was true");
+    // reset all nodes
+    for (let nodeId in allNodes) {
+      // allNodes[nodeId].color = "purple";
+      allNodes[nodeId].color = nodeColors[nodeId];
+      // delete allNodes[nodeId].color;
+      if (allNodes[nodeId].hiddenLabel !== undefined) {
+        allNodes[nodeId].label = allNodes[nodeId].hiddenLabel;
+        allNodes[nodeId].hiddenLabel = undefined;
+      }
+    }
+    highlightActive = false;
+  }
+
+  // transform the object into an array
+  var updateArray = [];
+  if (params.nodes.length > 0) {
+    for (let nodeId in allNodes) {
+      if (allNodes.hasOwnProperty(nodeId)) {
+        // console.log(allNodes[nodeId]);
+        updateArray.push(allNodes[nodeId]);
+      }
+    }
+    nodes.update(updateArray);
+  } else {
+    // console.log("Nothing was selected");
+    for (let nodeId in allNodes) {
+      if (allNodes.hasOwnProperty(nodeId)) {
+        // console.log(allNodes[nodeId]);
+        // allNodes[nodeId].color = {};
+        updateArray.push(allNodes[nodeId]);
+      }
+    }
+    nodes.update(updateArray);
+  }
+}
+
+function filterHighlight(params) {
+  allNodes = nodes.get({ returnType: "Object" });
+  // if something is selected:
+  if (params.nodes.length > 0) {
+    filterActive = true;
+    let selectedNodes = params.nodes;
+
+    // hiding all nodes and saving the label
+    for (let nodeId in allNodes) {
+      allNodes[nodeId].hidden = true;
+      if (allNodes[nodeId].savedLabel === undefined) {
+        allNodes[nodeId].savedLabel = allNodes[nodeId].label;
+        allNodes[nodeId].label = undefined;
+      }
+    }
+
+    for (let i=0; i < selectedNodes.length; i++) {
+      allNodes[selectedNodes[i]].hidden = false;
+      if (allNodes[selectedNodes[i]].savedLabel !== undefined) {
+        allNodes[selectedNodes[i]].label = allNodes[selectedNodes[i]].savedLabel;
+        allNodes[selectedNodes[i]].savedLabel = undefined;
+      }
+    }
+
+  } else if (filterActive === true) {
+    // reset all nodes
+    for (let nodeId in allNodes) {
+      allNodes[nodeId].hidden = false;
+      if (allNodes[nodeId].savedLabel !== undefined) {
+        allNodes[nodeId].label = allNodes[nodeId].savedLabel;
+        allNodes[nodeId].savedLabel = undefined;
+      }
+    }
+    filterActive = false;
+  }
+
+  // transform the object into an array
+  var updateArray = [];
+  if (params.nodes.length > 0) {
+    for (let nodeId in allNodes) {
+      if (allNodes.hasOwnProperty(nodeId)) {
+        updateArray.push(allNodes[nodeId]);
+      }
+    }
+    nodes.update(updateArray);
+  } else {
+    for (let nodeId in allNodes) {
+      if (allNodes.hasOwnProperty(nodeId)) {
+        updateArray.push(allNodes[nodeId]);
+      }
+    }
+    nodes.update(updateArray);
+  }
+}
+
+function selectNode(nodes) {
+  network.selectNodes(nodes);
+  neighbourhoodHighlight({ nodes: nodes });
+  return nodes;
+}
+
+function selectNodes(nodes) {
+  network.selectNodes(nodes);
+  filterHighlight({nodes: nodes});
+  return nodes;
+}
+
+function highlightFilter(filter) {
+  let selectedNodes = []
+  let selectedProp = filter['property']
+  if (filter['item'] === 'node') {
+    let allNodes = nodes.get({ returnType: "Object" });
+    for (let nodeId in allNodes) {
+      if (allNodes[nodeId][selectedProp] && filter['value'].includes((allNodes[nodeId][selectedProp]).toString())) {
+        selectedNodes.push(nodeId)
+      }
+    }
+  }
+  else if (filter['item'] === 'edge'){
+    let allEdges = edges.get({returnType: 'object'});
+    // check if the selected property exists for selected edge and select the nodes connected to the edge
+    for (let edge in allEdges) {
+      if (allEdges[edge][selectedProp] && filter['value'].includes((allEdges[edge][selectedProp]).toString())) {
+        selectedNodes.push(allEdges[edge]['from'])
+        selectedNodes.push(allEdges[edge]['to'])
+      }
+    }
+  }
+  selectNodes(selectedNodes)
+}</script>
+            <link rel="stylesheet" href="../_lib/vis-network.min.css">
+            <script src="../_lib/vis-network.min.js"></script>
+
+
+
+
+
+
+
+
+<center>
+<h1></h1>
+</center>
+
+<!-- <link rel="stylesheet" href="../node_modules/vis/dist/vis.min.css" type="text/css" />
+<script type="text/javascript" src="../node_modules/vis/dist/vis.js"> </script>-->
+
+
+        <center>
+          <h1></h1>
+        </center>
+        <style type="text/css">
+
+             #mynetwork {
+                 width: 100%;
+                 height: 800px;
+                 background-color: #ffffff;
+                 border: 1px solid lightgray;
+                 position: relative;
+                 float: left;
+             }
+
+
+
+
+
+
+        </style>
+    </head>
+
+
+    <body>
+        <div class="card" style="width: 100%">
+
+
+            <div id="mynetwork" class="card-body"></div>
+        </div>
+
+
+
+
+        <script type="text/javascript">
+
+              // initialize global variables.
+              var edges;
+              var nodes;
+              var allNodes;
+              var allEdges;
+              var nodeColors;
+              var originalNodes;
+              var network;
+              var container;
+              var options, data;
+              var filter = {
+                  item : '',
+                  property : '',
+                  value : []
+              };
+
+
+
+
+
+              // This method is responsible for drawing the graph, returns the drawn network
+              function drawGraph() {
+                  var container = document.getElementById('mynetwork');
+
+
+
+                  // parsing and collecting nodes and edges from the python
+                  nodes = new vis.DataSet([{"entityType": "\u65b9\u6cd5", "font": {"color": "#1a1a1a"}, "group": "\u65b9\u6cd5", "id": "\u5e7f\u4f20\u6d41\u5e03", "label": "\u5e7f\u4f20\u6d41\u5e03", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u65b9\u6cd5", "value": 15.87866521339819, "x": -242.61239579503922, "y": 313.46924509678126}, {"entityType": "\u65f6\u95f4", "font": {"color": "#1a1a1a"}, "group": "\u65f6\u95f4", "id": "\u571f\u864e\u5e74", "label": "\u571f\u864e\u5e74", "shape": "dot", "source_blocks": ["block_642_1355359491582828772", "block_643_-2766964995382570325"], "title": "\u65f6\u95f4", "value": 17.056342534745497, "x": -249.73097874055765, "y": 436.63680726991635}, {"entityType": "\u5730\u70b9", "font": {"color": "#1a1a1a"}, "group": "\u5730\u70b9", "id": "\u96ea\u57df", "label": "\u96ea\u57df", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u5730\u70b9", "value": 15.873703006644574, "x": -273.1558573202816, "y": 227.91515423490335}, {"entityType": "\u4eba\u7269", "font": {"color": "#1a1a1a"}, "group": "\u4eba\u7269", "id": "\u9b51\u9b45", "label": "\u9b51\u9b45", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u4eba\u7269", "value": 15.489087622029189, "x": -321.12782763606333, "y": 293.7389287786516}, {"entityType": "\u4e8b\u4ef6", "font": {"color": "#1a1a1a"}, "group": "\u4e8b\u4ef6", "id": "\u761f\u75ab", "label": "\u761f\u75ab", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u4e8b\u4ef6", "value": 15.484125415275571, "x": -161.70105030958774, "y": 310.7650635785656}, {"entityType": "\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6982\u5ff5", "id": "\u75c5\u5200\u5175", "label": "\u75c5\u5200\u5175", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u6982\u5ff5", "value": 15.873703006644574, "x": -473.9927544680503, "y": 300.4717056616282}, {"entityType": "\u8eab\u4f53\u7279\u5f81", "font": {"color": "#1a1a1a"}, "group": "\u8eab\u4f53\u7279\u5f81", "id": "\u76b1\u8936", "label": "\u76b1\u8936", "shape": "dot", "source_blocks": ["block_748_-1291123410296030766"], "title": "\u8eab\u4f53\u7279\u5f81", "value": 15.44938996800025, "x": 858.9174059506282, "y": -62.89872559256313}, {"entityType": "\u4eba\u7269", "font": {"color": "#1a1a1a"}, "group": "\u4eba\u7269", "id": "\u50e7\u4f17", "label": "\u50e7\u4f17", "shape": "dot", "source_blocks": ["block_642_1355359491582828772"], "title": "\u4eba\u7269", "value": 15.834005352615636, "x": -15.436965142980926, "y": -103.2157588447414}, {"entityType": "\u81ea\u7136\u707e\u5bb3", "font": {"color": "#1a1a1a"}, "group": "\u81ea\u7136\u707e\u5bb3", "id": "\u5730\u9677", "label": "\u5730\u9677", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u81ea\u7136\u707e\u5bb3", "value": 15.868740799890956, "x": -393.5869785444118, "y": 331.71124517631995}, {"entityType": "\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6982\u5ff5", "id": "\u80ba\u75c5", "label": "\u80ba\u75c5", "shape": "dot", "source_blocks": ["block_642_1355359491582828772", "block_693_-1467689672226314901", "block_694_-8199405026682513362", "block_696_-958017538545746446"], "title": "\u6982\u5ff5", "value": 22.93636824292051, "x": 477.92843754378805, "y": -234.2348084518141}, {"entityType": "\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6982\u5ff5", "id": "\u5a01\u4eea", "label": "\u5a01\u4eea", "shape": "dot", "source_blocks": ["block_642_1355359491582828772", "block_643_-2766964995382570325"], "title": "\u6982\u5ff5", "value": 15.928761470970349, "x": -382.7334872644352, "y": -90.64658941136243}, {"entityType": "\u75c5\u56e0", "font": {"color": "#1a1a1a"}, "group": "\u75c5\u56e0", "id": "\u786c\u901e\u5f3a", "label": "\u786c\u901e\u5f3a", "shape": "dot", "source_blocks": ["block_695_-886555280207790785"], "title": "\u75c5\u56e0", "value": 17.672698017356172, "x": 767.550254585102, "y": 89.52107922907048}, {"entityType": "\u6027\u683c\u7279\u5f81", "font": {"color": "#1a1a1a"}, "group": "\u6027\u683c\u7279\u5f81", "id": "\u4e0d\u670d\u4eba", "label": "\u4e0d\u670d\u4eba", "shape": "dot", "source_blocks": ["block_694_-8199405026682513362", "block_695_-886555280207790785"], "title": "\u6027\u683c\u7279\u5f81", "value": 18.05731340197156, "x": 612.3458668005426, "y": -101.95265295481992}, {"entityType": "\u60c5\u7eea", "font": {"color": "#1a1a1a"}, "group": "\u60c5\u7eea", "id": "\u5fe7\u6101\u70e6\u607c", "label": "\u5fe7\u6101\u70e6\u607c", "shape": "dot", "source_blocks": ["block_696_-958017538545746446"], "title": "\u60c5\u7eea", "value": 16.05039566784498, "x": 326.56558979579853, "y": -284.17804877219527}, {"entityType": "\u65b9\u6cd5", "font": {"color": "#1a1a1a"}, "group": "\u65b9\u6cd5", "id": "\u91d1\u4e3b\u60b2", "label": "\u91d1\u4e3b\u60b2", "shape": "dot", "source_blocks": ["block_458_-1828980605950657255"], "title": "\u65b9\u6cd5", "value": 16.092451445610195, "x": 397.56785348449813, "y": -87.87727289695813}, {"entityType": "\u65b9\u6cd5", "font": {"color": "#1a1a1a"}, "group": "\u65b9\u6cd5", "id": "\u656c\u4f9b\u5b85\u4e2d", "label": "\u656c\u4f9b\u5b85\u4e2d", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u65b9\u6cd5", "value": 16.35208216496609, "x": -551.4208842050033, "y": 94.78129497949928}, {"entityType": "\u65e5\u671f", "font": {"color": "#1a1a1a"}, "group": "\u65e5\u671f", "id": "\u91d1\u9f99\u5e74", "label": "\u91d1\u9f99\u5e74", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u65e5\u671f", "value": 16.387788095479372, "x": -459.535401239546, "y": 381.09882051231847}, {"entityType": "\u5730\u70b9", "font": {"color": "#1a1a1a"}, "group": "\u5730\u70b9", "id": "\u85cf\u5730", "label": "\u85cf\u5730", "shape": "dot", "source_blocks": ["block_642_1355359491582828772", "block_643_-2766964995382570325"], "title": "\u5730\u70b9", "value": 17.499505547914527, "x": -304.7042987158071, "y": 373.98862914469635}, {"entityType": "\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6982\u5ff5", "id": "\u4f5b\u9640\u6cd5\u6559", "label": "\u4f5b\u9640\u6cd5\u6559", "shape": "dot", "source_blocks": ["block_642_1355359491582828772"], "title": "\u6982\u5ff5", "value": 15.682438088673319, "x": -316.61142168251945, "y": 484.7547187145557}, {"entityType": "\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6982\u5ff5", "id": "\u4e09\u5bc6", "label": "\u4e09\u5bc6", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u6982\u5ff5", "value": 15.953324479015132, "x": -181.37521359236442, "y": 389.7875358991964}, {"entityType": "\u60c5\u7eea", "font": {"color": "#1a1a1a"}, "group": "\u60c5\u7eea", "id": "\u5fe7\u601d", "label": "\u5fe7\u601d", "shape": "dot", "source_blocks": ["block_696_-958017538545746446"], "title": "\u60c5\u7eea", "value": 16.05039566784498, "x": 368.3242373927001, "y": -353.6932717079029}, {"entityType": "\u4eba\u7269", "font": {"color": "#1a1a1a"}, "group": "\u4eba\u7269", "id": "\u83b2\u5e08", "label": "\u83b2\u5e08", "shape": "dot", "source_blocks": ["block_642_1355359491582828772", "block_643_-2766964995382570325"], "title": "\u4eba\u7269", "value": 42.08412198827697, "x": -400.5603087978337, "y": 228.9911496068709}, {"entityType": "\u75be\u75c5", "font": {"color": "#1a1a1a"}, "group": "\u75be\u75c5", "id": "\u80a0\u9053\u75be\u75c5", "label": "\u80a0\u9053\u75be\u75c5", "shape": "dot", "source_blocks": ["block_696_-958017538545746446"], "title": "\u75be\u75c5", "value": 18.047601967176732, "x": 525.630406482131, "y": -451.07053705793174}, {"entityType": "\u4e8b\u4ef6", "font": {"color": "#1a1a1a"}, "group": "\u4e8b\u4ef6", "id": "\u6d2a\u6c34", "label": "\u6d2a\u6c34", "shape": "dot", "source_blocks": ["block_260_4507529739158568344", "block_643_-2766964995382570325"], "title": "\u4e8b\u4ef6", "value": 15.868740799890956, "x": -546.8698676351961, "y": 264.1323301686089}, {"entityType": "\u60c5\u7eea", "font": {"color": "#1a1a1a"}, "group": "\u60c5\u7eea", "id": "\u6697\u751f\u6c14", "label": "\u6697\u751f\u6c14", "shape": "dot", "source_blocks": ["block_696_-958017538545746446"], "title": "\u60c5\u7eea", "value": 16.043588923926723, "x": 521.26480408274, "y": -548.9385956059225}, {"entityType": "\u4eba\u7269", "font": {"color": "#1a1a1a"}, "group": "\u4eba\u7269", "id": "\u5f25\u52d2", "label": "\u5f25\u52d2", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u4eba\u7269", "value": 15.87866521339819, "x": -225.42406820424455, "y": 161.93561085024842}, {"entityType": "\u4e8b\u4ef6", "font": {"color": "#1a1a1a"}, "group": "\u4e8b\u4ef6", "id": "\u975e\u5178\u75ab\u60c5", "label": "\u975e\u5178\u75ab\u60c5", "shape": "dot", "source_blocks": ["block_642_1355359491582828772"], "title": "\u4e8b\u4ef6", "value": 15.45930049157889, "x": 149.49745800601002, "y": -453.7489723014462}, {"entityType": "\u75c5\u56e0", "font": {"color": "#1a1a1a"}, "group": "\u75c5\u56e0", "id": "\u4e0a\u706b\u5fe7\u6101", "label": "\u4e0a\u706b\u5fe7\u6101", "shape": "dot", "source_blocks": ["block_695_-886555280207790785"], "title": "\u75c5\u56e0", "value": 15.467742789442175, "x": 397.1872523467892, "y": 50.008339623915035}, {"entityType": "\u65f6\u95f4", "font": {"color": "#1a1a1a"}, "group": "\u65f6\u95f4", "id": "\u6c34\u7f8a\u5e74", "label": "\u6c34\u7f8a\u5e74", "shape": "dot", "source_blocks": ["block_642_1355359491582828772"], "title": "\u65f6\u95f4", "value": 17.757082275692557, "x": 111.83334512808219, "y": -357.81554609374035}, {"entityType": "\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6982\u5ff5", "id": "\u9b3c\u9b54", "label": "\u9b3c\u9b54", "shape": "dot", "source_blocks": ["block_642_1355359491582828772", "block_643_-2766964995382570325"], "title": "\u6982\u5ff5", "value": 15.873703006644574, "x": -200.0822188979052, "y": 27.47923839829767}, {"entityType": "\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6982\u5ff5", "id": "\u5589\u75c5", "label": "\u5589\u75c5", "shape": "dot", "source_blocks": ["block_642_1355359491582828772"], "title": "\u6982\u5ff5", "value": 15.455996983719343, "x": 8.631438324020868, "y": -514.8218498384743}, {"entityType": "\u4eba\u7269", "font": {"color": "#1a1a1a"}, "group": "\u4eba\u7269", "id": "\u5c3c\u4f17", "label": "\u5c3c\u4f17", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u4eba\u7269", "value": 15.868740799890956, "x": -55.89585528814257, "y": 187.74536659578695}, {"entityType": "\u75be\u75c5", "font": {"color": "#1a1a1a"}, "group": "\u75be\u75c5", "id": "\u5589\u75be", "label": "\u5589\u75be", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u75be\u75c5", "value": 15.484125415275571, "x": -294.336569081064, "y": -148.46429499536438}, {"entityType": "\u5730\u70b9", "font": {"color": "#1a1a1a"}, "group": "\u5730\u70b9", "id": "\u94dc\u8272\u5c71", "label": "\u94dc\u8272\u5c71", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u5730\u70b9", "value": 15.87866521339819, "x": -392.2284309253188, "y": 126.85215719474766}, {"entityType": "\u75be\u75c5", "font": {"color": "#1a1a1a"}, "group": "\u75be\u75c5", "id": "\u8111\u6897\u585e", "label": "\u8111\u6897\u585e", "shape": "dot", "source_blocks": ["block_695_-886555280207790785"], "title": "\u75be\u75c5", "value": 18.529531110092858, "x": 638.9079938420263, "y": 25.13376457109488}, {"entityType": "\u60c5\u7eea", "font": {"color": "#1a1a1a"}, "group": "\u60c5\u7eea", "id": "\u5fcc\u6068", "label": "\u5fcc\u6068", "shape": "dot", "source_blocks": ["block_696_-958017538545746446"], "title": "\u60c5\u7eea", "value": 17.029210008386837, "x": 481.13081834829984, "y": -381.7299738395461}, {"entityType": "\u6570\u91cf", "font": {"color": "#1a1a1a"}, "group": "\u6570\u91cf", "id": "\u5341\u4eba", "label": "\u5341\u4eba", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u6570\u91cf", "value": 15.873703006644574, "x": -106.48756487815066, "y": 251.5583962831801}, {"entityType": "\u65b9\u6cd5", "font": {"color": "#1a1a1a"}, "group": "\u65b9\u6cd5", "id": "\u73ed\u6742\u53e4\u6c5d\u884c", "label": "\u73ed\u6742\u53e4\u6c5d\u884c", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u65b9\u6cd5", "value": 15.87866521339819, "x": -136.88580208828262, "y": 176.50245918382439}, {"entityType": "\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6982\u5ff5", "id": "\u5200\u5175", "label": "\u5200\u5175", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u6982\u5ff5", "value": 15.873703006644574, "x": -31.01045715138024, "y": 39.55278176701105}, {"entityType": "\u5730\u70b9", "font": {"color": "#1a1a1a"}, "group": "\u5730\u70b9", "id": "\u90aa\u843d\u8fe6\u5e95", "label": "\u90aa\u843d\u8fe6\u5e95", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u5730\u70b9", "value": 15.873703006644574, "x": -437.59268994349895, "y": -30.462773330877297}, {"entityType": "\u884c\u4e3a", "font": {"color": "#1a1a1a"}, "group": "\u884c\u4e3a", "id": "\u770b\u4e0d\u8d77\u4eba", "label": "\u770b\u4e0d\u8d77\u4eba", "shape": "dot", "source_blocks": ["block_696_-958017538545746446"], "title": "\u884c\u4e3a", "value": 16.043588923926723, "x": 589.3631246524194, "y": -502.52816375855815}, {"entityType": "\u75be\u75c5", "font": {"color": "#1a1a1a"}, "group": "\u75be\u75c5", "id": "\u809d\u80a0\u75be\u60a3", "label": "\u809d\u80a0\u75be\u60a3", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u75be\u75c5", "value": 15.484125415275571, "x": -215.47845312389057, "y": -130.1515678264725}, {"entityType": "\u65b9\u6cd5", "font": {"color": "#1a1a1a"}, "group": "\u65b9\u6cd5", "id": "\u968f\u8eab\u4f69\u6234", "label": "\u968f\u8eab\u4f69\u6234", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u65b9\u6cd5", "value": 15.87866521339819, "x": -257.2519786270634, "y": 87.49809122346295}, {"entityType": "\u5fc3\u7406\u72b6\u6001", "font": {"color": "#1a1a1a"}, "group": "\u5fc3\u7406\u72b6\u6001", "id": "\u62c5\u5fc3", "label": "\u62c5\u5fc3", "shape": "dot", "source_blocks": ["block_696_-958017538545746446"], "title": "\u5fc3\u7406\u72b6\u6001", "value": 16.05039566784498, "x": 517.837267105748, "y": -309.037054947248}, {"entityType": "\u4eba\u7269", "font": {"color": "#1a1a1a"}, "group": "\u4eba\u7269", "id": "\u6d3b\u4f5b", "label": "\u6d3b\u4f5b", "shape": "dot", "source_blocks": ["block_642_1355359491582828772", "block_643_-2766964995382570325"], "title": "\u4eba\u7269", "value": 16.365469095793404, "x": -63.38325748479204, "y": -36.212176142348035}, {"entityType": "\u75be\u75c5", "font": {"color": "#1a1a1a"}, "group": "\u75be\u75c5", "id": "\u54bd\u708e", "label": "\u54bd\u708e", "shape": "dot", "source_blocks": ["block_695_-886555280207790785"], "title": "\u75be\u75c5", "value": 16.218620737231017, "x": 466.4095848594633, "y": -43.467715961901774}, {"entityType": "\u60c5\u7eea", "font": {"color": "#1a1a1a"}, "group": "\u60c5\u7eea", "id": "\u751f\u611a\u6c14", "label": "\u751f\u611a\u6c14", "shape": "dot", "source_blocks": ["block_696_-958017538545746446"], "title": "\u60c5\u7eea", "value": 16.05039566784498, "x": 389.33961803864656, "y": -233.05682217323263}, {"entityType": "\u5730\u70b9", "font": {"color": "#1a1a1a"}, "group": "\u5730\u70b9", "id": "\u90ac\u91d1", "label": "\u90ac\u91d1", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u5730\u70b9", "value": 15.87866521339819, "x": -304.4693486239418, "y": -68.14440202231263}, {"entityType": "\u81ea\u7136\u707e\u5bb3", "font": {"color": "#1a1a1a"}, "group": "\u81ea\u7136\u707e\u5bb3", "id": "\u98ce\u96f7", "label": "\u98ce\u96f7", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u81ea\u7136\u707e\u5bb3", "value": 15.484125415275571, "x": -145.1750257397943, "y": -40.66788569696393}, {"entityType": "\u5730\u70b9", "font": {"color": "#1a1a1a"}, "group": "\u5730\u70b9", "id": "\u4e4c\u575a\u57df", "label": "\u4e4c\u575a\u57df", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u5730\u70b9", "value": 15.44938996800025, "x": -225.6112326733717, "y": -49.8316749102989}, {"entityType": "\u60c5\u7eea", "font": {"color": "#1a1a1a"}, "group": "\u60c5\u7eea", "id": "\u60b2\u4f24", "label": "\u60b2\u4f24", "shape": "dot", "source_blocks": ["block_458_-1828980605950657255", "block_695_-886555280207790785", "block_696_-958017538545746446"], "title": "\u60c5\u7eea", "value": 17.497266474268596, "x": 443.45282501192463, "y": -155.73238397167168}, {"entityType": "\u81ea\u7136\u707e\u5bb3", "font": {"color": "#1a1a1a"}, "group": "\u81ea\u7136\u707e\u5bb3", "id": "\u96f7\u96f9", "label": "\u96f7\u96f9", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u81ea\u7136\u707e\u5bb3", "value": 15.484125415275571, "x": -493.96584736975814, "y": 28.314801457324023}, {"entityType": "\u4eba\u7269", "font": {"color": "#1a1a1a"}, "group": "\u4eba\u7269", "id": "\u4fe1\u58eb", "label": "\u4fe1\u58eb", "shape": "dot", "source_blocks": ["block_642_1355359491582828772"], "title": "\u4eba\u7269", "value": 15.476919200163138, "x": 42.03815466643367, "y": -160.90661115564802}, {"entityType": "\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6982\u5ff5", "id": "\u56db\u5927\u707e", "label": "\u56db\u5927\u707e", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u6982\u5ff5", "value": 15.873703006644574, "x": -495.25356076167776, "y": 188.57786674874913}, {"entityType": "\u6587\u732e", "font": {"color": "#1a1a1a"}, "group": "\u6587\u732e", "id": "\u83b2\u5e08\u9884\u8a00\u4fe1", "label": "\u83b2\u5e08\u9884\u8a00\u4fe1", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u6587\u732e", "value": 15.87866521339819, "x": -359.56058717837044, "y": -8.823968265733908}, {"entityType": "\u5730\u70b9", "font": {"color": "#1a1a1a"}, "group": "\u5730\u70b9", "id": "\u7f57\u5239\u9b54\u57df", "label": "\u7f57\u5239\u9b54\u57df", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u5730\u70b9", "value": 15.87866521339819, "x": -192.09500912019632, "y": 235.71323010317357}, {"entityType": "\u6570\u91cf", "font": {"color": "#1a1a1a"}, "group": "\u6570\u91cf", "id": "\u4e09\u5c3a", "label": "\u4e09\u5c3a", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u6570\u91cf", "value": 15.873703006644574, "x": -471.5509378768957, "y": 110.6688845589707}, {"entityType": "\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6982\u5ff5", "id": "\u4e09\u5b9d", "label": "\u4e09\u5b9d", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u6982\u5ff5", "value": 15.868740799890956, "x": -93.32167935667508, "y": 354.9904574778783}, {"entityType": "\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6982\u5ff5", "id": "\u9965\u75db", "label": "\u9965\u75db", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u6982\u5ff5", "value": 15.873703006644574, "x": -78.01046035541997, "y": 108.87400968285873}, {"entityType": "\u7ec4\u7ec7", "font": {"color": "#1a1a1a"}, "group": "\u7ec4\u7ec7", "id": "\u4e09\u65f6\u8bf8\u4f5b", "label": "\u4e09\u65f6\u8bf8\u4f5b", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u7ec4\u7ec7", "value": 15.873703006644574, "x": -415.8046149944859, "y": 49.404613769520864}, {"entityType": "\u75c5\u56e0", "font": {"color": "#1a1a1a"}, "group": "\u75c5\u56e0", "id": "\u5fe7\u601d\u5fe7\u8651", "label": "\u5fe7\u601d\u5fe7\u8651", "shape": "dot", "source_blocks": ["block_695_-886555280207790785"], "title": "\u75c5\u56e0", "value": 15.467742789442175, "x": 477.20733633102435, "y": 37.730530781441516}, {"entityType": "\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6982\u5ff5", "id": "\u8111\u8840\u7ba1\u75be\u75c5", "label": "\u8111\u8840\u7ba1\u75be\u75c5", "shape": "dot", "source_blocks": ["block_642_1355359491582828772"], "title": "\u6982\u5ff5", "value": 15.457098153005859, "x": 4.304912217816784, "y": -386.54619299902265}, {"entityType": "\u65e5\u671f", "font": {"color": "#1a1a1a"}, "group": "\u65e5\u671f", "id": "2003\u5e74", "label": "2003\u5e74", "shape": "dot", "source_blocks": ["block_642_1355359491582828772"], "title": "\u65e5\u671f", "value": 15.460401660865406, "x": 71.67700982687846, "y": -431.43448651271547}, {"entityType": "\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6982\u5ff5", "id": "\u809d\u80a0\u75c5", "label": "\u809d\u80a0\u75c5", "shape": "dot", "source_blocks": ["block_642_1355359491582828772"], "title": "\u6982\u5ff5", "value": 15.455996983719343, "x": 89.8007911602401, "y": -510.34707917595955}, {"entityType": "\u4eba\u7269", "font": {"color": "#1a1a1a"}, "group": "\u4eba\u7269", "id": "\u7f57\u5239", "label": "\u7f57\u5239", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u4eba\u7269", "value": 18.31541758860463, "x": -378.6442512073276, "y": 413.7086538731276}, {"entityType": "\u65e5\u671f", "font": {"color": "#1a1a1a"}, "group": "\u65e5\u671f", "id": "\u516d\u6708\u5341\u65e5", "label": "\u516d\u6708\u5341\u65e5", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u65e5\u671f", "value": 15.87866521339819, "x": -315.45320565583995, "y": 158.32639942948913}, {"entityType": "\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6982\u5ff5", "id": "\u6212\u5f8b", "label": "\u6212\u5f8b", "shape": "dot", "source_blocks": ["block_642_1355359491582828772"], "title": "\u6982\u5ff5", "value": 15.44938996800025, "x": -380.50344698902853, "y": -172.05083227863935}, {"entityType": "\u4eba\u7269", "font": {"color": "#1a1a1a"}, "group": "\u4eba\u7269", "id": "\u51fa\u5bb6\u4f17", "label": "\u51fa\u5bb6\u4f17", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u4eba\u7269", "value": 15.868740799890956, "x": -37.396096889162195, "y": 294.6628379173317}, {"entityType": "\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6982\u5ff5", "id": "\u6212\u6761", "label": "\u6212\u6761", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u6982\u5ff5", "value": 16.896684813247873, "x": 15.102124486852846, "y": 230.48471295019402}, {"entityType": "\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6982\u5ff5", "id": "\u80c3\u75be", "label": "\u80c3\u75be", "shape": "dot", "source_blocks": ["block_642_1355359491582828772", "block_643_-2766964995382570325"], "title": "\u6982\u5ff5", "value": 15.875347815610048, "x": -69.59630007705977, "y": -171.35491851938264}, {"entityType": "\u4eba\u7269", "font": {"color": "#1a1a1a"}, "group": "\u4eba\u7269", "id": "\u4e0a\u5e08", "label": "\u4e0a\u5e08", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u4eba\u7269", "value": 15.868740799890956, "x": -134.5150783984924, "y": -121.40195131735207}, {"entityType": "\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6982\u5ff5", "id": "\u672c\u5c0a", "label": "\u672c\u5c0a", "shape": "dot", "source_blocks": ["block_642_1355359491582828772", "block_643_-2766964995382570325"], "title": "\u6982\u5ff5", "value": 15.873703006644574, "x": -170.2149528300683, "y": 102.72486849366871}, {"entityType": "\u65b9\u6cd5", "font": {"color": "#1a1a1a"}, "group": "\u65b9\u6cd5", "id": "\u6d88\u707e\u529e\u6cd5", "label": "\u6d88\u707e\u529e\u6cd5", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u65b9\u6cd5", "value": 15.87866521339819, "x": -335.9816227522214, "y": 68.62626102424832}, {"entityType": "\u75be\u75c5", "font": {"color": "#1a1a1a"}, "group": "\u75be\u75c5", "id": "\u8111\u8840\u6813", "label": "\u8111\u8840\u6813", "shape": "dot", "source_blocks": ["block_695_-886555280207790785"], "title": "\u75be\u75c5", "value": 18.529531110092858, "x": 695.6593616563674, "y": -92.69660361293815}, {"entityType": "\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6982\u5ff5", "id": "\u6bd7\u8036", "label": "\u6bd7\u8036", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u6982\u5ff5", "value": 15.868740799890956, "x": 2.384687177138304, "y": 124.5700908578733}, {"entityType": "\u60c5\u7eea", "font": {"color": "#1a1a1a"}, "group": "\u60c5\u7eea", "id": "\u5455\u6c14", "label": "\u5455\u6c14", "shape": "dot", "source_blocks": ["block_696_-958017538545746446"], "title": "\u60c5\u7eea", "value": 16.05039566784498, "x": 434.4887614718755, "y": -307.04336083775667}, {"entityType": "\u75c7\u72b6", "font": {"color": "#1a1a1a"}, "group": "\u75c7\u72b6", "id": "\u8111\u4f9b\u8840\u4e0d\u8db3", "label": "\u8111\u4f9b\u8840\u4e0d\u8db3", "shape": "dot", "source_blocks": ["block_194_-1848704460020216720", "block_695_-886555280207790785", "block_748_-1291123410296030766"], "title": "\u75c7\u72b6", "value": 18.969204959034016, "x": 779.8082190547685, "y": -87.57870548737988}, {"entityType": "\u75c5\u56e0", "font": {"color": "#1a1a1a"}, "group": "\u75c5\u56e0", "id": "\u611a\u75f4", "label": "\u611a\u75f4", "shape": "dot", "source_blocks": ["block_695_-886555280207790785"], "title": "\u75c5\u56e0", "value": 17.672698017356172, "x": 722.1108545465836, "y": 20.220099560150086}, {"entityType": "\u65b9\u6cd5", "font": {"color": "#1a1a1a"}, "group": "\u65b9\u6cd5", "id": "\u4e66\u5199\u8bfb\u8bf5", "label": "\u4e66\u5199\u8bfb\u8bf5", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u65b9\u6cd5", "value": 16.825499116534, "x": -116.73006620312681, "y": 36.14767900410768}, {"entityType": "\u4eba\u7269", "font": {"color": "#1a1a1a"}, "group": "\u4eba\u7269", "id": "\u6076\u5987", "label": "\u6076\u5987", "shape": "dot", "source_blocks": ["block_643_-2766964995382570325"], "title": "\u4eba\u7269", "value": 15.484125415275571, "x": -280.2884636902395, "y": 9.870576494892845}, {"entityType": "\u75c5\u56e0", "font": {"color": "#1a1a1a"}, "group": "\u75c5\u56e0", "id": "\u4efb\u6027\u81ea\u79c1", "label": "\u4efb\u6027\u81ea\u79c1", "shape": "dot", "source_blocks": ["block_695_-886555280207790785"], "title": "\u75c5\u56e0", "value": 17.672698017356172, "x": 801.0870311492293, "y": -4.882258658956035}]);
+                  edges = new vis.DataSet([{"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u5e7f\u4f20\u6d41\u5e03", "evidence_target": "\u83b2\u5e08", "font": {"size": 0}, "from": "\u5e7f\u4f20\u6d41\u5e03", "hoverWidth": 3.3, "label": "\u5e7f\u4f20\u6d41\u5e03\u83b2\u5e08\u5bc4\u8bed\u53ef\u80dc\u9b54\u9b45", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u82e5\u5c06\u5bc4\u8bed\u5e7f\u5e03\u5341\u4eba\u95f4\uff0c\u6b64\u751f\u5b9a\u7136\u80dc\u51fa\u9b54\u9b45\u9b51", "to": "\u83b2\u5e08", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u571f\u864e\u5e74", "evidence_target": "\u4f5b\u9640\u6cd5\u6559", "font": {"size": 0}, "from": "\u571f\u864e\u5e74", "hoverWidth": 3.3, "label": "\u906d\u9047\u8870\u5fae\u52ab", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u4ee5\u6b64\u7f18\u7531\u9b54\u4f17\u7099\u76db\u897f\u57df\u4e8e\u571f\u864e\u5e74\uff0c\u5404\u65b9\u754c\u57df\u90aa\u9b54\u969c\u96be\u666e\u904d\u73b0\uff0c\u4f5b\u9640\u6cd5\u6559\u503c\u9047\u8870\u5fae\u52ab\u3002", "to": "\u4f5b\u9640\u6cd5\u6559", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u571f\u864e\u5e74", "evidence_target": "\u7f57\u5239", "font": {"size": 0}, "from": "\u571f\u864e\u5e74", "hoverWidth": 3.1, "label": "\u571f\u864e\u5e74\u7f57\u5239\u4fb5\u85cf\u5730", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u5982\u6b64\u571f\u864e\u7f57\u5239\u4fb5\u85cf\u5730", "to": "\u7f57\u5239", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u96ea\u57df", "evidence_target": "\u7f57\u5239", "font": {"size": 0}, "from": "\u96ea\u57df", "hoverWidth": 3.1, "label": "\u864e\u5e74\u96ea\u57df\u7f57\u5239\u4e34", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u7262\u8bb0\u864e\u5e74\u96ea\u57df\u7f57\u5239\u4e34", "to": "\u7f57\u5239", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u75c5\u5200\u5175", "evidence_target": "\u83b2\u5e08", "font": {"size": 0}, "from": "\u75c5\u5200\u5175", "hoverWidth": 3.1, "label": "\u88ab\u83b2\u5e08\u9884\u8a00\u4fe1\u5e73\u606f", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u73b0\u4e16\u75c5\u5200\u5175\u7686\u5e73\u606f", "to": "\u83b2\u5e08", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u76b1\u8936", "evidence_target": "\u8111\u4f9b\u8840\u4e0d\u8db3", "font": {"size": 0}, "from": "\u76b1\u8936", "hoverWidth": 3.3, "label": "\u8033\u5782\u9644\u8fd1\u6709\u76b1\u8936\u5bb9\u6613\u5bfc\u81f4\u8111\u4f9b\u8840\u4e0d\u8db3", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u5728\u5065\u5eb7\u65b9\u9762\uff0c\u5982\u679c\u8033\u5782\u9644\u8fd1\u5df2\u7ecf\u6709\u76b1\u8936\u7684\u4eba\uff0c\u5bb9\u6613\u8111\u4f9b\u8840\u4e0d\u8db3\uff0c\u6216\u8005\u6709\u5fc3\u8840\u7ba1\u65b9\u9762\u7684\u95ee\u9898\u3002", "to": "\u8111\u4f9b\u8840\u4e0d\u8db3", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u50e7\u4f17", "evidence_target": "\u6d3b\u4f5b", "font": {"size": 0}, "from": "\u50e7\u4f17", "hoverWidth": 3.1, "label": "\u5171\u540c\u8ffd\u9010\u540d\u5229", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u50e7\u4f17\u6d3b\u4f5b\u6c72\u6c72\u4e8e\u540d\u95fb", "to": "\u6d3b\u4f5b", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u50e7\u4f17", "evidence_target": "\u4fe1\u58eb", "font": {"size": 0}, "from": "\u50e7\u4f17", "hoverWidth": 3.1, "label": "\u6b3a\u9a97\u4fe1\u58eb", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u4e91\u6e38\u56db\u65b9\u6b3a\u8499\u8bf8\u4fe1\u58eb", "to": "\u4fe1\u58eb", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u5730\u9677", "evidence_target": "\u91d1\u9f99\u5e74", "font": {"size": 0}, "from": "\u5730\u9677", "hoverWidth": 3.1, "label": "\u91d1\u9f99\u5e74\u5730\u9677\u4f24\u4eba", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u6d2a\u6c34\u6cdb\u6ee5\u5730\u9677\u4f24\u4eba\u547d", "to": "\u91d1\u9f99\u5e74", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u80ba\u75c5", "evidence_target": "\u5fcc\u6068", "font": {"size": 0}, "from": "\u80ba\u75c5", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u80ba\u75c5 ----\u5fcc\u6068\u3001\u5455\u6c14\u3001\u5fe7\u601d\u3001\u60b2\u4f24\u3001\u5fe7\u6101\u70e6\u607c\u3001\u62c5\u5fc3\u3002\u76fc\u671b\u3001\u751f\u611a\u6c14\u3001\u4e8f\u5b5d\u9053\u7684\u8fc7\u3002", "to": "\u5fcc\u6068", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u80ba\u75c5", "evidence_target": "\u5455\u6c14", "font": {"size": 0}, "from": "\u80ba\u75c5", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u80ba\u75c5 ----\u5fcc\u6068\u3001\u5455\u6c14\u3001\u5fe7\u601d\u3001\u60b2\u4f24\u3001\u5fe7\u6101\u70e6\u607c\u3001\u62c5\u5fc3\u3002\u76fc\u671b\u3001\u751f\u611a\u6c14\u3001\u4e8f\u5b5d\u9053\u7684\u8fc7\u3002", "to": "\u5455\u6c14", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u80ba\u75c5", "evidence_target": "\u5fe7\u601d", "font": {"size": 0}, "from": "\u80ba\u75c5", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u80ba\u75c5 ----\u5fcc\u6068\u3001\u5455\u6c14\u3001\u5fe7\u601d\u3001\u60b2\u4f24\u3001\u5fe7\u6101\u70e6\u607c\u3001\u62c5\u5fc3\u3002\u76fc\u671b\u3001\u751f\u611a\u6c14\u3001\u4e8f\u5b5d\u9053\u7684\u8fc7\u3002", "to": "\u5fe7\u601d", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u80ba\u75c5", "evidence_target": "\u60b2\u4f24", "font": {"size": 0}, "from": "\u80ba\u75c5", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u80ba\u75c5 ----\u5fcc\u6068\u3001\u5455\u6c14\u3001\u5fe7\u601d\u3001\u60b2\u4f24\u3001\u5fe7\u6101\u70e6\u607c\u3001\u62c5\u5fc3\u3002\u76fc\u671b\u3001\u751f\u611a\u6c14\u3001\u4e8f\u5b5d\u9053\u7684\u8fc7\u3002", "to": "\u60b2\u4f24", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u80ba\u75c5", "evidence_target": "\u5fe7\u6101\u70e6\u607c", "font": {"size": 0}, "from": "\u80ba\u75c5", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u80ba\u75c5 ----\u5fcc\u6068\u3001\u5455\u6c14\u3001\u5fe7\u601d\u3001\u60b2\u4f24\u3001\u5fe7\u6101\u70e6\u607c\u3001\u62c5\u5fc3\u3002\u76fc\u671b\u3001\u751f\u611a\u6c14\u3001\u4e8f\u5b5d\u9053\u7684\u8fc7\u3002", "to": "\u5fe7\u6101\u70e6\u607c", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u80ba\u75c5", "evidence_target": "\u62c5\u5fc3", "font": {"size": 0}, "from": "\u80ba\u75c5", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u80ba\u75c5 ----\u5fcc\u6068\u3001\u5455\u6c14\u3001\u5fe7\u601d\u3001\u60b2\u4f24\u3001\u5fe7\u6101\u70e6\u607c\u3001\u62c5\u5fc3\u3002\u76fc\u671b\u3001\u751f\u611a\u6c14\u3001\u4e8f\u5b5d\u9053\u7684\u8fc7\u3002", "to": "\u62c5\u5fc3", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u80ba\u75c5", "evidence_target": "\u751f\u611a\u6c14", "font": {"size": 0}, "from": "\u80ba\u75c5", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u80ba\u75c5 ----\u5fcc\u6068\u3001\u5455\u6c14\u3001\u5fe7\u601d\u3001\u60b2\u4f24\u3001\u5fe7\u6101\u70e6\u607c\u3001\u62c5\u5fc3\u3002\u76fc\u671b\u3001\u751f\u611a\u6c14\u3001\u4e8f\u5b5d\u9053\u7684\u8fc7\u3002", "to": "\u751f\u611a\u6c14", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u786c\u901e\u5f3a", "evidence_target": "\u8111\u4f9b\u8840\u4e0d\u8db3", "font": {"size": 0}, "from": "\u786c\u901e\u5f3a", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "22.\u8111\u4f9b\u8840\u4e0d\u8db3\uff0c\u8111\u6897\u585e\uff0c\u8111\u8840\u6813 ---- \u4e0d\u670d\u4eba\uff0c\u786c\u901e\u5f3a\uff0c\u611a\u75f4\u3001\u4efb\u6027\u81ea\u79c1\u7684\u8fc7\u3002", "to": "\u8111\u4f9b\u8840\u4e0d\u8db3", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u786c\u901e\u5f3a", "evidence_target": "\u8111\u6897\u585e", "font": {"size": 0}, "from": "\u786c\u901e\u5f3a", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "22.\u8111\u4f9b\u8840\u4e0d\u8db3\uff0c\u8111\u6897\u585e\uff0c\u8111\u8840\u6813 ---- \u4e0d\u670d\u4eba\uff0c\u786c\u901e\u5f3a\uff0c\u611a\u75f4\u3001\u4efb\u6027\u81ea\u79c1\u7684\u8fc7\u3002", "to": "\u8111\u6897\u585e", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u786c\u901e\u5f3a", "evidence_target": "\u8111\u8840\u6813", "font": {"size": 0}, "from": "\u786c\u901e\u5f3a", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "22.\u8111\u4f9b\u8840\u4e0d\u8db3\uff0c\u8111\u6897\u585e\uff0c\u8111\u8840\u6813 ---- \u4e0d\u670d\u4eba\uff0c\u786c\u901e\u5f3a\uff0c\u611a\u75f4\u3001\u4efb\u6027\u81ea\u79c1\u7684\u8fc7\u3002", "to": "\u8111\u8840\u6813", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u4e0d\u670d\u4eba", "evidence_target": "\u80ba\u75c5", "font": {"size": 0}, "from": "\u4e0d\u670d\u4eba", "hoverWidth": 3.1, "label": "\u4e0d\u670d\u4eba\u5bfc\u81f4\u80ba\u75c5", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u9f3b\u708e\u56e0\u4e89\u5f3a\u597d\u80dc\u5f15\u8d77\uff0c\u6311\u7406\u5bfc\u81f4\u611f\u5192\uff0c\u5192\u72af\u957f\u8f88\u4f1a\u53d1\u70e7\uff0c\u4e0d\u670d\u4eba\u5f97\u80ba\u75c5\u3002", "to": "\u80ba\u75c5", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u4e0d\u670d\u4eba", "evidence_target": "\u8111\u4f9b\u8840\u4e0d\u8db3", "font": {"size": 0}, "from": "\u4e0d\u670d\u4eba", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "22.\u8111\u4f9b\u8840\u4e0d\u8db3\uff0c\u8111\u6897\u585e\uff0c\u8111\u8840\u6813 ---- \u4e0d\u670d\u4eba\uff0c\u786c\u901e\u5f3a\uff0c\u611a\u75f4\u3001\u4efb\u6027\u81ea\u79c1\u7684\u8fc7\u3002", "to": "\u8111\u4f9b\u8840\u4e0d\u8db3", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u4e0d\u670d\u4eba", "evidence_target": "\u8111\u6897\u585e", "font": {"size": 0}, "from": "\u4e0d\u670d\u4eba", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "22.\u8111\u4f9b\u8840\u4e0d\u8db3\uff0c\u8111\u6897\u585e\uff0c\u8111\u8840\u6813 ---- \u4e0d\u670d\u4eba\uff0c\u786c\u901e\u5f3a\uff0c\u611a\u75f4\u3001\u4efb\u6027\u81ea\u79c1\u7684\u8fc7\u3002", "to": "\u8111\u6897\u585e", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u4e0d\u670d\u4eba", "evidence_target": "\u8111\u8840\u6813", "font": {"size": 0}, "from": "\u4e0d\u670d\u4eba", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "22.\u8111\u4f9b\u8840\u4e0d\u8db3\uff0c\u8111\u6897\u585e\uff0c\u8111\u8840\u6813 ---- \u4e0d\u670d\u4eba\uff0c\u786c\u901e\u5f3a\uff0c\u611a\u75f4\u3001\u4efb\u6027\u81ea\u79c1\u7684\u8fc7\u3002", "to": "\u8111\u8840\u6813", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u5fe7\u6101\u70e6\u607c", "evidence_target": "\u80ba\u75c5", "font": {"size": 0}, "from": "\u5fe7\u6101\u70e6\u607c", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "50.\u80ba\u75c5 ----\u5fcc\u6068\u3001\u5455\u6c14\u3001\u5fe7\u601d\u3001\u60b2\u4f24\u3001\u5fe7\u6101\u70e6\u607c\u3001\u62c5\u5fc3\u3002\u76fc\u671b\u3001\u751f\u611a\u6c14\u3001\u4e8f\u5b5d\u9053\u7684\u8fc7\u3002", "to": "\u80ba\u75c5", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u91d1\u4e3b\u60b2", "evidence_target": "\u60b2\u4f24", "font": {"size": 0}, "from": "\u91d1\u4e3b\u60b2", "hoverWidth": 3.1, "label": "\u60b2\u4f24\u7684\u773c\u6cea", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u91d1\u4e3b\u60b2\u3002\u60b2\u4f24\u7684\u773c\u6cea\u3002", "to": "\u60b2\u4f24", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u656c\u4f9b\u5b85\u4e2d", "evidence_target": "\u83b2\u5e08", "font": {"size": 0}, "from": "\u656c\u4f9b\u5b85\u4e2d", "hoverWidth": 3.3, "label": "\u656c\u4f9b\u83b2\u5e08\u5bc4\u8bed\u4e8e\u5b85\u4e2d\u53ef\u606f\u707e", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u656c\u4f9b\u5b85\u4e2d\u53ef\u606f\u56db\u5927\u707e\uff0c\u975e\u4eba\u8fdd\u5bb3\u7f57\u5239\u65e0\u5948\u79bb", "to": "\u83b2\u5e08", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u91d1\u9f99\u5e74", "evidence_target": "\u7f57\u5239", "font": {"size": 0}, "from": "\u91d1\u9f99\u5e74", "hoverWidth": 3.1, "label": "\u91d1\u9f99\u5e74\u7f57\u5239\u4f0f\u6c34\u4e2d", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u91d1\u9f99\u5e74\u5934\u7f57\u5239\u4f0f\u6c34\u4e2d", "to": "\u7f57\u5239", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u85cf\u5730", "evidence_target": "\u571f\u864e\u5e74", "font": {"size": 0}, "from": "\u85cf\u5730", "hoverWidth": 3.1, "label": "\u90aa\u9b54\u6295\u751f\u4e8e\u85cf\u5730", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u5f53\u77e5\u864e\u5e74\u90aa\u9b54\u6295\u751f\u85cf\u5730\u540e", "to": "\u571f\u864e\u5e74", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u85cf\u5730", "evidence_target": "\u7f57\u5239", "font": {"size": 0}, "from": "\u85cf\u5730", "hoverWidth": 3.1, "label": "\u7f57\u5239\u4fb5\u85cf\u5730", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u5982\u6b64\u571f\u864e\u7f57\u5239\u4fb5\u85cf\u5730", "to": "\u7f57\u5239", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u5fe7\u601d", "evidence_target": "\u80ba\u75c5", "font": {"size": 0}, "from": "\u5fe7\u601d", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "50.\u80ba\u75c5 ----\u5fcc\u6068\u3001\u5455\u6c14\u3001\u5fe7\u601d\u3001\u60b2\u4f24\u3001\u5fe7\u6101\u70e6\u607c\u3001\u62c5\u5fc3\u3002\u76fc\u671b\u3001\u751f\u611a\u6c14\u3001\u4e8f\u5b5d\u9053\u7684\u8fc7\u3002", "to": "\u80ba\u75c5", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u5f25\u52d2", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 3.3, "label": "\u83b2\u5e08\u5b88\u62a4\u4f17\u751f\u76f4\u5230\u5f25\u52d2\u4e0b\u751f", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u590d\u5f97\u83b2\u5e08\u5b88\u62a4\u5934\u9876\u4e09\u5c3a\u5904\uff0c\u76f4\u5230\u5f25\u52d2\u5f53\u6765\u4e0b\u751f\u65f6\u3002", "to": "\u5f25\u52d2", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u7f57\u5239\u9b54\u57df", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 3.3, "label": "\u83b2\u5e08\u5728\u7f57\u5239\u9b54\u57df\u5bc4\u8bed", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u90ac\u91d1\u83b2\u5e08\u7f57\u5239\u9b54\u57df\u4e4b\u5bc4\u8bed", "to": "\u7f57\u5239\u9b54\u57df", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u85cf\u5730", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 3.1, "label": "\u7f57\u5239\u4fb5\u85cf\u5730", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u5982\u6b64\u571f\u864e\u7f57\u5239\u4fb5\u85cf\u5730", "to": "\u85cf\u5730", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u96ea\u57df", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 3.1, "label": "\u864e\u5e74\u96ea\u57df\u7f57\u5239\u4e34", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u7262\u8bb0\u864e\u5e74\u96ea\u57df\u7f57\u5239\u4e34", "to": "\u96ea\u57df", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u94dc\u8272\u5c71", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 3.3, "label": "\u540e\u4e16\u5f97\u751f\u94dc\u8272\u5c71", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u540e\u4e16\u4ea6\u53ef\u5f97\u751f\u94dc\u8272\u5c71", "to": "\u94dc\u8272\u5c71", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u90ac\u91d1", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 3.3, "label": "\u90ac\u91d1\u83b2\u5e08\u5bc4\u8bed", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u90ac\u91d1\u767d\u739b\u83b2\u5e08\u543e\u4eca\u6b64\u8bed\u5bc4", "to": "\u90ac\u91d1", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u571f\u864e\u5e74", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 3.3, "label": "\u83b2\u5e08\u571f\u864e\u5e74\u5199\u5bc4\u8bed", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u83b2\u5e08\u571f\u864e\u5e74\u516d\u6708\u5341\u65e5", "to": "\u571f\u864e\u5e74", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u516d\u6708\u5341\u65e5", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 3.3, "label": "\u83b2\u5e08\u4e8e\u516d\u6708\u5341\u65e5\u5199\u5bc4\u8bed", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u83b2\u5e08\u571f\u864e\u5e74\u516d\u6708\u5341\u65e5", "to": "\u516d\u6708\u5341\u65e5", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u6d88\u707e\u529e\u6cd5", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 3.3, "label": "\u83b2\u5e08\u9884\u8a00\u4fe1\u662f\u6d88\u707e\u529e\u6cd5", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u82e5\u590d\u6709\u4eba\u6df1\u5fc3\u5949\u6b64\u51fd\uff0c\u6284\u5199\u656c\u8bf5\u8f6c\u4e00\u904d\uff08\u6d88\u707e\u529e\u6cd5\uff09\u73b0\u4e16\u75c5\u5200\u5175\u7686\u5e73\u606f", "to": "\u6d88\u707e\u529e\u6cd5", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u83b2\u5e08\u9884\u8a00\u4fe1", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 3.3, "label": "\u83b2\u5e08\u9884\u8a00\u4fe1\u662f\u83b2\u5e08\u7684\u5bc4\u8bed", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u3010\u83b2\u5e08\u9884\u8a00\u4fe1\u5168\u6587\u3011\u90ac\u91d1\u83b2\u5e08\u7f57\u5239\u9b54\u57df\u4e4b\u5bc4\u8bed", "to": "\u83b2\u5e08\u9884\u8a00\u4fe1", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u73ed\u6742\u53e4\u6c5d\u884c", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 3.3, "label": "\u83b2\u5e08\u529d\u4f17\u751f\u52e4\u8bf5\u73ed\u6742\u53e4\u6c5d\u884c", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u663c\u591c\u52e4\u8bf5\u73ed\u6742\u53e4\u6c5d\u884c", "to": "\u73ed\u6742\u53e4\u6c5d\u884c", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u4e66\u5199\u8bfb\u8bf5", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 3.3, "label": "\u4e66\u5199\u8bfb\u8bf5\u83b2\u5e08\u5bc4\u8bed\u53ef\u6d88\u707e", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u82e5\u80fd\u4e66\u5199\u8bfb\u8bf5\u4e00\u904d\u95f4\uff0c\u6b64\u751f\u9965\u75db\u5200\u5175\u707e\u53ef\u514d", "to": "\u4e66\u5199\u8bfb\u8bf5", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u968f\u8eab\u4f69\u6234", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 3.3, "label": "\u968f\u8eab\u4f69\u6234\u83b2\u5e08\u5bc4\u8bed\u53ef\u6d88\u9b54\u969c", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u968f\u8eab\u4f69\u6234\u9020\u5316\u8fd0\u6c14\u4e34\uff0c\u9b3c\u7b49\u9b51\u9b45\u5c3d\u7686\u96be\u5165\u4fb5", "to": "\u968f\u8eab\u4f69\u6234", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u656c\u4f9b\u5b85\u4e2d", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 3.3, "label": "\u656c\u4f9b\u83b2\u5e08\u5bc4\u8bed\u4e8e\u5b85\u4e2d\u53ef\u606f\u707e", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u656c\u4f9b\u5b85\u4e2d\u53ef\u606f\u56db\u5927\u707e\uff0c\u975e\u4eba\u8fdd\u5bb3\u7f57\u5239\u65e0\u5948\u79bb", "to": "\u656c\u4f9b\u5b85\u4e2d", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u5e7f\u4f20\u6d41\u5e03", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 3.3, "label": "\u5e7f\u4f20\u6d41\u5e03\u83b2\u5e08\u5bc4\u8bed\u53ef\u80dc\u9b54\u9b45", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u82e5\u5c06\u5bc4\u8bed\u5e7f\u5e03\u5341\u4eba\u95f4\uff0c\u6b64\u751f\u5b9a\u7136\u80dc\u51fa\u9b54\u9b45\u9b51", "to": "\u5e7f\u4f20\u6d41\u5e03", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u4e09\u65f6\u8bf8\u4f5b", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 3.1, "label": "\u83b2\u5e08\u51ed\u4f9d\u4e09\u65f6\u8bf8\u4f5b\u5a01\u6444\u529b", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u51ed\u4f9d\u4e09\u65f6\u8bf8\u4f5b\u5a01\u6444\u529b\u3000\u4eca\u83b7\u73b0\u65f6\u5239\u90a3\u4e4b\u6b22\u6109", "to": "\u4e09\u65f6\u8bf8\u4f5b", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u672c\u5c0a", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 3.1, "label": "\u83b2\u5e08\u5bc4\u8bed\u4e0e\u672c\u5c0a\u771f\u5b9e\u8bed\u65e0\u4e8c", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u5982\u6b64\u5584\u858f\u672c\u5c0a\u771f\u5b9e\u8bed\u3000\u4e0e\u543e\u65e0\u4e8c\u793c\u5f53\u5177\u51c0\u4fe1", "to": "\u672c\u5c0a", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u4e0a\u5e08", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 2.9, "label": "\u83b2\u5e08\u6307\u51fa\u4e0a\u5e08\u6cbd\u540d\u9493\u8a89", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u7136\u800c\u6240\u8c13\u4e0a\u5e08\u53ca\u6d3b\u4f5b\u3000\u6cbd\u540d\u9493\u8a89\u904d\u4e16\u4f17\u751f\u6b3a", "to": "\u4e0a\u5e08", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u6d3b\u4f5b", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 2.9, "label": "\u83b2\u5e08\u6307\u51fa\u6d3b\u4f5b\u6cbd\u540d\u9493\u8a89", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u7136\u800c\u6240\u8c13\u4e0a\u5e08\u53ca\u6d3b\u4f5b\u3000\u6cbd\u540d\u9493\u8a89\u904d\u4e16\u4f17\u751f\u6b3a", "to": "\u6d3b\u4f5b", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u51fa\u5bb6\u4f17", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 2.9, "label": "\u83b2\u5e08\u6307\u51fa\u51fa\u5bb6\u4f17\u7684\u8fc7\u5931", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u51fa\u5bb6\u4f17\u611f\u7ecf\u5fcf\u5b66\u6b4c\u821e\u3000\u8c0b\u53d6\u8bf8\u5b9d\u60ad\u541d\u79bb\u5584\u884c", "to": "\u51fa\u5bb6\u4f17", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u5c3c\u4f17", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 2.9, "label": "\u83b2\u5e08\u6307\u51fa\u5c3c\u4f17\u7684\u8fc7\u5931", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u591a\u6709\u5c3c\u4f17\u65e0\u7f9e\u7834\u6212\u4f53", "to": "\u5c3c\u4f17", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u6076\u5987", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 2.9, "label": "\u83b2\u5e08\u6307\u51fa\u6076\u5987\u7684\u8fc7\u5931", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u6076\u5987\u4e13\u4e8e\u592b\u59bb\u95f4\u6311\u62e8\u3000\u7236\u6bcd\u8fdd\u9006\u5987\u5730\u95e8\u5916\u9a71", "to": "\u6076\u5987", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u7f57\u5239", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 3.1, "label": "\u7f57\u5239\u4fb5\u85cf\u5730", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u5982\u6b64\u571f\u864e\u7f57\u5239\u4fb5\u85cf\u5730", "to": "\u7f57\u5239", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u9b3c\u9b54", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 3.1, "label": "\u83b2\u5e08\u5a01\u5fb7\u80fd\u6d88\u9b3c\u9b54\u969c\u96be", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u4ec5\u5c31\u8033\u95fb\u5a01\u5fb7\u80fd\u6d88\u9b3c\u9b54\u969c\u96be\uff0c\u5bff\u547d\u798f\u5fb7\u7686\u589e\u4e0a", "to": "\u9b3c\u9b54", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u9b51\u9b45", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 3.1, "label": "\u968f\u8eab\u4f69\u6234\u83b2\u5e08\u5bc4\u8bed\u9b3c\u7b49\u9b51\u9b45\u96be\u5165\u4fb5", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u968f\u8eab\u4f69\u6234\u9020\u5316\u8fd0\u6c14\u4e34\uff0c\u9b3c\u7b49\u9b51\u9b45\u5c3d\u7686\u96be\u5165\u4fb5", "to": "\u9b51\u9b45", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u56db\u5927\u707e", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 3.1, "label": "\u656c\u4f9b\u83b2\u5e08\u5bc4\u8bed\u53ef\u606f\u56db\u5927\u707e", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u656c\u4f9b\u5b85\u4e2d\u53ef\u606f\u56db\u5927\u707e", "to": "\u56db\u5927\u707e", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u4e09\u5b9d", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 2.9, "label": "\u4e09\u5b9d\u5723\u7269\u6210\u5546\u54c1", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u4e09\u5b9d\u4e09\u5bc6\u5723\u7269\u6210\u5546\u54c1", "to": "\u4e09\u5b9d", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u4e09\u5bc6", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 2.9, "label": "\u4e09\u5bc6\u5723\u7269\u6210\u5546\u54c1", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u4e09\u5b9d\u4e09\u5bc6\u5723\u7269\u6210\u5546\u54c1", "to": "\u4e09\u5bc6", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u6bd7\u8036", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 2.9, "label": "\u5047\u4f5c\u6301\u6bd7\u8036", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u6b3a\u706d\u76f8\u7eed\u5047\u4f5c\u6301\u6bd7\u8036", "to": "\u6bd7\u8036", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u6212\u6761", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 3.1, "label": "\u83b2\u5e08\u529d\u4e25\u5b88\u6212\u6761", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u4e25\u5b88\u6211\u7b49\u6212\u6761\u53ca\u5a01\u4eea", "to": "\u6212\u6761", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u5a01\u4eea", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 3.1, "label": "\u83b2\u5e08\u529d\u4e25\u5b88\u5a01\u4eea", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u4e25\u5b88\u6211\u7b49\u6212\u6761\u53ca\u5a01\u4eea", "to": "\u5a01\u4eea", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u90aa\u843d\u8fe6\u5e95", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 3.1, "label": "\u963b\u788d\u5b8f\u626c\u5bc4\u8bed\u8005\u5815\u90aa\u843d\u8fe6\u5e95", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u5b9a\u906d\u540e\u4e16\u90aa\u843d\u8fe6\u5e95\u62d8", "to": "\u90aa\u843d\u8fe6\u5e95", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u80c3\u75be", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 2.9, "label": "\u8d4c\u535a\u65e0\u5ea6\u81f4\u80c3\u75be", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u8d4c\u535a\u65e0\u5ea6\u56e0\u6b64\u80c3\u75be\u4ea1", "to": "\u80c3\u75be", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u5589\u75be", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 2.9, "label": "\u7c97\u8a00\u6076\u8bed\u81f4\u5589\u75be", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u7c97\u8a00\u6076\u8bed\u8bfd\u8c24\u5589\u75be\u6bd5", "to": "\u5589\u75be", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u809d\u80a0\u75be\u60a3", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 2.9, "label": "\u884c\u730e\u81f4\u809d\u80a0\u75be\u60a3", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u884c\u730e\u6545\u4e8e\u809d\u80a0\u75be\u60a3\u7c7b", "to": "\u809d\u80a0\u75be\u60a3", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u75c5\u5200\u5175", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 3.1, "label": "\u4e66\u5199\u8bfb\u8bf5\u83b2\u5e08\u5bc4\u8bed\u53ef\u514d\u75c5\u5200\u5175", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u6b64\u751f\u9965\u75db\u5200\u5175\u707e\u53ef\u514d", "to": "\u75c5\u5200\u5175", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u761f\u75ab", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 2.9, "label": "\u6c34\u7f8a\u5e74\u761f\u75ab\u591a\u53d1\u751f", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u6c34\u7f8a\u65e0\u5b9a\u761f\u75ab\u591a\u53d1\u751f", "to": "\u761f\u75ab", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u6d2a\u6c34", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 2.9, "label": "\u91d1\u9f99\u5e74\u6d2a\u6c34\u6cdb\u6ee5", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u91d1\u9f99\u5e74\u5934\u7f57\u5239\u4f0f\u6c34\u4e2d\u3000\u6d2a\u6c34\u6cdb\u6ee5\u5730\u9677\u4f24\u4eba\u547d", "to": "\u6d2a\u6c34", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u5730\u9677", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 2.9, "label": "\u91d1\u9f99\u5e74\u5730\u9677\u4f24\u4eba\u547d", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u6d2a\u6c34\u6cdb\u6ee5\u5730\u9677\u4f24\u4eba\u547d", "to": "\u5730\u9677", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u98ce\u96f7", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 2.9, "label": "\u94c1\u86c7\u5e74\u7f57\u5239\u9690\u98ce\u96f7", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u94c1\u86c7\u6765\u81f3\u7f57\u9b54\u9690\u98ce\u96f7", "to": "\u98ce\u96f7", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u96f7\u96f9", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 2.9, "label": "\u6316\u6bc1\u6c34\u571f\u81f4\u96f7\u96f9", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u6316\u6bc1\u6c34\u571f\u6e90\u5934\u96f7\u96f9\u964d", "to": "\u96f7\u96f9", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u9965\u75db", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 3.1, "label": "\u4e66\u5199\u8bfb\u8bf5\u83b2\u5e08\u5bc4\u8bed\u53ef\u514d\u9965\u75db", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u6b64\u751f\u9965\u75db\u5200\u5175\u707e\u53ef\u514d", "to": "\u9965\u75db", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u5200\u5175", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 3.1, "label": "\u4e66\u5199\u8bfb\u8bf5\u83b2\u5e08\u5bc4\u8bed\u53ef\u514d\u5200\u5175", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u6b64\u751f\u9965\u75db\u5200\u5175\u707e\u53ef\u514d", "to": "\u5200\u5175", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u5341\u4eba", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 3.1, "label": "\u5e7f\u4f20\u5bc4\u8bed\u4e8e\u5341\u4eba\u53ef\u80dc\u9b54\u9b45", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u82e5\u5c06\u5bc4\u8bed\u5e7f\u5e03\u5341\u4eba\u95f4\uff0c\u6b64\u751f\u5b9a\u7136\u80dc\u51fa\u9b54\u9b45\u9b51", "to": "\u5341\u4eba", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08", "evidence_target": "\u4e09\u5c3a", "font": {"size": 0}, "from": "\u83b2\u5e08", "hoverWidth": 3.1, "label": "\u83b2\u5e08\u5b88\u62a4\u5934\u9876\u4e09\u5c3a\u5904", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u590d\u5f97\u83b2\u5e08\u5b88\u62a4\u5934\u9876\u4e09\u5c3a\u5904", "to": "\u4e09\u5c3a", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u80a0\u9053\u75be\u75c5", "evidence_target": "\u770b\u4e0d\u8d77\u4eba", "font": {"size": 0}, "from": "\u80a0\u9053\u75be\u75c5", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u80a0\u9053\u75be\u75c5 ---- \u770b\u4e0d\u8d77\u4eba\u3001\u5fcc\u6068\u4eba\u3001\u548c\u8001\u4eba\u751f\u6c14\u4e0a\u706b\u3001\u548c\u8001\u4eba\u4e0d\u4ea4\u6d41\u3001\u6697\u751f\u6c14\u7684\u8fc7\u3002", "to": "\u770b\u4e0d\u8d77\u4eba", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u80a0\u9053\u75be\u75c5", "evidence_target": "\u5fcc\u6068", "font": {"size": 0}, "from": "\u80a0\u9053\u75be\u75c5", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u80a0\u9053\u75be\u75c5 ---- \u770b\u4e0d\u8d77\u4eba\u3001\u5fcc\u6068\u4eba\u3001\u548c\u8001\u4eba\u751f\u6c14\u4e0a\u706b\u3001\u548c\u8001\u4eba\u4e0d\u4ea4\u6d41\u3001\u6697\u751f\u6c14\u7684\u8fc7\u3002", "to": "\u5fcc\u6068", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u80a0\u9053\u75be\u75c5", "evidence_target": "\u6697\u751f\u6c14", "font": {"size": 0}, "from": "\u80a0\u9053\u75be\u75c5", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u80a0\u9053\u75be\u75c5 ---- \u770b\u4e0d\u8d77\u4eba\u3001\u5fcc\u6068\u4eba\u3001\u548c\u8001\u4eba\u751f\u6c14\u4e0a\u706b\u3001\u548c\u8001\u4eba\u4e0d\u4ea4\u6d41\u3001\u6697\u751f\u6c14\u7684\u8fc7\u3002", "to": "\u6697\u751f\u6c14", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u6d2a\u6c34", "evidence_target": "\u91d1\u9f99\u5e74", "font": {"size": 0}, "from": "\u6d2a\u6c34", "hoverWidth": 3.1, "label": "\u91d1\u9f99\u5e74\u6d2a\u6c34\u6cdb\u6ee5", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u91d1\u9f99\u5e74\u5934\u7f57\u5239\u4f0f\u6c34\u4e2d\uff0c\u6d2a\u6c34\u6cdb\u6ee5\u5730\u9677\u4f24\u4eba\u547d", "to": "\u91d1\u9f99\u5e74", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u6697\u751f\u6c14", "evidence_target": "\u80a0\u9053\u75be\u75c5", "font": {"size": 0}, "from": "\u6697\u751f\u6c14", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "73.\u80a0\u9053\u75be\u75c5 ---- \u770b\u4e0d\u8d77\u4eba\u3001\u5fcc\u6068\u4eba\u3001\u548c\u8001\u4eba\u751f\u6c14\u4e0a\u706b\u3001\u548c\u8001\u4eba\u4e0d\u4ea4\u6d41\u3001\u6697\u751f\u6c14\u7684\u8fc7\u3002", "to": "\u80a0\u9053\u75be\u75c5", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u5f25\u52d2", "evidence_target": "\u83b2\u5e08", "font": {"size": 0}, "from": "\u5f25\u52d2", "hoverWidth": 3.3, "label": "\u83b2\u5e08\u5b88\u62a4\u4f17\u751f\u76f4\u5230\u5f25\u52d2\u4e0b\u751f", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u590d\u5f97\u83b2\u5e08\u5b88\u62a4\u5934\u9876\u4e09\u5c3a\u5904\uff0c\u76f4\u5230\u5f25\u52d2\u5f53\u6765\u4e0b\u751f\u65f6\u3002", "to": "\u83b2\u5e08", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u6c34\u7f8a\u5e74", "evidence_target": "2003\u5e74", "font": {"size": 0}, "from": "\u6c34\u7f8a\u5e74", "hoverWidth": 3.5, "label": "\u5bf9\u5e94", "origin": "extracted", "selectionWidth": 4.0, "source_block": "", "title": "\u6c34\u7f8a\u5e74\u591a\u6709\u75ab\u60c5\u4f20\u67d3\u6d41\u5e03\uff0c\uff082003\u5e74\u5373\u85cf\u5386\u6c34\u7f8a\u5e74\uff0c\u53d1\u751f\u975e\u5178\u75ab\u60c5\u9020\u6210\u5168\u4e16\u754c\u6050\u614c\u7b49\uff09\u9152\u98df\u8fc7\u591a\u8005\u56e0\u8111\u8840\u7ba1\u75be\u75c5\u6b7b", "to": "2003\u5e74", "weight": 1.0, "width": 4.0}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u6c34\u7f8a\u5e74", "evidence_target": "\u975e\u5178\u75ab\u60c5", "font": {"size": 0}, "from": "\u6c34\u7f8a\u5e74", "hoverWidth": 3.3, "label": "\u53d1\u751f", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u6c34\u7f8a\u5e74\u591a\u6709\u75ab\u60c5\u4f20\u67d3\u6d41\u5e03\uff0c\uff082003\u5e74\u5373\u85cf\u5386\u6c34\u7f8a\u5e74\uff0c\u53d1\u751f\u975e\u5178\u75ab\u60c5\u9020\u6210\u5168\u4e16\u754c\u6050\u614c\u7b49\uff09\u9152\u98df\u8fc7\u591a\u8005\u56e0\u8111\u8840\u7ba1\u75be\u75c5\u6b7b", "to": "\u975e\u5178\u75ab\u60c5", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u6c34\u7f8a\u5e74", "evidence_target": "\u8111\u8840\u7ba1\u75be\u75c5", "font": {"size": 0}, "from": "\u6c34\u7f8a\u5e74", "hoverWidth": 2.9, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u6c34\u7f8a\u5e74\u591a\u6709\u75ab\u60c5\u4f20\u67d3\u6d41\u5e03\uff0c\uff082003\u5e74\u5373\u85cf\u5386\u6c34\u7f8a\u5e74\uff0c\u53d1\u751f\u975e\u5178\u75ab\u60c5\u9020\u6210\u5168\u4e16\u754c\u6050\u614c\u7b49\uff09\u9152\u98df\u8fc7\u591a\u8005\u56e0\u8111\u8840\u7ba1\u75be\u75c5\u6b7b", "to": "\u8111\u8840\u7ba1\u75be\u75c5", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u6c34\u7f8a\u5e74", "evidence_target": "\u80c3\u75be", "font": {"size": 0}, "from": "\u6c34\u7f8a\u5e74", "hoverWidth": 2.7, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.2, "source_block": "", "title": "\u55dc\u597d\u8d4c\u884c\u8005\u56e0\u80c3\u75be\u6b7b", "to": "\u80c3\u75be", "weight": 0.6, "width": 2.8}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u6c34\u7f8a\u5e74", "evidence_target": "\u5589\u75c5", "font": {"size": 0}, "from": "\u6c34\u7f8a\u5e74", "hoverWidth": 2.7, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.2, "source_block": "", "title": "\u6076\u53e3\u5174\u8c24\u8005\u56e0\u5589\u75c5\u6b7b", "to": "\u5589\u75c5", "weight": 0.6, "width": 2.8}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u6c34\u7f8a\u5e74", "evidence_target": "\u80ba\u75c5", "font": {"size": 0}, "from": "\u6c34\u7f8a\u5e74", "hoverWidth": 2.7, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.2, "source_block": "", "title": "\u5438\u70df\u8fc7\u91cf\u8005\u56e0\u80ba\u75c5\u6b7b", "to": "\u80ba\u75c5", "weight": 0.6, "width": 2.8}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u6c34\u7f8a\u5e74", "evidence_target": "\u809d\u80a0\u75c5", "font": {"size": 0}, "from": "\u6c34\u7f8a\u5e74", "hoverWidth": 2.7, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.2, "source_block": "", "title": "\u730e\u6740\u517d\u755c\u8005\u809d\u80a0\u75c5\u6b7b", "to": "\u809d\u80a0\u75c5", "weight": 0.6, "width": 2.8}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u9b3c\u9b54", "evidence_target": "\u83b2\u5e08", "font": {"size": 0}, "from": "\u9b3c\u9b54", "hoverWidth": 3.1, "label": "\u7948\u8bf7\u6d88\u9664", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u9b3c\u9b54\u4e0d\u80fd\u5174\u82e6\u5bb3", "to": "\u83b2\u5e08", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u5c3c\u4f17", "evidence_target": "\u6212\u6761", "font": {"size": 0}, "from": "\u5c3c\u4f17", "hoverWidth": 2.9, "label": "\u8fdd\u53cd", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u591a\u6709\u5c3c\u4f17\u65e0\u7f9e\u7834\u6212\u4f53", "to": "\u6212\u6761", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u94dc\u8272\u5c71", "evidence_target": "\u83b2\u5e08", "font": {"size": 0}, "from": "\u94dc\u8272\u5c71", "hoverWidth": 3.3, "label": "\u540e\u4e16\u5f97\u751f\u83b2\u5e08\u5e84\u4e25\u5239", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u672a\u6765\u5f97\u751f\u83b2\u5e08\u5e84\u4e25\u5239", "to": "\u83b2\u5e08", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u8111\u6897\u585e", "evidence_target": "\u4e0d\u670d\u4eba", "font": {"size": 0}, "from": "\u8111\u6897\u585e", "hoverWidth": 3.1, "label": "\u76f8\u5173", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "22.\u8111\u4f9b\u8840\u4e0d\u8db3\uff0c\u8111\u6897\u585e\uff0c\u8111\u8840\u6813 ---- \u4e0d\u670d\u4eba\uff0c\u786c\u901e\u5f3a\uff0c\u611a\u75f4\u3001\u4efb\u6027\u81ea\u79c1\u7684\u8fc7\u3002", "to": "\u4e0d\u670d\u4eba", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u8111\u6897\u585e", "evidence_target": "\u786c\u901e\u5f3a", "font": {"size": 0}, "from": "\u8111\u6897\u585e", "hoverWidth": 3.1, "label": "\u76f8\u5173", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "22.\u8111\u4f9b\u8840\u4e0d\u8db3\uff0c\u8111\u6897\u585e\uff0c\u8111\u8840\u6813 ---- \u4e0d\u670d\u4eba\uff0c\u786c\u901e\u5f3a\uff0c\u611a\u75f4\u3001\u4efb\u6027\u81ea\u79c1\u7684\u8fc7\u3002", "to": "\u786c\u901e\u5f3a", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u8111\u6897\u585e", "evidence_target": "\u611a\u75f4", "font": {"size": 0}, "from": "\u8111\u6897\u585e", "hoverWidth": 3.1, "label": "\u76f8\u5173", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "22.\u8111\u4f9b\u8840\u4e0d\u8db3\uff0c\u8111\u6897\u585e\uff0c\u8111\u8840\u6813 ---- \u4e0d\u670d\u4eba\uff0c\u786c\u901e\u5f3a\uff0c\u611a\u75f4\u3001\u4efb\u6027\u81ea\u79c1\u7684\u8fc7\u3002", "to": "\u611a\u75f4", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u8111\u6897\u585e", "evidence_target": "\u4efb\u6027\u81ea\u79c1", "font": {"size": 0}, "from": "\u8111\u6897\u585e", "hoverWidth": 3.1, "label": "\u76f8\u5173", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "22.\u8111\u4f9b\u8840\u4e0d\u8db3\uff0c\u8111\u6897\u585e\uff0c\u8111\u8840\u6813 ---- \u4e0d\u670d\u4eba\uff0c\u786c\u901e\u5f3a\uff0c\u611a\u75f4\u3001\u4efb\u6027\u81ea\u79c1\u7684\u8fc7\u3002", "to": "\u4efb\u6027\u81ea\u79c1", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u5fcc\u6068", "evidence_target": "\u80ba\u75c5", "font": {"size": 0}, "from": "\u5fcc\u6068", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "50.\u80ba\u75c5 ----\u5fcc\u6068\u3001\u5455\u6c14\u3001\u5fe7\u601d\u3001\u60b2\u4f24\u3001\u5fe7\u6101\u70e6\u607c\u3001\u62c5\u5fc3\u3002\u76fc\u671b\u3001\u751f\u611a\u6c14\u3001\u4e8f\u5b5d\u9053\u7684\u8fc7\u3002", "to": "\u80ba\u75c5", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u5fcc\u6068", "evidence_target": "\u80a0\u9053\u75be\u75c5", "font": {"size": 0}, "from": "\u5fcc\u6068", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "73.\u80a0\u9053\u75be\u75c5 ---- \u770b\u4e0d\u8d77\u4eba\u3001\u5fcc\u6068\u4eba\u3001\u548c\u8001\u4eba\u751f\u6c14\u4e0a\u706b\u3001\u548c\u8001\u4eba\u4e0d\u4ea4\u6d41\u3001\u6697\u751f\u6c14\u7684\u8fc7\u3002", "to": "\u80a0\u9053\u75be\u75c5", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u5341\u4eba", "evidence_target": "\u83b2\u5e08", "font": {"size": 0}, "from": "\u5341\u4eba", "hoverWidth": 3.1, "label": "\u5e7f\u4f20\u6d41\u5e03\u7ed9\u5341\u4eba\u5f97\u83b2\u5e08\u52a0\u6301", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u82e5\u5c06\u6b64\u51fd\u5e7f\u4f20\u6d41\u5e03\u53ca\u5341\u4eba\uff0c\u6b64\u751f\u5e38\u80dc\u9b54\u9b3c\u4f17", "to": "\u83b2\u5e08", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u73ed\u6742\u53e4\u6c5d\u884c", "evidence_target": "\u83b2\u5e08", "font": {"size": 0}, "from": "\u73ed\u6742\u53e4\u6c5d\u884c", "hoverWidth": 3.3, "label": "\u83b2\u5e08\u529d\u4f17\u751f\u52e4\u8bf5\u73ed\u6742\u53e4\u6c5d\u884c", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u663c\u591c\u52e4\u8bf5\u73ed\u6742\u53e4\u6c5d\u884c", "to": "\u83b2\u5e08", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u5200\u5175", "evidence_target": "\u4e66\u5199\u8bfb\u8bf5", "font": {"size": 0}, "from": "\u5200\u5175", "hoverWidth": 3.1, "label": "\u4e66\u5199\u8bfb\u8bf5\u53ef\u514d\u5200\u5175\u707e", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u6b64\u751f\u9965\u75db\u5200\u5175\u707e\u53ef\u514d", "to": "\u4e66\u5199\u8bfb\u8bf5", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u90aa\u843d\u8fe6\u5e95", "evidence_target": "\u83b2\u5e08", "font": {"size": 0}, "from": "\u90aa\u843d\u8fe6\u5e95", "hoverWidth": 3.1, "label": "\u963b\u788d\u5b8f\u626c\u5723\u5bc4\u8bed\u5815\u5165\u90aa\u843d\u8fe6\u5e95", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u5b9a\u906d\u540e\u4e16\u90aa\u843d\u8fe6\u5e95\u62d8", "to": "\u83b2\u5e08", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u770b\u4e0d\u8d77\u4eba", "evidence_target": "\u80a0\u9053\u75be\u75c5", "font": {"size": 0}, "from": "\u770b\u4e0d\u8d77\u4eba", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "73.\u80a0\u9053\u75be\u75c5 ---- \u770b\u4e0d\u8d77\u4eba\u3001\u5fcc\u6068\u4eba\u3001\u548c\u8001\u4eba\u751f\u6c14\u4e0a\u706b\u3001\u548c\u8001\u4eba\u4e0d\u4ea4\u6d41\u3001\u6697\u751f\u6c14\u7684\u8fc7\u3002", "to": "\u80a0\u9053\u75be\u75c5", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u968f\u8eab\u4f69\u6234", "evidence_target": "\u83b2\u5e08", "font": {"size": 0}, "from": "\u968f\u8eab\u4f69\u6234", "hoverWidth": 3.3, "label": "\u968f\u8eab\u4f69\u6234\u83b2\u5e08\u5bc4\u8bed\u53ef\u6d88\u9b54\u969c", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u968f\u8eab\u4f69\u6234\u9020\u5316\u8fd0\u6c14\u4e34\uff0c\u9b3c\u7b49\u9b51\u9b45\u5c3d\u7686\u96be\u5165\u4fb5", "to": "\u83b2\u5e08", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u62c5\u5fc3", "evidence_target": "\u80ba\u75c5", "font": {"size": 0}, "from": "\u62c5\u5fc3", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "50.\u80ba\u75c5 ----\u5fcc\u6068\u3001\u5455\u6c14\u3001\u5fe7\u601d\u3001\u60b2\u4f24\u3001\u5fe7\u6101\u70e6\u607c\u3001\u62c5\u5fc3\u3002\u76fc\u671b\u3001\u751f\u611a\u6c14\u3001\u4e8f\u5b5d\u9053\u7684\u8fc7\u3002", "to": "\u80ba\u75c5", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u54bd\u708e", "evidence_target": "\u4e0a\u706b\u5fe7\u6101", "font": {"size": 0}, "from": "\u54bd\u708e", "hoverWidth": 3.3, "label": "\u75c5\u56e0", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u54bd\u708e ---- \u4e0a\u706b\u5fe7\u6101\u3001\u5fe7\u601d\u5fe7\u8651\u3001\u60b2\u4f24\u7684\u8fc7\u3002", "to": "\u4e0a\u706b\u5fe7\u6101", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u54bd\u708e", "evidence_target": "\u5fe7\u601d\u5fe7\u8651", "font": {"size": 0}, "from": "\u54bd\u708e", "hoverWidth": 3.3, "label": "\u75c5\u56e0", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u54bd\u708e ---- \u4e0a\u706b\u5fe7\u6101\u3001\u5fe7\u601d\u5fe7\u8651\u3001\u60b2\u4f24\u7684\u8fc7\u3002", "to": "\u5fe7\u601d\u5fe7\u8651", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u54bd\u708e", "evidence_target": "\u60b2\u4f24", "font": {"size": 0}, "from": "\u54bd\u708e", "hoverWidth": 3.3, "label": "\u75c5\u56e0", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u54bd\u708e ---- \u4e0a\u706b\u5fe7\u6101\u3001\u5fe7\u601d\u5fe7\u8651\u3001\u60b2\u4f24\u7684\u8fc7\u3002", "to": "\u60b2\u4f24", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u751f\u611a\u6c14", "evidence_target": "\u80ba\u75c5", "font": {"size": 0}, "from": "\u751f\u611a\u6c14", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "50.\u80ba\u75c5 ----\u5fcc\u6068\u3001\u5455\u6c14\u3001\u5fe7\u601d\u3001\u60b2\u4f24\u3001\u5fe7\u6101\u70e6\u607c\u3001\u62c5\u5fc3\u3002\u76fc\u671b\u3001\u751f\u611a\u6c14\u3001\u4e8f\u5b5d\u9053\u7684\u8fc7\u3002", "to": "\u80ba\u75c5", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u90ac\u91d1", "evidence_target": "\u83b2\u5e08", "font": {"size": 0}, "from": "\u90ac\u91d1", "hoverWidth": 3.3, "label": "\u90ac\u91d1\u83b2\u5e08\u5bc4\u8bed", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u90ac\u91d1\u767d\u739b\u83b2\u5e08\u543e\u4eca\u6b64\u8bed\u5bc4", "to": "\u83b2\u5e08", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u4e4c\u575a\u57df", "evidence_target": "\u83b2\u5e08", "font": {"size": 0}, "from": "\u4e4c\u575a\u57df", "hoverWidth": 3.3, "label": "\u4e4c\u575a\u57df\u5185\u83b2\u5e08\u5fc3\u4e2d\u8a00\u8c15", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u4e4c\u575a\u57df\u5185\u83b2\u5e08\u5fc3\u4e2d\u8a00\u8c15", "to": "\u83b2\u5e08", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u60b2\u4f24", "evidence_target": "\u91d1\u4e3b\u60b2", "font": {"size": 0}, "from": "\u60b2\u4f24", "hoverWidth": 3.3, "label": "\u5bf9\u5e94", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u91d1\u4e3b\u60b2\u3002\u60b2\u4f24\u7684\u773c\u6cea\u3002", "to": "\u91d1\u4e3b\u60b2", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u60b2\u4f24", "evidence_target": "\u80ba\u75c5", "font": {"size": 0}, "from": "\u60b2\u4f24", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "50.\u80ba\u75c5 ----\u5fcc\u6068\u3001\u5455\u6c14\u3001\u5fe7\u601d\u3001\u60b2\u4f24\u3001\u5fe7\u6101\u70e6\u607c\u3001\u62c5\u5fc3\u3002\u76fc\u671b\u3001\u751f\u611a\u6c14\u3001\u4e8f\u5b5d\u9053\u7684\u8fc7\u3002", "to": "\u80ba\u75c5", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u56db\u5927\u707e", "evidence_target": "\u656c\u4f9b\u5b85\u4e2d", "font": {"size": 0}, "from": "\u56db\u5927\u707e", "hoverWidth": 3.3, "label": "\u88ab\u5e73\u606f", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u656c\u4f9b\u5b85\u4e2d\u53ef\u606f\u56db\u5927\u707e", "to": "\u656c\u4f9b\u5b85\u4e2d", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u83b2\u5e08\u9884\u8a00\u4fe1", "evidence_target": "\u83b2\u5e08", "font": {"size": 0}, "from": "\u83b2\u5e08\u9884\u8a00\u4fe1", "hoverWidth": 3.3, "label": "\u83b2\u5e08\u9884\u8a00\u4fe1\u662f\u83b2\u5e08\u7684\u5bc4\u8bed", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u3010\u83b2\u5e08\u9884\u8a00\u4fe1\u5168\u6587\u3011\u90ac\u91d1\u83b2\u5e08\u7f57\u5239\u9b54\u57df\u4e4b\u5bc4\u8bed", "to": "\u83b2\u5e08", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u7f57\u5239\u9b54\u57df", "evidence_target": "\u83b2\u5e08", "font": {"size": 0}, "from": "\u7f57\u5239\u9b54\u57df", "hoverWidth": 3.3, "label": "\u83b2\u5e08\u5728\u7f57\u5239\u9b54\u57df\u5bc4\u8bed", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u90ac\u91d1\u83b2\u5e08\u7f57\u5239\u9b54\u57df\u4e4b\u5bc4\u8bed", "to": "\u83b2\u5e08", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u4e09\u5c3a", "evidence_target": "\u83b2\u5e08", "font": {"size": 0}, "from": "\u4e09\u5c3a", "hoverWidth": 3.1, "label": "\u83b2\u5e08\u5b88\u62a4\u5934\u9876\u4e09\u5c3a\u5904", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u590d\u5f97\u83b2\u5e08\u5b88\u62a4\u5934\u9876\u4e09\u5c3a\u5904", "to": "\u83b2\u5e08", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u4e09\u5b9d", "evidence_target": "\u4e09\u5bc6", "font": {"size": 0}, "from": "\u4e09\u5b9d", "hoverWidth": 2.9, "label": "\u5e76\u5217\u63d0\u53ca\uff0c\u88ab\u5546\u54c1\u5316", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u4e09\u5b9d\u4e09\u5bc6\u5723\u7269\u6210\u5546\u54c1", "to": "\u4e09\u5bc6", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u9965\u75db", "evidence_target": "\u4e66\u5199\u8bfb\u8bf5", "font": {"size": 0}, "from": "\u9965\u75db", "hoverWidth": 3.1, "label": "\u4e66\u5199\u8bfb\u8bf5\u53ef\u514d\u9965\u75db", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u6b64\u751f\u9965\u75db\u5200\u5175\u707e\u53ef\u514d", "to": "\u4e66\u5199\u8bfb\u8bf5", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u4e09\u65f6\u8bf8\u4f5b", "evidence_target": "\u83b2\u5e08", "font": {"size": 0}, "from": "\u4e09\u65f6\u8bf8\u4f5b", "hoverWidth": 3.1, "label": "\u51ed\u4f9d\u52a0\u6301", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u51ed\u4f9d\u4e09\u65f6\u8bf8\u4f5b\u5a01\u6444\u529b", "to": "\u83b2\u5e08", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u7f57\u5239", "evidence_target": "\u85cf\u5730", "font": {"size": 0}, "from": "\u7f57\u5239", "hoverWidth": 3.3, "label": "\u4fb5\u6270", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u5982\u6b64\u571f\u864e\u7f57\u5239\u4fb5\u85cf\u5730", "to": "\u85cf\u5730", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u516d\u6708\u5341\u65e5", "evidence_target": "\u83b2\u5e08", "font": {"size": 0}, "from": "\u516d\u6708\u5341\u65e5", "hoverWidth": 3.3, "label": "\u83b2\u5e08\u4e8e\u516d\u6708\u5341\u65e5\u5199\u5bc4\u8bed", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u83b2\u5e08\u571f\u864e\u5e74\u516d\u6708\u5341\u65e5", "to": "\u83b2\u5e08", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u6212\u5f8b", "evidence_target": "\u5a01\u4eea", "font": {"size": 0}, "from": "\u6212\u5f8b", "hoverWidth": 3.1, "label": "\u9075\u5b88", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u81ea\u5f53\u4e25\u5b88\u6212\u5f8b\u8bf8\u5a01\u4eea", "to": "\u5a01\u4eea", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u51fa\u5bb6\u4f17", "evidence_target": "\u6212\u6761", "font": {"size": 0}, "from": "\u51fa\u5bb6\u4f17", "hoverWidth": 2.7, "label": "\u8fdd\u53cd", "origin": "extracted", "selectionWidth": 3.2, "source_block": "", "title": "\u4e25\u5b88\u6211\u7b49\u6212\u6761\u53ca\u5a01\u4eea", "to": "\u6212\u6761", "weight": 0.6, "width": 2.8}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u4e0a\u5e08", "evidence_target": "\u6d3b\u4f5b", "font": {"size": 0}, "from": "\u4e0a\u5e08", "hoverWidth": 2.9, "label": "\u5e76\u5217\u63d0\u53ca\uff0c\u88ab\u6307\u6cbd\u540d\u9493\u8a89", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u7136\u800c\u6240\u8c13\u4e0a\u5e08\u53ca\u6d3b\u4f5b\u3000\u6cbd\u540d\u9493\u8a89\u904d\u4e16\u4f17\u751f\u6b3a", "to": "\u6d3b\u4f5b", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u672c\u5c0a", "evidence_target": "\u83b2\u5e08", "font": {"size": 0}, "from": "\u672c\u5c0a", "hoverWidth": 3.3, "label": "\u672c\u5c0a\u662f\u83b2\u5e08\uff0c\u9700\u5949\u884c\u5176\u8c15", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u5949\u884c\u83b2\u5e08\u672c\u5c0a\u8c15", "to": "\u83b2\u5e08", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u6d88\u707e\u529e\u6cd5", "evidence_target": "\u83b2\u5e08", "font": {"size": 0}, "from": "\u6d88\u707e\u529e\u6cd5", "hoverWidth": 3.3, "label": "\u83b2\u5e08\u9884\u8a00\u4fe1\u662f\u6d88\u707e\u529e\u6cd5", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u82e5\u590d\u6709\u4eba\u6df1\u5fc3\u5949\u6b64\u51fd\uff0c\u6284\u5199\u656c\u8bf5\u8f6c\u4e00\u904d\uff08\u6d88\u707e\u529e\u6cd5\uff09\u73b0\u4e16\u75c5\u5200\u5175\u7686\u5e73\u606f", "to": "\u83b2\u5e08", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u8111\u8840\u6813", "evidence_target": "\u4e0d\u670d\u4eba", "font": {"size": 0}, "from": "\u8111\u8840\u6813", "hoverWidth": 3.1, "label": "\u76f8\u5173", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "22.\u8111\u4f9b\u8840\u4e0d\u8db3\uff0c\u8111\u6897\u585e\uff0c\u8111\u8840\u6813 ---- \u4e0d\u670d\u4eba\uff0c\u786c\u901e\u5f3a\uff0c\u611a\u75f4\u3001\u4efb\u6027\u81ea\u79c1\u7684\u8fc7\u3002", "to": "\u4e0d\u670d\u4eba", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u8111\u8840\u6813", "evidence_target": "\u786c\u901e\u5f3a", "font": {"size": 0}, "from": "\u8111\u8840\u6813", "hoverWidth": 3.1, "label": "\u76f8\u5173", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "22.\u8111\u4f9b\u8840\u4e0d\u8db3\uff0c\u8111\u6897\u585e\uff0c\u8111\u8840\u6813 ---- \u4e0d\u670d\u4eba\uff0c\u786c\u901e\u5f3a\uff0c\u611a\u75f4\u3001\u4efb\u6027\u81ea\u79c1\u7684\u8fc7\u3002", "to": "\u786c\u901e\u5f3a", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u8111\u8840\u6813", "evidence_target": "\u611a\u75f4", "font": {"size": 0}, "from": "\u8111\u8840\u6813", "hoverWidth": 3.1, "label": "\u76f8\u5173", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "22.\u8111\u4f9b\u8840\u4e0d\u8db3\uff0c\u8111\u6897\u585e\uff0c\u8111\u8840\u6813 ---- \u4e0d\u670d\u4eba\uff0c\u786c\u901e\u5f3a\uff0c\u611a\u75f4\u3001\u4efb\u6027\u81ea\u79c1\u7684\u8fc7\u3002", "to": "\u611a\u75f4", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u8111\u8840\u6813", "evidence_target": "\u4efb\u6027\u81ea\u79c1", "font": {"size": 0}, "from": "\u8111\u8840\u6813", "hoverWidth": 3.1, "label": "\u76f8\u5173", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "22.\u8111\u4f9b\u8840\u4e0d\u8db3\uff0c\u8111\u6897\u585e\uff0c\u8111\u8840\u6813 ---- \u4e0d\u670d\u4eba\uff0c\u786c\u901e\u5f3a\uff0c\u611a\u75f4\u3001\u4efb\u6027\u81ea\u79c1\u7684\u8fc7\u3002", "to": "\u4efb\u6027\u81ea\u79c1", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u6bd7\u8036", "evidence_target": "\u6212\u6761", "font": {"size": 0}, "from": "\u6bd7\u8036", "hoverWidth": 2.7, "label": "\u5047\u4f5c\u6301\u5b88", "origin": "extracted", "selectionWidth": 3.2, "source_block": "", "title": "\u6b3a\u706d\u76f8\u7eed\u5047\u4f5c\u6301\u6bd7\u8036", "to": "\u6212\u6761", "weight": 0.6, "width": 2.8}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u5455\u6c14", "evidence_target": "\u80ba\u75c5", "font": {"size": 0}, "from": "\u5455\u6c14", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "50.\u80ba\u75c5 ----\u5fcc\u6068\u3001\u5455\u6c14\u3001\u5fe7\u601d\u3001\u60b2\u4f24\u3001\u5fe7\u6101\u70e6\u607c\u3001\u62c5\u5fc3\u3002\u76fc\u671b\u3001\u751f\u611a\u6c14\u3001\u4e8f\u5b5d\u9053\u7684\u8fc7\u3002", "to": "\u80ba\u75c5", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u8111\u4f9b\u8840\u4e0d\u8db3", "evidence_target": "\u4e0d\u670d\u4eba", "font": {"size": 0}, "from": "\u8111\u4f9b\u8840\u4e0d\u8db3", "hoverWidth": 3.1, "label": "\u76f8\u5173", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "22.\u8111\u4f9b\u8840\u4e0d\u8db3\uff0c\u8111\u6897\u585e\uff0c\u8111\u8840\u6813 ---- \u4e0d\u670d\u4eba\uff0c\u786c\u901e\u5f3a\uff0c\u611a\u75f4\u3001\u4efb\u6027\u81ea\u79c1\u7684\u8fc7\u3002", "to": "\u4e0d\u670d\u4eba", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u8111\u4f9b\u8840\u4e0d\u8db3", "evidence_target": "\u786c\u901e\u5f3a", "font": {"size": 0}, "from": "\u8111\u4f9b\u8840\u4e0d\u8db3", "hoverWidth": 3.1, "label": "\u76f8\u5173", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "22.\u8111\u4f9b\u8840\u4e0d\u8db3\uff0c\u8111\u6897\u585e\uff0c\u8111\u8840\u6813 ---- \u4e0d\u670d\u4eba\uff0c\u786c\u901e\u5f3a\uff0c\u611a\u75f4\u3001\u4efb\u6027\u81ea\u79c1\u7684\u8fc7\u3002", "to": "\u786c\u901e\u5f3a", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u8111\u4f9b\u8840\u4e0d\u8db3", "evidence_target": "\u611a\u75f4", "font": {"size": 0}, "from": "\u8111\u4f9b\u8840\u4e0d\u8db3", "hoverWidth": 3.1, "label": "\u76f8\u5173", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "22.\u8111\u4f9b\u8840\u4e0d\u8db3\uff0c\u8111\u6897\u585e\uff0c\u8111\u8840\u6813 ---- \u4e0d\u670d\u4eba\uff0c\u786c\u901e\u5f3a\uff0c\u611a\u75f4\u3001\u4efb\u6027\u81ea\u79c1\u7684\u8fc7\u3002", "to": "\u611a\u75f4", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u8111\u4f9b\u8840\u4e0d\u8db3", "evidence_target": "\u4efb\u6027\u81ea\u79c1", "font": {"size": 0}, "from": "\u8111\u4f9b\u8840\u4e0d\u8db3", "hoverWidth": 3.1, "label": "\u76f8\u5173", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "22.\u8111\u4f9b\u8840\u4e0d\u8db3\uff0c\u8111\u6897\u585e\uff0c\u8111\u8840\u6813 ---- \u4e0d\u670d\u4eba\uff0c\u786c\u901e\u5f3a\uff0c\u611a\u75f4\u3001\u4efb\u6027\u81ea\u79c1\u7684\u8fc7\u3002", "to": "\u4efb\u6027\u81ea\u79c1", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u611a\u75f4", "evidence_target": "\u8111\u4f9b\u8840\u4e0d\u8db3", "font": {"size": 0}, "from": "\u611a\u75f4", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "22.\u8111\u4f9b\u8840\u4e0d\u8db3\uff0c\u8111\u6897\u585e\uff0c\u8111\u8840\u6813 ---- \u4e0d\u670d\u4eba\uff0c\u786c\u901e\u5f3a\uff0c\u611a\u75f4\u3001\u4efb\u6027\u81ea\u79c1\u7684\u8fc7\u3002", "to": "\u8111\u4f9b\u8840\u4e0d\u8db3", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u611a\u75f4", "evidence_target": "\u8111\u6897\u585e", "font": {"size": 0}, "from": "\u611a\u75f4", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "22.\u8111\u4f9b\u8840\u4e0d\u8db3\uff0c\u8111\u6897\u585e\uff0c\u8111\u8840\u6813 ---- \u4e0d\u670d\u4eba\uff0c\u786c\u901e\u5f3a\uff0c\u611a\u75f4\u3001\u4efb\u6027\u81ea\u79c1\u7684\u8fc7\u3002", "to": "\u8111\u6897\u585e", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u611a\u75f4", "evidence_target": "\u8111\u8840\u6813", "font": {"size": 0}, "from": "\u611a\u75f4", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "22.\u8111\u4f9b\u8840\u4e0d\u8db3\uff0c\u8111\u6897\u585e\uff0c\u8111\u8840\u6813 ---- \u4e0d\u670d\u4eba\uff0c\u786c\u901e\u5f3a\uff0c\u611a\u75f4\u3001\u4efb\u6027\u81ea\u79c1\u7684\u8fc7\u3002", "to": "\u8111\u8840\u6813", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u4e66\u5199\u8bfb\u8bf5", "evidence_target": "\u83b2\u5e08", "font": {"size": 0}, "from": "\u4e66\u5199\u8bfb\u8bf5", "hoverWidth": 3.3, "label": "\u4e66\u5199\u8bfb\u8bf5\u83b2\u5e08\u5bc4\u8bed\u53ef\u6d88\u707e", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u82e5\u80fd\u4e66\u5199\u8bfb\u8bf5\u4e00\u904d\u95f4\uff0c\u6b64\u751f\u9965\u75db\u5200\u5175\u707e\u53ef\u514d", "to": "\u83b2\u5e08", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u4efb\u6027\u81ea\u79c1", "evidence_target": "\u8111\u4f9b\u8840\u4e0d\u8db3", "font": {"size": 0}, "from": "\u4efb\u6027\u81ea\u79c1", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "22.\u8111\u4f9b\u8840\u4e0d\u8db3\uff0c\u8111\u6897\u585e\uff0c\u8111\u8840\u6813 ---- \u4e0d\u670d\u4eba\uff0c\u786c\u901e\u5f3a\uff0c\u611a\u75f4\u3001\u4efb\u6027\u81ea\u79c1\u7684\u8fc7\u3002", "to": "\u8111\u4f9b\u8840\u4e0d\u8db3", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u4efb\u6027\u81ea\u79c1", "evidence_target": "\u8111\u6897\u585e", "font": {"size": 0}, "from": "\u4efb\u6027\u81ea\u79c1", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "22.\u8111\u4f9b\u8840\u4e0d\u8db3\uff0c\u8111\u6897\u585e\uff0c\u8111\u8840\u6813 ---- \u4e0d\u670d\u4eba\uff0c\u786c\u901e\u5f3a\uff0c\u611a\u75f4\u3001\u4efb\u6027\u81ea\u79c1\u7684\u8fc7\u3002", "to": "\u8111\u6897\u585e", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u4efb\u6027\u81ea\u79c1", "evidence_target": "\u8111\u8840\u6813", "font": {"size": 0}, "from": "\u4efb\u6027\u81ea\u79c1", "hoverWidth": 3.1, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "22.\u8111\u4f9b\u8840\u4e0d\u8db3\uff0c\u8111\u6897\u585e\uff0c\u8111\u8840\u6813 ---- \u4e0d\u670d\u4eba\uff0c\u786c\u901e\u5f3a\uff0c\u611a\u75f4\u3001\u4efb\u6027\u81ea\u79c1\u7684\u8fc7\u3002", "to": "\u8111\u8840\u6813", "weight": 0.8, "width": 3.4000000000000004}]);
+
+                  nodeColors = {};
+                  allNodes = nodes.get({ returnType: "Object" });
+                  for (nodeId in allNodes) {
+                    nodeColors[nodeId] = allNodes[nodeId].color;
+                  }
+                  allEdges = edges.get({ returnType: "Object" });
+                  // adding nodes and edges to the graph
+                  data = {nodes: nodes, edges: edges};
+
+                  var options = {"nodes": {"shape": "dot", "scaling": {"min": 10, "max": 40, "label": {"enabled": true, "min": 14, "max": 24}}, "font": {"size": 14, "face": "MicrosoftYaHei,SimHei,sans-serif", "color": "#1a1a1a"}, "borderWidth": 2, "borderWidthSelected": 4, "shadow": {"enabled": false, "size": 10, "x": 3, "y": 3}}, "edges": {"width": 1, "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "smooth": false, "selectionWidth": 3, "hoverWidth": 2, "arrows": {"to": {"enabled": true, "scaleFactor": 0.5}}, "font": {"size": 0, "face": "MicrosoftYaHei", "color": "#666666", "align": "middle", "background": "rgba(255,255,255,0.9)"}}, "interaction": {"hover": true, "tooltipDelay": 100, "hideEdgesOnDrag": true, "hideNodesOnDrag": false, "dragNodes": true, "dragView": true, "zoomView": true, "multiselect": true, "navigationButtons": false, "keyboard": true}, "layout": {"improvedLayout": false}, "physics": {"enabled": false, "stabilization": {"enabled": false}}};
+
+
+
+
+
+
+                  network = new vis.Network(container, data, options);
+
+
+
+
+
+
+
+
+
+
+                  return network;
+
+              }
+              drawGraph();
+        </script>
+
+            <div class="community-back-bar">
+                <a href="改命记实录(道之光).html">← 返回社区列表</a>
+                <span>莲师（81 个节点）</span>
+            </div>
+
+<style>
+  div.vis-configuration-wrapper,
+  div.vis-network div.vis-manipulation,
+  div.vis-network div.vis-edit-mode-btn,
+  div.vis-network div.vis-close-btn { display: none !important; }
+
+  .graph-floating-panel {
+    position: absolute; z-index: 2000; box-sizing: border-box;
+    border: 1px solid #e5e7eb; border-radius: 10px;
+    background: rgba(255,255,255,.96); box-shadow: 0 5px 20px rgba(15,23,42,.12);
+    color: #334155; backdrop-filter: blur(10px); overflow: hidden;
+  }
+  .graph-panel-header {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    min-height: 34px; padding: 0 8px 0 10px; font-size: 12px; font-weight: 700;
+    border-bottom: 1px solid #eef2f7; cursor: default;
+  }
+  .graph-panel-collapse {
+    width: 24px; height: 24px; padding: 0; border: 0; border-radius: 5px;
+    background: transparent; color: #64748b; cursor: pointer; font-size: 16px;
+  }
+  .graph-panel-collapse:hover { background: #f1f5f9; color: #2563eb; }
+  .graph-panel-body { padding: 8px; }
+  .graph-floating-panel.is-collapsed { width: auto !important; min-width: 112px; }
+  .graph-floating-panel.is-collapsed .graph-panel-body { display: none; }
+  .graph-floating-panel.is-collapsed .graph-panel-header { border-bottom: 0; }
+
+  .search-panel { top: 8px; left: 8px; width: 268px; }
+  .control-panel { top: 8px; right: 8px; width: 250px; }
+  .filter-panel { bottom: 8px; left: 8px; width: 268px; }
+  .community-directory { right: 8px; bottom: 8px; width: 310px; max-height: min(58vh, 440px); }
+  .community-directory .graph-panel-body { overflow: hidden; }
+
+  .graph-text-input, .graph-select {
+    box-sizing: border-box; width: 100%; height: 30px; margin-bottom: 6px;
+    padding: 4px 8px; border: 1px solid #dbe2ea; border-radius: 6px;
+    outline: none; background: #fff; color: #334155; font-size: 11px;
+  }
+  .graph-text-input:focus, .graph-select:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px #dbeafe; }
+  .search-results {
+    display: block; max-height: min(38vh, 270px); overflow-y: auto;
+    border: 1px solid #eef2f7; border-radius: 6px; background: #fff;
+  }
+  .search-result-item {
+    display: flex; align-items: center; gap: 6px; padding: 6px 7px;
+    border-bottom: 1px solid #f1f5f9; cursor: pointer; font-size: 10px;
+  }
+  .search-result-item:last-child { border-bottom: 0; }
+  .search-result-item:hover { background: #eff6ff; color: #1d4ed8; }
+  .result-main { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .result-meta { color: #94a3b8; flex: none; }
+  .type-badge {
+    max-width: 84px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    padding: 2px 5px; border-radius: 10px; background: #dbeafe; color: #1d4ed8; font-size: 9px;
+  }
+  .type-badge.edge { background: #f3e8ff; color: #7e22ce; }
+  .graph-empty-state { padding: 12px 8px; color: #94a3b8; text-align: center; font-size: 11px; }
+  .status-bar { margin-top: 6px; color: #94a3b8; font-size: 10px; }
+  .status-bar strong { color: #2563eb; }
+
+  .control-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+  .control-btn, .small-action-btn {
+    min-height: 28px; padding: 4px 6px; border: 1px solid #dbe2ea; border-radius: 6px;
+    background: #f8fafc; color: #475569; cursor: pointer; font-size: 10px;
+  }
+  .control-btn:hover, .small-action-btn:hover { border-color: #3b82f6; color: #2563eb; }
+  .control-btn.active { border-color: #2563eb; background: #2563eb; color: #fff; }
+
+  .filter-label { display: flex; justify-content: space-between; margin: 2px 0 4px; color: #64748b; font-size: 10px; }
+  .filter-slider { width: 100%; accent-color: #2563eb; }
+  .filter-section + .filter-section { margin-top: 9px; padding-top: 8px; border-top: 1px solid #eef2f7; }
+  .entity-type-actions { display: flex; gap: 5px; margin-bottom: 5px; }
+  .entity-type-options { max-height: 142px; overflow-y: auto; border: 1px solid #eef2f7; border-radius: 6px; }
+  .entity-type-option {
+    display: flex; align-items: center; gap: 6px; padding: 5px 7px;
+    border-bottom: 1px solid #f5f7fa; cursor: pointer; color: #475569; font-size: 10px;
+  }
+  .entity-type-option:last-child { border-bottom: 0; }
+  .entity-type-option:hover { background: #f8fafc; }
+  .entity-type-option input { accent-color: #2563eb; }
+  .entity-type-count { margin-left: auto; color: #94a3b8; }
+
+  .community-list { max-height: min(39vh, 300px); overflow-y: auto; }
+  .community-list-item {
+    display: block; padding: 8px; border: 1px solid #eef2f7; border-radius: 7px;
+    margin-bottom: 6px; color: #334155;
+  }
+  .community-list-item:hover { border-color: #93c5fd; background: #eff6ff; }
+  .community-list-item.search-match { border-color: #60a5fa; background: #eff6ff; }
+  .community-item-link { display: block; color: #334155; text-decoration: none; }
+  .community-item-name { display: block; font-size: 11px; font-weight: 700; }
+  .community-item-meta {
+    display: block; overflow: hidden; margin-top: 3px; color: #64748b;
+    font-size: 9px; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .community-source-link {
+    margin-top: 6px; padding: 3px 6px; border: 1px solid #bfdbfe; border-radius: 5px;
+    background: #eff6ff; color: #2563eb; cursor: pointer; font-size: 9px;
+  }
+  .community-source-link:hover { background: #dbeafe; border-color: #60a5fa; }
+  .community-back-bar {
+    position: fixed; z-index: 1900; right: 10px; bottom: 10px; display: flex; gap: 10px;
+    padding: 7px 10px; border: 1px solid #e5e7eb; border-radius: 18px;
+    background: rgba(255,255,255,.94); box-shadow: 0 3px 12px rgba(15,23,42,.12);
+    color: #64748b; font-size: 10px;
+  }
+  .community-back-bar a { color: #2563eb; text-decoration: none; }
+
+  .immersive-toggle {
+    position: absolute; z-index: 2100; top: 8px; left: 50%; transform: translateX(-50%);
+    height: 30px; padding: 0 11px; border: 1px solid #dbe2ea; border-radius: 16px;
+    background: rgba(255,255,255,.92); color: #475569; cursor: pointer; font-size: 10px;
+    box-shadow: 0 2px 8px rgba(15,23,42,.08);
+  }
+  .immersive-toggle:hover { border-color: #3b82f6; color: #2563eb; }
+  #edge-tooltip, #node-tooltip {
+    position: fixed; z-index: 10000; display: none; max-width: 310px;
+    padding: 8px 10px; border: 1px solid #e2e8f0; border-radius: 7px;
+    background: rgba(255,255,255,.98); color: #334155; font-size: 10px;
+    box-shadow: 0 5px 18px rgba(15,23,42,.16);
+  }
+  #edge-tooltip { pointer-events: none; }
+  #node-tooltip { max-height: 260px; overflow-y: auto; pointer-events: auto; }
+  #node-tooltip .edge-item { padding: 4px 0; border-bottom: 1px dashed #e5e7eb; }
+  #node-tooltip .edge-label { color: #2563eb; font-weight: 600; }
+  #node-tooltip .edge-meta { color: #94a3b8; font-size: 9px; }
+  .graph-context-menu {
+    position: fixed; z-index: 12000; display: none; min-width: 150px;
+    padding: 4px; border: 1px solid #dbe2ea; border-radius: 8px;
+    background: rgba(255,255,255,.98); box-shadow: 0 8px 24px rgba(15,23,42,.18);
+  }
+  .graph-context-menu button {
+    display: block; width: 100%; padding: 7px 9px; border: 0; border-radius: 5px;
+    background: transparent; color: #334155; text-align: left; cursor: pointer; font-size: 11px;
+  }
+  .graph-context-menu button:hover { background: #eff6ff; color: #1d4ed8; }
+  .graph-context-menu button.danger:hover { background: #fef2f2; color: #dc2626; }
+  .graph-editor-dialog-mask {
+    position: fixed; z-index: 13000; inset: 0; display: flex; align-items: center; justify-content: center;
+    padding: 16px; background: rgba(15,23,42,.42);
+  }
+  .graph-editor-dialog {
+    width: min(560px, calc(100vw - 32px)); max-height: min(88vh, 720px); overflow-y: auto;
+    box-sizing: border-box; padding: 16px; border-radius: 10px; background: #fff;
+    color: #334155; box-shadow: 0 18px 50px rgba(15,23,42,.3); font-size: 12px;
+  }
+  .graph-editor-dialog h3 { margin: 0 0 14px; font-size: 15px; color: #0f172a; }
+  .graph-editor-field { margin-bottom: 10px; }
+  .graph-editor-field label { display: block; margin-bottom: 4px; color: #64748b; font-weight: 600; }
+  .graph-editor-field input, .graph-editor-field textarea {
+    box-sizing: border-box; width: 100%; padding: 7px 8px; border: 1px solid #dbe2ea;
+    border-radius: 6px; outline: none; color: #334155; background: #fff; font: inherit;
+  }
+  .graph-editor-field textarea { min-height: 96px; resize: vertical; }
+  .graph-editor-field input:focus, .graph-editor-field textarea:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px #dbeafe; }
+  .graph-editor-field input[readonly], .graph-editor-field textarea[readonly] { background: #f8fafc; }
+  .graph-editor-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+  .graph-editor-actions button { padding: 7px 13px; border: 1px solid #dbe2ea; border-radius: 6px; background: #f8fafc; color: #475569; cursor: pointer; }
+  .graph-editor-actions button.primary { border-color: #2563eb; background: #2563eb; color: #fff; }
+  .graph-editor-actions button:hover { filter: brightness(.97); }
+
+  @media (max-width: 720px) {
+    .search-panel, .filter-panel { width: 230px; }
+    .control-panel { width: 220px; }
+    .community-directory { width: min(280px, calc(100vw - 16px)); }
+  }
+</style>
+<script>
+(function () {
+  const GRAPH_EDITOR_VERSION = 3;
+  const NODE_COUNT = 81;
+  const EDGE_COUNT = 143;
+  const GRAPH_NAME = "改命记实录(道之光)";
+  const GRAPH_STATIC_LAYOUT_VERSION = 2;
+  let searchTimer = null;
+  let minimumWeight = 0.5;
+  let focusKeepNodes = null;
+  let hubsCollapsed = false;
+  let immersive = false;
+  const activeEntityTypes = new Set();
+  const collapsedEdgeIds = new Set();
+  const edgeStates = {};
+  const edgeOriginalWidths = {};
+  const nodeDegrees = {};
+  const hubNodes = new Set();
+  let editorRevision = 0;
+  let contextTarget = { type: 'canvas', id: null };
+  let contextMenu = null;
+  const edgeApiIds = new Map();
+  const edgeDetails = new Map();
+  const nodeDetails = new Map();
+  let editorMetadataReady = Promise.resolve();
+
+  function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>'"]/g, char => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+    })[char]);
+  }
+
+  function entityTypeOf(node) {
+    return String(node.entityType || node.group || '未分类');
+  }
+
+  function normalizeCommunitySearchText(value) {
+    return String(value || '').normalize('NFKC').toLocaleLowerCase('zh-CN')
+      .replace(/[\s.,，。！？!?、:：;；'"“”‘’()[\]{}<>《》【】_+*\/\\|@#$%^&=~`·-]+/g, '');
+  }
+
+  function fuzzyCommunityNameScore(name, query) {
+    const normalizedName = normalizeCommunitySearchText(name);
+    const normalizedQuery = normalizeCommunitySearchText(query);
+    if (!normalizedQuery) return 0;
+    if (normalizedName === normalizedQuery) return 1000;
+    if (normalizedName.startsWith(normalizedQuery)) return 900 - normalizedName.length;
+    const substringIndex = normalizedName.indexOf(normalizedQuery);
+    if (substringIndex >= 0) return 800 - substringIndex;
+    let queryIndex = 0;
+    let firstMatch = -1;
+    let lastMatch = -1;
+    let nameIndex = 0;
+    for (const character of normalizedName) {
+      if (character === normalizedQuery[queryIndex]) {
+        if (firstMatch < 0) firstMatch = nameIndex;
+        lastMatch = nameIndex;
+        queryIndex += 1;
+      }
+      if (queryIndex === normalizedQuery.length) {
+        return 600 - (lastMatch - firstMatch) - firstMatch;
+      }
+      nameIndex += 1;
+    }
+    return -1;
+  }
+
+  function communitySearchRank(item, query) {
+    const representative = item.dataset.representativeNode || item.dataset.name || '';
+    const communityName = item.dataset.communityName || '';
+    let memberNames = [];
+    try {
+      memberNames = JSON.parse(item.dataset.memberNames || '[]');
+    } catch (error) {
+      console.warn('社区节点名列表格式无效:', error);
+    }
+    const primaryScore = Math.max(
+      fuzzyCommunityNameScore(representative, query),
+      fuzzyCommunityNameScore(communityName, query)
+    );
+    const memberScore = memberNames.reduce((best, name) =>
+      Math.max(best, fuzzyCommunityNameScore(name, query)), -1);
+    if (primaryScore >= 0) return 2000 + primaryScore;
+    if (memberScore >= 0) return 1000 + memberScore;
+    return -1;
+  }
+
+  function initializeGraphMetadata() {
+    network.body.data.nodes.get().forEach(node => {
+      nodeDegrees[node.id] = network.getConnectedNodes(node.id).length;
+    });
+    const degrees = Object.values(nodeDegrees).sort((a, b) => b - a);
+    const threshold = degrees[Math.floor(degrees.length * 0.2)] || 0;
+    Object.entries(nodeDegrees).forEach(([id, degree]) => {
+      if (degree >= threshold && degree > 3) hubNodes.add(id);
+    });
+    network.body.data.edges.get().forEach(edge => {
+      edgeStates[edge.id] = { clicked: false, labelVisible: false };
+      edgeOriginalWidths[edge.id] = edge.width || 1;
+    });
+  }
+
+  function moveLegacyIsolatedNodesOutside() {
+    const nodes = network.body.data.nodes.get();
+    const isolated = nodes.filter(node => network.getConnectedNodes(node.id).length === 0);
+    const connected = nodes.filter(node => network.getConnectedNodes(node.id).length > 0);
+    if (!isolated.length) return;
+    // A graph can consist entirely of isolated nodes. Use all current
+    // positions only to choose a stable center, then place every node on rings.
+    const referenceNodes = connected.length ? connected : nodes;
+    const connectedPositions = network.getPositions(referenceNodes.map(node => node.id));
+    const values = Object.values(connectedPositions).filter(position =>
+      Number.isFinite(position?.x) && Number.isFinite(position?.y)
+    );
+    const centerX = values.length
+      ? values.reduce((sum, position) => sum + position.x, 0) / values.length
+      : 0;
+    const centerY = values.length
+      ? values.reduce((sum, position) => sum + position.y, 0) / values.length
+      : 0;
+    const connectedRadius = connected.length && values.length
+      ? Math.max(...values.map(position =>
+        Math.hypot(position.x - centerX, position.y - centerY)
+      ))
+      : 0;
+    const ringSpacing = 180;
+    const radius = Math.max(connectedRadius + 260, 360);
+    const updates = [];
+    let offset = 0;
+    let ringIndex = 0;
+    while (offset < isolated.length) {
+      const ringRadius = radius + ringIndex * ringSpacing;
+      const capacity = Math.max(8, Math.floor(2 * Math.PI * ringRadius / ringSpacing));
+      const ringNodes = isolated.slice(offset, offset + capacity);
+      ringNodes.forEach((node, index) => {
+        const angle = 2 * Math.PI * index / ringNodes.length - Math.PI / 2;
+        updates.push({
+          id: node.id,
+          x: centerX + ringRadius * Math.cos(angle),
+          y: centerY + ringRadius * Math.sin(angle)
+        });
+      });
+      offset += ringNodes.length;
+      ringIndex += 1;
+    }
+    network.body.data.nodes.update(updates);
+  }
+
+  function prepareLegacyStaticForceLayout(nodeCount) {
+    const graphContainer = document.getElementById('mynetwork');
+    if (!graphContainer) return false;
+    // Keep degree-zero nodes out of the hidden ForceAtlas2 run. They are
+    // positioned after the related graph has stabilized, on the outer rings.
+    const isolatedNodes = network.body.data.nodes.get().filter(node =>
+      network.getConnectedNodes(node.id).length === 0
+    );
+    if (isolatedNodes.length) {
+      network.body.data.nodes.update(isolatedNodes.map(node => ({
+        id: node.id,
+        physics: false
+      })));
+    }
+    graphContainer.style.visibility = 'hidden';
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      moveLegacyIsolatedNodesOutside();
+      network.setOptions({ physics: { enabled: false } });
+      graphContainer.style.visibility = 'visible';
+      updateVisibleStatus(nodeCount, network.body.data.edges.get().length);
+      network.fit({ animation: false });
+    };
+    network.once('stabilized', finish);
+    network.setOptions({
+      physics: {
+        enabled: true,
+        solver: 'forceAtlas2Based',
+        forceAtlas2Based: {
+          gravitationalConstant: -80,
+          centralGravity: 0.01,
+          springLength: 200,
+          springConstant: 0.08,
+          damping: 0.4,
+          avoidOverlap: 1.0
+        },
+        stabilization: {
+          enabled: true,
+          iterations: nodeCount > 500 ? 50 : 80,
+          updateInterval: 25,
+          fit: true
+        }
+      },
+      layout: { improvedLayout: true }
+    });
+    network.stabilize(nodeCount > 500 ? 50 : 80);
+    window.setTimeout(finish, 5000);
+    return true;
+  }
+
+  function applyLargeGraphPerformance() {
+    const nodes = network.body?.data?.nodes?.get?.() || [];
+    const edges = network.body?.data?.edges?.get?.() || [];
+    const hasIsolatedNodes = nodes.some(node => network.getConnectedNodes(node.id).length === 0);
+    if (nodes.length <= 50 && !hasIsolatedNodes) return false;
+
+    // Newly generated pages already contain server-side ForceAtlas2 coordinates.
+    // Legacy pages are stabilized while hidden, then physics is disabled before
+    // they are shown, so users do not see the original continuous bouncing.
+    network.setOptions({
+      physics: { enabled: false, stabilization: { enabled: false } },
+      layout: { improvedLayout: false },
+      interaction: {
+        dragNodes: true, dragView: true, zoomView: true,
+        hideEdgesOnDrag: true
+      }
+    });
+    const hasCoordinates = nodes.length > 0 && nodes.every(node =>
+      Number.isFinite(Number(node.x)) && Number.isFinite(Number(node.y))
+    );
+    if (GRAPH_STATIC_LAYOUT_VERSION < 2 || !hasCoordinates) {
+      prepareLegacyStaticForceLayout(nodes.length);
+    }
+    updateVisibleStatus(nodes.length, edges.length);
+    network.fit({ animation: false });
+    return true;
+  }
+
+  function nodePassesFilters(node) {
+    if (activeEntityTypes.size && !activeEntityTypes.has(entityTypeOf(node))) return false;
+    if (focusKeepNodes && !focusKeepNodes.has(node.id)) return false;
+    return true;
+  }
+
+  function applyVisibilityFilters(fitGraph = false) {
+    const visibleNodeIds = new Set();
+    const nodeUpdates = network.body.data.nodes.get().map(node => {
+      const visible = nodePassesFilters(node);
+      if (visible) visibleNodeIds.add(node.id);
+      return { ...node, hidden: !visible };
+    });
+    network.body.data.nodes.update(nodeUpdates);
+
+    const edgeUpdates = network.body.data.edges.get().map(edge => ({
+      ...edge,
+      hidden: !visibleNodeIds.has(edge.from)
+        || !visibleNodeIds.has(edge.to)
+        || Number(edge.weight || 0.5) < minimumWeight
+        || collapsedEdgeIds.has(edge.id)
+    }));
+    network.body.data.edges.update(edgeUpdates);
+    updateVisibleStatus(visibleNodeIds.size, edgeUpdates.filter(edge => !edge.hidden).length);
+    if (fitGraph && visibleNodeIds.size) network.fit({ animation: { duration: 350 } });
+  }
+
+  function updateVisibleStatus(nodes, edges) {
+    const status = document.getElementById('visibleGraphStatus');
+    if (status) status.innerHTML = `<strong>${nodes}</strong> 节点 · <strong>${edges}</strong> 关系`;
+  }
+
+  function createPanel(className, title, bodyHtml) {
+    const panel = document.createElement('section');
+    panel.className = `graph-floating-panel ${className}`;
+    panel.innerHTML = `
+      <div class="graph-panel-header">
+        <span>${title}</span>
+        <button class="graph-panel-collapse" type="button" aria-label="收起面板">−</button>
+      </div>
+      <div class="graph-panel-body">${bodyHtml}</div>`;
+    return panel;
+  }
+
+  function bindPanelCollapse(panel) {
+    const button = panel.querySelector('.graph-panel-collapse');
+    if (!button) return;
+    button.addEventListener('click', () => {
+      const collapsed = panel.classList.toggle('is-collapsed');
+      button.textContent = collapsed ? '+' : '−';
+      button.setAttribute('aria-label', collapsed ? '展开面板' : '收起面板');
+    });
+  }
+
+  function renderEntityTypeOptions(container) {
+    const counts = new Map();
+    network.body.data.nodes.get().forEach(node => {
+      const type = entityTypeOf(node);
+      counts.set(type, (counts.get(type) || 0) + 1);
+    });
+    container.innerHTML = [...counts.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0], 'zh-CN'))
+      .map(([type, count]) => `
+        <label class="entity-type-option">
+          <input type="checkbox" value="${escapeHtml(type)}">
+          <span title="${escapeHtml(type)}">${escapeHtml(type)}</span>
+          <span class="entity-type-count">${count}</span>
+        </label>`).join('');
+    container.querySelectorAll('input[type="checkbox"]').forEach(input => {
+      input.addEventListener('change', () => {
+        if (input.checked) activeEntityTypes.add(input.value);
+        else activeEntityTypes.delete(input.value);
+        focusKeepNodes = null;
+        document.getElementById('focusModeBtn')?.classList.remove('active');
+        applyVisibilityFilters(true);
+        renderSearchResults();
+      });
+    });
+  }
+
+  function renderSearchResults() {
+    const input = document.getElementById('searchInput');
+    const container = document.getElementById('searchResults');
+    if (!input || !container) return;
+    const term = input.value.toLowerCase().trim();
+    const nodes = network.body.data.nodes.get()
+      .filter(node => !node.hidden)
+      .filter(node => !term || String(node.label || node.id).toLowerCase().includes(term))
+      .map(node => ({
+        kind: 'node', id: node.id, label: node.label || node.id,
+        type: entityTypeOf(node), extra: `${nodeDegrees[node.id] || 0} 连接`
+      }));
+    const edges = term ? network.body.data.edges.get()
+      .filter(edge => !edge.hidden && String(edge.label || '').toLowerCase().includes(term))
+      .map(edge => ({
+        kind: 'edge', id: edge.id, label: edge.label || '未命名关系',
+        type: '关系', extra: Number(edge.weight || .5).toFixed(2)
+      })) : [];
+    const results = [...nodes, ...edges].slice(0, 80);
+    container.innerHTML = results.length ? results.map(result => `
+      <div class="search-result-item" data-kind="${result.kind}" data-id="${escapeHtml(result.id)}">
+        <span class="type-badge ${result.kind === 'edge' ? 'edge' : ''}" title="${escapeHtml(result.type)}">${escapeHtml(result.type)}</span>
+        <span class="result-main" title="${escapeHtml(result.label)}">${escapeHtml(result.label)}</span>
+        <span class="result-meta">${escapeHtml(result.extra)}</span>
+      </div>`).join('') : '<div class="graph-empty-state">没有匹配的实体或关系</div>';
+    container.querySelectorAll('.search-result-item').forEach(item => {
+      item.addEventListener('click', () => {
+        const id = item.dataset.id;
+        if (item.dataset.kind === 'node') {
+          const node = network.body.data.nodes.get(id)
+            || network.body.data.nodes.get().find(candidate => String(candidate.id) === id);
+          if (!node) return;
+          network.selectNodes([node.id]);
+          network.focus(node.id, { scale: 1.45, animation: { duration: 350 } });
+          requestEvidence('node', node.id);
+        } else {
+          const edge = network.body.data.edges.get(id)
+            || network.body.data.edges.get().find(candidate => String(candidate.id) === id);
+          if (!edge) return;
+          network.selectEdges([edge.id]);
+          network.fit({ nodes: [edge.from, edge.to], animation: { duration: 350 } });
+          requestEvidence('edge', edge.id);
+        }
+      });
+    });
+  }
+
+  function bindCommunitySourceButton(button) {
+    if (!button || button.dataset.bound === '1') return;
+    button.dataset.bound = '1';
+    button.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      let sourceBlocks = [];
+      try {
+        sourceBlocks = JSON.parse(button.dataset.sourceBlocks || '[]');
+      } catch (error) {
+        console.warn('社区主节点出处文本块格式无效:', error);
+      }
+      window.parent?.postMessage({
+        type: 'knowledge-graph-evidence',
+        graphName: GRAPH_NAME,
+        kind: 'node',
+        id: button.dataset.nodeId || '',
+        sourceBlocks,
+        entityTerms: [button.dataset.nodeId || ''].filter(Boolean),
+        relationTerms: []
+      }, '*');
+    });
+  }
+
+  function refreshCommunityMetadata() {
+    const directory = document.getElementById('communityDirectory');
+    if (!directory || !nodeDetails.size) return;
+    const findNodeDetail = label => nodeDetails.get(String(label))
+      || [...nodeDetails.values()].find(node => String(node.name || node.id) === String(label));
+    const types = new Set();
+    directory.querySelectorAll('.community-list-item').forEach(item => {
+      const representative = item.dataset.representativeNode || item.dataset.name || '';
+      const detail = findNodeDetail(representative);
+      if (!detail) return;
+      const type = String(detail.entityType || '未分类');
+      types.add(type);
+      item.dataset.types = type;
+      const meta = item.querySelector('.community-item-meta');
+      if (meta) {
+        const count = (meta.textContent.match(/\d+/) || [''])[0];
+        meta.textContent = `${count ? `${count} 个节点 · ` : ''}主节点类型：${type}`;
+      }
+      let sourceButton = item.querySelector('.community-source-link');
+      if (!sourceButton) {
+        sourceButton = document.createElement('button');
+        sourceButton.type = 'button';
+        sourceButton.className = 'community-source-link';
+        sourceButton.textContent = '查看原文文本块';
+        item.appendChild(sourceButton);
+      }
+      sourceButton.dataset.nodeId = String(detail.id);
+      const detailSourceBlocks = Array.isArray(detail.source_blocks) ? detail.source_blocks : [];
+      if (detailSourceBlocks.length) {
+        sourceButton.dataset.sourceBlocks = JSON.stringify(detailSourceBlocks);
+      }
+      bindCommunitySourceButton(sourceButton);
+    });
+    const typeFilter = document.getElementById('communityTypeFilter');
+    if (typeFilter && types.size) {
+      typeFilter.innerHTML = '<option value="">全部实体类型</option>'
+        + [...types].sort((a, b) => a.localeCompare(b, 'zh-CN'))
+          .map(type => `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`).join('');
+    }
+    const communityNodes = network.body.data.nodes.get().map(node => {
+      const detail = findNodeDetail(node.label || node.id);
+      return detail ? {
+        ...node,
+        entityType: detail.entityType || '未分类',
+        group: detail.entityType || '未分类',
+        source_blocks: detail.source_blocks?.length ? detail.source_blocks : (node.source_blocks || [])
+      } : node;
+    });
+    network.body.data.nodes.update(communityNodes);
+    const typeOptions = document.getElementById('entityTypeOptions');
+    if (typeOptions) renderEntityTypeOptions(typeOptions);
+    applyVisibilityFilters();
+    renderSearchResults();
+  }
+
+  function setupCommunityDirectory() {
+    const directory = document.getElementById('communityDirectory');
+    if (!directory) return;
+    directory.querySelector('.graph-panel-collapse')?.addEventListener('click', event => {
+      const collapsed = directory.classList.toggle('is-collapsed');
+      event.currentTarget.textContent = collapsed ? '+' : '−';
+    });
+    const search = document.getElementById('communitySearchInput');
+    const typeFilter = document.getElementById('communityTypeFilter');
+    const list = document.getElementById('communityList');
+    const items = [...directory.querySelectorAll('.community-list-item')];
+    const originalOrder = new Map(items.map((item, index) => [item, index]));
+    const empty = document.getElementById('communityEmptyState');
+    directory.querySelectorAll('.community-source-link').forEach(bindCommunitySourceButton);
+    editorMetadataReady.then(refreshCommunityMetadata);
+    const apply = () => {
+      const term = (search?.value || '').toLowerCase().trim();
+      const type = typeFilter?.value || '';
+      const rankedItems = [];
+      items.forEach(item => {
+        const rank = term ? communitySearchRank(item, term) : 0;
+        const types = (item.dataset.types || '').split('|');
+        const matchesType = !type || types.includes(type);
+        item.hidden = !matchesType;
+        item.classList.toggle('search-match', Boolean(term) && rank >= 0 && matchesType);
+        rankedItems.push({ item, rank: matchesType ? rank : -1 });
+      });
+      rankedItems.sort((left, right) =>
+        right.rank - left.rank
+        || originalOrder.get(left.item) - originalOrder.get(right.item));
+      rankedItems.forEach(({ item }) => list?.appendChild(item));
+      const matchedCount = term
+        ? rankedItems.filter(({ item, rank }) => !item.hidden && rank >= 0).length
+        : rankedItems.filter(({ item }) => !item.hidden).length;
+      if (empty) empty.hidden = matchedCount > 0;
+    };
+    search?.addEventListener('input', apply);
+    typeFilter?.addEventListener('change', apply);
+  }
+
+  function editorApi(path, options = {}) {
+    return fetch(`/api${path}`, {
+      ...options,
+      headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }
+    }).then(async response => {
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || payload.error || '图谱操作失败');
+      return payload;
+    });
+  }
+
+  function edgeSignature(edge) {
+    return [edge.from, edge.to, edge.label || '', edge.title || ''].join('|');
+  }
+
+  function syncEditorRevision() {
+    if (!GRAPH_NAME) return Promise.resolve();
+    return editorApi(`/graph-data/${encodeURIComponent(GRAPH_NAME)}`)
+      .then(payload => {
+        editorRevision = Number(payload.revision || 0);
+        nodeDetails.clear();
+        edgeApiIds.clear();
+        (payload.nodes || []).forEach(node => nodeDetails.set(String(node.id), node));
+        edgeDetails.clear();
+        (payload.links || []).forEach(link => edgeDetails.set(String(link.id), link));
+        const apiBySignature = new Map(
+          (payload.links || []).map(link => [
+            [link.source, link.target, link.relation || '', link.context || ''].join('|'),
+            link.id
+          ])
+        );
+        network.body.data.edges.get().forEach(edge => {
+          const apiId = apiBySignature.get(edgeSignature(edge));
+          if (apiId) edgeApiIds.set(String(edge.id), apiId);
+        });
+      })
+      .catch(error => console.warn('图谱编辑接口暂不可用:', error.message));
+  }
+
+  function requestEvidence(kind, id) {
+    const requestedId = String(id ?? '');
+    if (!requestedId) return;
+    editorMetadataReady.then(() => {
+      let sourceBlocks = [];
+      let entityTerms = [];
+      let relationTerms = [];
+      if (kind === 'node') {
+        const detail = nodeDetails.get(requestedId);
+        const graphNode = network.body.data.nodes.get(id)
+          || network.body.data.nodes.get().find(candidate => String(candidate.id) === requestedId);
+        sourceBlocks = detail?.source_blocks?.length
+          ? detail.source_blocks
+          : (graphNode?.source_blocks || []);
+        entityTerms = [detail?.name || graphNode?.label || graphNode?.id || requestedId];
+      } else if (kind === 'edge') {
+        const edge = network.body.data.edges.get(id)
+          || network.body.data.edges.get().find(candidate => String(candidate.id) === requestedId);
+        const apiId = edgeApiIds.get(requestedId) || requestedId;
+        const detail = edgeDetails.get(String(apiId)) || {};
+        sourceBlocks = detail.evidence_blocks || [];
+        if (!sourceBlocks.length && detail.source_block) sourceBlocks = [detail.source_block];
+        if (edge && !sourceBlocks.length) {
+          const fallback = edgeDetails.get(String(edge.id));
+          sourceBlocks = fallback?.evidence_blocks || [];
+        }
+        if (edge && !sourceBlocks.length) {
+          sourceBlocks = edge.evidence_blocks || [];
+          if (!sourceBlocks.length && edge.source_block) sourceBlocks = [edge.source_block];
+        }
+        entityTerms = [
+          edge?.from, edge?.to, edge?.evidence_source, edge?.evidence_target
+        ].filter(Boolean);
+        entityTerms.push(detail.source, detail.target, detail.relation);
+        relationTerms = [edge?.label, detail.relation];
+      }
+      window.parent?.postMessage({
+        type: 'knowledge-graph-evidence',
+        graphName: GRAPH_NAME,
+        kind,
+        id: requestedId,
+        sourceBlocks,
+        entityTerms: [...new Set(entityTerms.map(value => String(value || '').trim()).filter(Boolean))],
+        relationTerms: [...new Set(relationTerms.map(value => String(value || '').trim()).filter(Boolean))]
+      }, '*');
+    });
+  }
+
+  function showNodeDialog(target) {
+    const node = network.body.data.nodes.get(target.id);
+    if (!node) return;
+    const detail = nodeDetails.get(String(node.id)) || {};
+    const detailSourceBlocks = Array.isArray(detail.source_blocks) ? detail.source_blocks : [];
+    const sourceBlocks = detailSourceBlocks.length ? detailSourceBlocks : (node.source_blocks || []);
+    const mask = document.createElement('div');
+    mask.className = 'graph-editor-dialog-mask';
+    mask.innerHTML = `
+      <section class="graph-editor-dialog" role="dialog" aria-modal="true">
+        <h3>节点详情</h3>
+        <div class="graph-editor-field"><label>节点名称</label><input value="${escapeHtml(node.label || node.id)}" readonly></div>
+        <div class="graph-editor-field"><label>节点类型</label><input value="${escapeHtml(entityTypeOf(node))}" readonly></div>
+        <div class="graph-editor-field"><label>连接数</label><input value="${escapeHtml(network.getConnectedNodes(node.id).length)}" readonly></div>
+        <div class="graph-editor-field"><label>出处文本块（只读）</label><textarea readonly>${escapeHtml(sourceBlocks.length ? sourceBlocks.join('\n') : '无可定位出处')}</textarea></div>
+        <div class="graph-editor-actions">
+          <button type="button" data-dialog-close>关闭</button>
+          <button type="button" class="primary" data-dialog-locate>原文查找</button>
+        </div>
+      </section>`;
+    document.body.appendChild(mask);
+    const close = () => mask.remove();
+    mask.addEventListener('click', event => {
+      if (event.target === mask || event.target.closest('[data-dialog-close]')) close();
+    });
+    mask.querySelector('[data-dialog-locate]').addEventListener('click', () => {
+      requestEvidence('node', target.id);
+      close();
+    });
+  }
+
+  function highlightGraphTarget(kind, id) {
+    const requestedId = String(id ?? '');
+    if (!requestedId) return;
+    editorMetadataReady.then(() => {
+      if (kind === 'node') {
+        const node = network.body.data.nodes.get(requestedId)
+          || network.body.data.nodes.get().find(item => String(item.id) === requestedId);
+        if (!node) return;
+        network.selectNodes([node.id]);
+        network.focus(node.id, { scale: 1.45, animation: { duration: 350 } });
+        requestEvidence('node', node.id);
+        return;
+      }
+      const edge = network.body.data.edges.get(requestedId)
+        || network.body.data.edges.get().find(item =>
+          String(item.id) === requestedId || String(edgeApiIds.get(String(item.id))) === requestedId
+        );
+      if (!edge) return;
+      network.selectEdges([edge.id]);
+      network.fit({ nodes: [edge.from, edge.to], animation: { duration: 350 } });
+      requestEvidence('edge', edge.id);
+    });
+  }
+
+  function showContextMenu(event, target) {
+    contextTarget = target;
+    if (!contextMenu) {
+      contextMenu = document.createElement('div');
+      contextMenu.className = 'graph-context-menu';
+      document.body.appendChild(contextMenu);
+      contextMenu.addEventListener('click', event => {
+        const action = event.target.closest('button')?.dataset.action;
+        if (!action) return;
+        hideContextMenu();
+        runGraphAction(action, contextTarget);
+      });
+    }
+    const nodeActions = `
+      <button data-action="view-node">查看节点</button>
+      <button data-action="edit-node">编辑节点</button>
+      <button data-action="add-edge">从此节点新增关系</button>
+      <button class="danger" data-action="delete-node">删除节点</button>`;
+    const edgeActions = `
+      <button data-action="view-edge">查看关系</button>
+      <button data-action="edit-edge">编辑关系</button>
+      <button class="danger" data-action="delete-edge">删除关系</button>`;
+    const canvasActions = '<button data-action="add-node">新增节点</button>';
+    contextMenu.innerHTML = `${target.type === 'node' ? nodeActions : target.type === 'edge' ? edgeActions : canvasActions}
+      <button data-action="history">历史记录与还原</button>`;
+    contextMenu.style.display = 'block';
+    contextMenu.style.left = `${Math.min(event.clientX, window.innerWidth - 170)}px`;
+    contextMenu.style.top = `${Math.min(event.clientY, window.innerHeight - 180)}px`;
+  }
+
+  function hideContextMenu() {
+    if (contextMenu) contextMenu.style.display = 'none';
+  }
+
+  function askText(label, value = '') {
+    const result = window.prompt(label, value);
+    return result === null ? null : result.trim();
+  }
+
+  function mutation(operation, payload = {}) {
+    if (!GRAPH_NAME) return Promise.reject(new Error('当前图谱页面缺少文件标识'));
+    return editorApi(`/graph-mutation/${encodeURIComponent(GRAPH_NAME)}`, {
+      method: 'POST',
+      body: JSON.stringify({ operation, revision: editorRevision, ...payload })
+    }).then(() => window.location.reload());
+  }
+
+  function selectedNode(target) {
+    return network.body.data.nodes.get(target.id);
+  }
+
+  function selectedEdge(target) {
+    return network.body.data.edges.get(target.id);
+  }
+
+  function editNode(target) {
+    const node = selectedNode(target);
+    if (!node) return;
+    const name = askText('节点名称：', node.label || node.id);
+    if (!name) return;
+    const entityType = askText('节点类型：', entityTypeOf(node));
+    if (!entityType) return;
+    mutation('update_node', { node_id: String(node.id), name, entity_type: entityType })
+      .catch(error => window.alert(error.message));
+  }
+
+  function addNode() {
+    const name = askText('新节点名称：');
+    if (!name) return;
+    const entityType = askText('节点类型：', '未知标签');
+    if (!entityType) return;
+    mutation('add_node', { name, entity_type: entityType })
+      .catch(error => window.alert(error.message));
+  }
+
+  function addEdge(target) {
+    const source = String(target.id);
+    const nodeNames = network.body.data.nodes.get().map(node => node.label || node.id).join('、');
+    const targetName = askText(`关系终点节点（已有节点：${nodeNames}）：`);
+    if (!targetName) return;
+    const relation = askText('关系名称：');
+    if (!relation) return;
+    const context = askText('关系说明：', relation) || relation;
+    mutation('add_edge', { source, target: targetName, relation, context, weight: 0.5 })
+      .catch(error => window.alert(error.message));
+  }
+
+  function edgeRecord(target) {
+    const edge = selectedEdge(target);
+    if (!edge) return null;
+    const edgeId = edgeApiIds.get(String(edge.id)) || edge.id;
+    const detail = edgeDetails.get(String(edgeId)) || {};
+    return {
+      ...edge,
+      ...detail,
+      editId: edgeId,
+      source: detail.source || edge.from,
+      target: detail.target || edge.to,
+      relation: detail.relation || edge.label || '',
+      evidence: detail.evidence || detail.context || edge.title || '',
+      sourceBlock: detail.source_block || edge.source_block || '无',
+      evidenceBlocks: Array.isArray(detail.evidence_blocks) && detail.evidence_blocks.length
+        ? detail.evidence_blocks
+        : (Array.isArray(edge.evidence_blocks) ? edge.evidence_blocks : []),
+      score: detail.score ?? detail.weight ?? edge.weight ?? 0.5,
+      origin: (detail.origin || edge.origin) === 'manual' ? '用户新增' : 'AI抽取'
+    };
+  }
+
+  function showEdgeDialog(target, readonly = false) {
+    const edge = edgeRecord(target);
+    if (!edge) return;
+    const mask = document.createElement('div');
+    mask.className = 'graph-editor-dialog-mask';
+    const disabled = readonly ? ' readonly' : '';
+    mask.innerHTML = `
+      <section class="graph-editor-dialog" role="dialog" aria-modal="true">
+        <h3>${readonly ? '关系详情' : '编辑关系'}</h3>
+        <div class="graph-editor-field"><label>起点节点</label><input id="edgeEditorSource" value="${escapeHtml(edge.source)}"${disabled}></div>
+        <div class="graph-editor-field"><label>终点节点</label><input id="edgeEditorTarget" value="${escapeHtml(edge.target)}"${disabled}></div>
+        <div class="graph-editor-field"><label>关系名称</label><input id="edgeEditorRelation" value="${escapeHtml(edge.relation)}"${disabled}></div>
+        <div class="graph-editor-field"><label>出处依据 / 关系说明</label><textarea id="edgeEditorEvidence"${disabled}>${escapeHtml(edge.evidence)}</textarea></div>
+        <div class="graph-editor-field"><label>出处文本块（只读）</label><textarea readonly>${escapeHtml(edge.evidenceBlocks.length
+          ? edge.evidenceBlocks.map(item => item.source_block || item).filter(Boolean).join('\n')
+          : edge.sourceBlock)}</textarea></div>
+        <div class="graph-editor-field"><label>得分 / 权重（0-1）</label><input id="edgeEditorScore" type="number" min="0" max="1" step="0.01" value="${escapeHtml(edge.score)}"${disabled}></div>
+        <div class="graph-editor-field"><label>关系来源</label><input value="${escapeHtml(edge.origin)}" readonly></div>
+        <div class="graph-editor-field"><label>关系 ID</label><input value="${escapeHtml(edge.editId)}" readonly></div>
+        <div class="graph-editor-actions">
+          <button type="button" data-dialog-close>关闭</button>
+          <button type="button" data-dialog-locate>原文查找</button>
+          ${readonly ? '' : '<button type="button" class="primary" data-dialog-save>保存修改</button>'}
+        </div>
+      </section>`;
+    document.body.appendChild(mask);
+    const close = () => mask.remove();
+    mask.addEventListener('click', event => {
+      if (event.target === mask || event.target.closest('[data-dialog-close]')) close();
+    });
+    mask.querySelector('[data-dialog-locate]').addEventListener('click', () => {
+      requestEvidence('edge', target.id);
+      close();
+    });
+    if (!readonly) {
+      mask.querySelector('[data-dialog-save]').addEventListener('click', () => {
+        const score = Number(mask.querySelector('#edgeEditorScore').value);
+        if (!Number.isFinite(score) || score < 0 || score > 1) return window.alert('得分必须在0到1之间');
+        mutation('update_edge', {
+          edge_id: edge.editId,
+          source: mask.querySelector('#edgeEditorSource').value.trim(),
+          target: mask.querySelector('#edgeEditorTarget').value.trim(),
+          relation: mask.querySelector('#edgeEditorRelation').value.trim(),
+          context: mask.querySelector('#edgeEditorEvidence').value.trim(),
+          weight: score
+        }).catch(error => window.alert(error.message));
+      });
+    }
+  }
+
+  function editEdge(target) {
+    showEdgeDialog(target, false);
+  }
+
+  function deleteTarget(target) {
+    const isNode = target.type === 'node';
+    const item = isNode ? selectedNode(target) : selectedEdge(target);
+    if (!item || !window.confirm(isNode ? '删除节点会同时删除相连关系，是否继续？' : '是否删除这条关系？')) return;
+    const id = isNode ? item.id : (edgeApiIds.get(String(item.id)) || item.id);
+    mutation(isNode ? 'delete_node' : 'delete_edge', isNode ? { node_id: String(id) } : { edge_id: id })
+      .catch(error => window.alert(error.message));
+  }
+
+  function viewTarget(target) {
+    const item = target.type === 'node' ? selectedNode(target) : selectedEdge(target);
+    if (!item) return;
+    if (target.type === 'node') {
+      showNodeDialog(target);
+    } else {
+      showEdgeDialog(target, true);
+    }
+  }
+
+  function showHistory() {
+    editorApi(`/graph-history/${encodeURIComponent(GRAPH_NAME)}`).then(payload => {
+      const versions = payload.versions || [];
+      if (!versions.length) return window.alert('暂无图谱修改历史');
+      const description = versions.map(version =>
+        `${version.revision}: ${version.description || version.operation || '图谱修改'} (${version.created_at})`).join('\n');
+      const revision = askText(`历史版本（输入版本号还原）：\n${description}`);
+      if (!revision) return;
+      const number = Number(revision);
+      if (!Number.isInteger(number)) return window.alert('版本号必须是整数');
+      if (!window.confirm(`确认还原到版本 ${number}？还原会创建新的历史版本。`)) return;
+      editorApi(`/graph-restore/${encodeURIComponent(GRAPH_NAME)}/${number}`, {
+        method: 'POST',
+        body: JSON.stringify({ operation: 'restore', revision: editorRevision })
+      }).then(() => {
+        window.parent?.postMessage({ type: 'knowledge-graph-restored', filename: GRAPH_NAME }, '*');
+        window.location.reload();
+      }).catch(error => window.alert(error.message));
+    }).catch(error => window.alert(error.message));
+  }
+
+  function runGraphAction(action, target) {
+    if (action === 'add-node') return addNode();
+    if (action === 'edit-node') return editNode(target);
+    if (action === 'delete-node') return deleteTarget(target);
+    if (action === 'add-edge') return addEdge(target);
+    if (action === 'edit-edge') return editEdge(target);
+    if (action === 'delete-edge') return deleteTarget(target);
+    if (action === 'view-node' || action === 'view-edge') return viewTarget(target);
+    if (action === 'history') return showHistory();
+  }
+
+  document.addEventListener('DOMContentLoaded', function () {
+    const graphContainer = document.getElementById('mynetwork');
+    if (!graphContainer || typeof network === 'undefined') return;
+    const host = graphContainer.parentNode;
+    applyLargeGraphPerformance();
+    let readyNotified = false;
+    const notifyGraphReady = () => {
+      if (readyNotified) return;
+      readyNotified = true;
+      window.parent?.postMessage({ type: 'knowledge-graph-ready' }, '*');
+    };
+    network.once('afterDrawing', notifyGraphReady);
+    network.once('stabilized', () => {
+      network.setOptions({ physics: { enabled: false } });
+      notifyGraphReady();
+    });
+    window.setTimeout(notifyGraphReady, 2500);
+    initializeGraphMetadata();
+    editorMetadataReady = syncEditorRevision();
+    window.addEventListener('message', event => {
+      if (event.source !== window.parent || event.data?.type !== 'knowledge-graph-highlight') return;
+      if (event.data.graphName && event.data.graphName !== GRAPH_NAME) return;
+      highlightGraphTarget(event.data.kind, event.data.id);
+    });
+    document.addEventListener('click', hideContextMenu);
+    // vis-network's `oncontext` is not emitted consistently across its
+    // versions, especially when the canvas is inside a sandboxed iframe.
+    // Bind the native DOM event as the authoritative browser-menu blocker.
+    graphContainer.addEventListener('contextmenu', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = graphContainer.getBoundingClientRect();
+      const pointer = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+      const nodeId = network.getNodeAt(pointer);
+      const hasNode = nodeId !== undefined && nodeId !== null;
+      const edgeId = hasNode ? undefined : network.getEdgeAt(pointer);
+      const hasEdge = edgeId !== undefined && edgeId !== null;
+      showContextMenu(event, hasNode
+        ? { type: 'node', id: nodeId }
+        : hasEdge
+          ? { type: 'edge', id: edgeId }
+          : { type: 'canvas', id: null });
+    }, true);
+    network.on('oncontext', params => {
+      params.event?.srcEvent?.preventDefault?.();
+      const nodeId = params.nodes?.[0];
+      const edgeId = params.edges?.[0];
+      const sourceEvent = params.event?.srcEvent;
+      if (!sourceEvent) return;
+      showContextMenu(sourceEvent, nodeId !== undefined
+        ? { type: 'node', id: nodeId }
+        : edgeId !== undefined
+          ? { type: 'edge', id: edgeId }
+          : { type: 'canvas', id: null });
+    });
+
+    const runtimeNodeCount = network.body.data.nodes.get().length;
+    const runtimeEdgeCount = network.body.data.edges.get().length;
+    const searchPanel = createPanel('search-panel', '🔍 实体与关系', `
+      <input type="search" id="searchInput" class="graph-text-input" placeholder="搜索实体或关系...">
+      <div class="search-results" id="searchResults"></div>
+      <div class="status-bar" id="visibleGraphStatus"><strong>${Math.max(NODE_COUNT, runtimeNodeCount)}</strong> 节点 · <strong>${Math.max(EDGE_COUNT, runtimeEdgeCount)}</strong> 关系</div>`);
+    host.insertBefore(searchPanel, graphContainer);
+
+    const controlPanel = createPanel('control-panel', '⚙️ 图谱控制', `
+      <div class="control-actions">
+        <button id="showAllBtn" class="control-btn">显示标签</button>
+        <button id="hideAllBtn" class="control-btn active">隐藏标签</button>
+        <button id="toggleHubsBtn" class="control-btn">折叠 Hub</button>
+        <button id="focusModeBtn" class="control-btn">节点聚焦</button>
+        <button id="fitBtn" class="control-btn">适应画布</button>
+        <button id="resetBtn" class="control-btn">重置</button>
+      </div>
+      <div class="status-bar">右键节点、关系或空白处，可进行增删改查</div>
+      <div class="status-bar">已标记关系：<strong id="counter">0</strong></div>`);
+    host.insertBefore(controlPanel, graphContainer);
+
+    const filterPanel = createPanel('filter-panel', '🔧 筛选与类型聚焦', `
+      <div class="filter-section">
+        <div class="filter-label"><span>最小关系权重</span><strong id="weightValue">0.5</strong></div>
+        <input type="range" id="weightFilter" class="filter-slider" min="0.5" max="1" step="0.1" value="0.5">
+      </div>
+      <div class="filter-section">
+        <div class="filter-label"><span>Hub 关系透明度</span><strong id="hubOpacityValue">0.3</strong></div>
+        <input type="range" id="hubOpacity" class="filter-slider" min="0" max="1" step="0.1" value="0.3">
+      </div>
+      <div class="filter-section">
+        <div class="filter-label"><span>实体类型（可多选）</span><strong id="selectedTypeCount">0</strong></div>
+        <div class="entity-type-actions">
+          <button type="button" id="selectAllTypesBtn" class="small-action-btn">全选</button>
+          <button type="button" id="clearTypesBtn" class="small-action-btn">清除</button>
+        </div>
+        <div class="entity-type-options" id="entityTypeOptions"></div>
+      </div>`);
+    host.insertBefore(filterPanel, graphContainer);
+
+    [searchPanel, controlPanel, filterPanel].forEach(bindPanelCollapse);
+
+    const immersiveButton = document.createElement('button');
+    immersiveButton.className = 'immersive-toggle';
+    immersiveButton.type = 'button';
+    immersiveButton.textContent = '⛶ 沉浸模式';
+    immersiveButton.addEventListener('click', () => {
+      immersive = !immersive;
+      document.querySelectorAll('.graph-floating-panel').forEach(panel => {
+        panel.classList.toggle('is-collapsed', immersive);
+        const button = panel.querySelector('.graph-panel-collapse');
+        if (button) button.textContent = immersive ? '+' : '−';
+      });
+      immersiveButton.textContent = immersive ? '退出沉浸' : '⛶ 沉浸模式';
+    });
+    host.insertBefore(immersiveButton, graphContainer);
+
+    const typeOptions = document.getElementById('entityTypeOptions');
+    renderEntityTypeOptions(typeOptions);
+    const updateSelectedTypeCount = () => {
+      document.getElementById('selectedTypeCount').textContent = activeEntityTypes.size;
+    };
+    typeOptions.addEventListener('change', updateSelectedTypeCount);
+    document.getElementById('selectAllTypesBtn').addEventListener('click', () => {
+      typeOptions.querySelectorAll('input').forEach(input => { input.checked = true; activeEntityTypes.add(input.value); });
+      updateSelectedTypeCount(); applyVisibilityFilters(true); renderSearchResults();
+    });
+    document.getElementById('clearTypesBtn').addEventListener('click', () => {
+      typeOptions.querySelectorAll('input').forEach(input => { input.checked = false; });
+      activeEntityTypes.clear(); updateSelectedTypeCount(); applyVisibilityFilters(true); renderSearchResults();
+    });
+
+    document.getElementById('searchInput').addEventListener('input', () => {
+      clearTimeout(searchTimer); searchTimer = setTimeout(renderSearchResults, 120);
+    });
+    document.getElementById('weightFilter').addEventListener('input', event => {
+      minimumWeight = Number(event.target.value);
+      document.getElementById('weightValue').textContent = minimumWeight.toFixed(1);
+      applyVisibilityFilters(); renderSearchResults();
+    });
+    document.getElementById('hubOpacity').addEventListener('input', event => {
+      const opacity = Number(event.target.value);
+      document.getElementById('hubOpacityValue').textContent = opacity.toFixed(1);
+      const updates = network.body.data.edges.get()
+        .filter(edge => hubNodes.has(String(edge.from)) || hubNodes.has(String(edge.to)))
+        .map(edge => ({ ...edge, color: { ...edge.color, opacity } }));
+      network.body.data.edges.update(updates);
+    });
+
+    const updateCounter = () => {
+      document.getElementById('counter').textContent = Object.values(edgeStates).filter(state => state.clicked).length;
+    };
+    document.getElementById('showAllBtn').addEventListener('click', event => {
+      network.body.data.edges.get().forEach(edge => {
+        edge.font = { size: 10, color: '#64748b' }; edgeStates[edge.id].labelVisible = true;
+        network.body.data.edges.update(edge);
+      });
+      document.getElementById('hideAllBtn').classList.remove('active'); event.currentTarget.classList.add('active');
+    });
+    document.getElementById('hideAllBtn').addEventListener('click', event => {
+      network.body.data.edges.get().forEach(edge => {
+        if (!edgeStates[edge.id].clicked) edge.font = { size: 0 };
+        edgeStates[edge.id].labelVisible = false; network.body.data.edges.update(edge);
+      });
+      document.getElementById('showAllBtn').classList.remove('active'); event.currentTarget.classList.add('active');
+    });
+    document.getElementById('toggleHubsBtn').addEventListener('click', event => {
+      hubsCollapsed = !hubsCollapsed; collapsedEdgeIds.clear();
+      if (hubsCollapsed) hubNodes.forEach(hubId => {
+        network.body.data.edges.get().filter(edge => String(edge.from) === hubId || String(edge.to) === hubId)
+          .sort((a, b) => Number(b.weight || 0) - Number(a.weight || 0)).slice(3)
+          .forEach(edge => collapsedEdgeIds.add(edge.id));
+      });
+      event.currentTarget.classList.toggle('active', hubsCollapsed); applyVisibilityFilters();
+    });
+    document.getElementById('focusModeBtn').addEventListener('click', event => {
+      if (focusKeepNodes) {
+        focusKeepNodes = null; event.currentTarget.classList.remove('active'); applyVisibilityFilters(true); return;
+      }
+      const selected = network.getSelectedNodes();
+      if (!selected.length) { alert('请先选中一个或多个节点'); return; }
+      focusKeepNodes = new Set(selected);
+      selected.forEach(id => network.getConnectedNodes(id).forEach(neighbor => focusKeepNodes.add(neighbor)));
+      event.currentTarget.classList.add('active'); applyVisibilityFilters(true);
+    });
+    document.getElementById('fitBtn').addEventListener('click', () => network.fit({ animation: { duration: 350 } }));
+    document.getElementById('resetBtn').addEventListener('click', () => {
+      activeEntityTypes.clear(); collapsedEdgeIds.clear(); focusKeepNodes = null; hubsCollapsed = false; minimumWeight = .5;
+      typeOptions.querySelectorAll('input').forEach(input => { input.checked = false; });
+      document.getElementById('weightFilter').value = .5; document.getElementById('weightValue').textContent = '0.5';
+      document.getElementById('searchInput').value = ''; document.getElementById('focusModeBtn').classList.remove('active');
+      document.getElementById('toggleHubsBtn').classList.remove('active'); updateSelectedTypeCount();
+      network.body.data.edges.get().forEach(edge => {
+        edge.font = { size: 0 }; edge.width = edgeOriginalWidths[edge.id]; edgeStates[edge.id] = { clicked: false, labelVisible: false };
+        network.body.data.edges.update(edge);
+      });
+      applyVisibilityFilters(true); renderSearchResults(); updateCounter();
+    });
+
+    network.on('selectEdge', params => {
+      if (!params.edges.length) return;
+      const edge = network.body.data.edges.get(params.edges[0]);
+      edgeStates[edge.id].clicked = true; edge.font = { size: 10, color: '#2563eb' };
+      network.body.data.edges.update(edge); updateCounter();
+    });
+    network.on('hoverEdge', params => {
+      const edge = network.body.data.edges.get(params.edge);
+      let tooltip = document.getElementById('edge-tooltip');
+      if (!tooltip) { tooltip = document.createElement('div'); tooltip.id = 'edge-tooltip'; document.body.appendChild(tooltip); }
+      tooltip.innerHTML = `<strong>${escapeHtml(edge.label || '未命名关系')}</strong><div>${escapeHtml(edge.title || '无描述')}</div>`;
+      tooltip.style.left = `${(params.event?.clientX || 80) + 12}px`; tooltip.style.top = `${(params.event?.clientY || 80) + 12}px`; tooltip.style.display = 'block';
+    });
+    network.on('blurEdge', () => { const tip = document.getElementById('edge-tooltip'); if (tip) tip.style.display = 'none'; });
+    network.on('hoverNode', params => {
+      let tooltip = document.getElementById('node-tooltip');
+      if (!tooltip) { tooltip = document.createElement('div'); tooltip.id = 'node-tooltip'; document.body.appendChild(tooltip); }
+      const edges = network.getConnectedEdges(params.node).slice(0, 30).map(id => network.body.data.edges.get(id));
+      tooltip.innerHTML = `<strong>${escapeHtml(network.body.data.nodes.get(params.node)?.label || params.node)}</strong>`
+        + edges.map(edge => `<div class="edge-item"><div class="edge-label">${escapeHtml(edge.label || '关系')}</div><div class="edge-meta">${escapeHtml(edge.from)} → ${escapeHtml(edge.to)}</div></div>`).join('');
+      tooltip.style.left = `${(params.event?.clientX || 80) + 12}px`; tooltip.style.top = `${(params.event?.clientY || 80) + 12}px`; tooltip.style.display = 'block';
+    });
+    network.on('blurNode', () => { const tip = document.getElementById('node-tooltip'); if (tip) tip.style.display = 'none'; });
+
+    setupCommunityDirectory();
+    applyVisibilityFilters(); renderSearchResults(); updateCounter();
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,1537 @@
+<html>
+    <head>
+        <meta charset="utf-8">
+
+            <script>function neighbourhoodHighlight(params) {
+  // console.log("in nieghbourhoodhighlight");
+  allNodes = nodes.get({ returnType: "Object" });
+  // originalNodes = JSON.parse(JSON.stringify(allNodes));
+  // if something is selected:
+  if (params.nodes.length > 0) {
+    highlightActive = true;
+    var i, j;
+    var selectedNode = params.nodes[0];
+    var degrees = 2;
+
+    // mark all nodes as hard to read.
+    for (let nodeId in allNodes) {
+      // nodeColors[nodeId] = allNodes[nodeId].color;
+      allNodes[nodeId].color = "rgba(200,200,200,0.5)";
+      if (allNodes[nodeId].hiddenLabel === undefined) {
+        allNodes[nodeId].hiddenLabel = allNodes[nodeId].label;
+        allNodes[nodeId].label = undefined;
+      }
+    }
+    var connectedNodes = network.getConnectedNodes(selectedNode);
+    var allConnectedNodes = [];
+
+    // get the second degree nodes
+    for (i = 1; i < degrees; i++) {
+      for (j = 0; j < connectedNodes.length; j++) {
+        allConnectedNodes = allConnectedNodes.concat(
+          network.getConnectedNodes(connectedNodes[j])
+        );
+      }
+    }
+
+    // all second degree nodes get a different color and their label back
+    for (i = 0; i < allConnectedNodes.length; i++) {
+      // allNodes[allConnectedNodes[i]].color = "pink";
+      allNodes[allConnectedNodes[i]].color = "rgba(150,150,150,0.75)";
+      if (allNodes[allConnectedNodes[i]].hiddenLabel !== undefined) {
+        allNodes[allConnectedNodes[i]].label =
+          allNodes[allConnectedNodes[i]].hiddenLabel;
+        allNodes[allConnectedNodes[i]].hiddenLabel = undefined;
+      }
+    }
+
+    // all first degree nodes get their own color and their label back
+    for (i = 0; i < connectedNodes.length; i++) {
+      // allNodes[connectedNodes[i]].color = undefined;
+      allNodes[connectedNodes[i]].color = nodeColors[connectedNodes[i]];
+      if (allNodes[connectedNodes[i]].hiddenLabel !== undefined) {
+        allNodes[connectedNodes[i]].label =
+          allNodes[connectedNodes[i]].hiddenLabel;
+        allNodes[connectedNodes[i]].hiddenLabel = undefined;
+      }
+    }
+
+    // the main node gets its own color and its label back.
+    // allNodes[selectedNode].color = undefined;
+    allNodes[selectedNode].color = nodeColors[selectedNode];
+    if (allNodes[selectedNode].hiddenLabel !== undefined) {
+      allNodes[selectedNode].label = allNodes[selectedNode].hiddenLabel;
+      allNodes[selectedNode].hiddenLabel = undefined;
+    }
+  } else if (highlightActive === true) {
+    // console.log("highlightActive was true");
+    // reset all nodes
+    for (let nodeId in allNodes) {
+      // allNodes[nodeId].color = "purple";
+      allNodes[nodeId].color = nodeColors[nodeId];
+      // delete allNodes[nodeId].color;
+      if (allNodes[nodeId].hiddenLabel !== undefined) {
+        allNodes[nodeId].label = allNodes[nodeId].hiddenLabel;
+        allNodes[nodeId].hiddenLabel = undefined;
+      }
+    }
+    highlightActive = false;
+  }
+
+  // transform the object into an array
+  var updateArray = [];
+  if (params.nodes.length > 0) {
+    for (let nodeId in allNodes) {
+      if (allNodes.hasOwnProperty(nodeId)) {
+        // console.log(allNodes[nodeId]);
+        updateArray.push(allNodes[nodeId]);
+      }
+    }
+    nodes.update(updateArray);
+  } else {
+    // console.log("Nothing was selected");
+    for (let nodeId in allNodes) {
+      if (allNodes.hasOwnProperty(nodeId)) {
+        // console.log(allNodes[nodeId]);
+        // allNodes[nodeId].color = {};
+        updateArray.push(allNodes[nodeId]);
+      }
+    }
+    nodes.update(updateArray);
+  }
+}
+
+function filterHighlight(params) {
+  allNodes = nodes.get({ returnType: "Object" });
+  // if something is selected:
+  if (params.nodes.length > 0) {
+    filterActive = true;
+    let selectedNodes = params.nodes;
+
+    // hiding all nodes and saving the label
+    for (let nodeId in allNodes) {
+      allNodes[nodeId].hidden = true;
+      if (allNodes[nodeId].savedLabel === undefined) {
+        allNodes[nodeId].savedLabel = allNodes[nodeId].label;
+        allNodes[nodeId].label = undefined;
+      }
+    }
+
+    for (let i=0; i < selectedNodes.length; i++) {
+      allNodes[selectedNodes[i]].hidden = false;
+      if (allNodes[selectedNodes[i]].savedLabel !== undefined) {
+        allNodes[selectedNodes[i]].label = allNodes[selectedNodes[i]].savedLabel;
+        allNodes[selectedNodes[i]].savedLabel = undefined;
+      }
+    }
+
+  } else if (filterActive === true) {
+    // reset all nodes
+    for (let nodeId in allNodes) {
+      allNodes[nodeId].hidden = false;
+      if (allNodes[nodeId].savedLabel !== undefined) {
+        allNodes[nodeId].label = allNodes[nodeId].savedLabel;
+        allNodes[nodeId].savedLabel = undefined;
+      }
+    }
+    filterActive = false;
+  }
+
+  // transform the object into an array
+  var updateArray = [];
+  if (params.nodes.length > 0) {
+    for (let nodeId in allNodes) {
+      if (allNodes.hasOwnProperty(nodeId)) {
+        updateArray.push(allNodes[nodeId]);
+      }
+    }
+    nodes.update(updateArray);
+  } else {
+    for (let nodeId in allNodes) {
+      if (allNodes.hasOwnProperty(nodeId)) {
+        updateArray.push(allNodes[nodeId]);
+      }
+    }
+    nodes.update(updateArray);
+  }
+}
+
+function selectNode(nodes) {
+  network.selectNodes(nodes);
+  neighbourhoodHighlight({ nodes: nodes });
+  return nodes;
+}
+
+function selectNodes(nodes) {
+  network.selectNodes(nodes);
+  filterHighlight({nodes: nodes});
+  return nodes;
+}
+
+function highlightFilter(filter) {
+  let selectedNodes = []
+  let selectedProp = filter['property']
+  if (filter['item'] === 'node') {
+    let allNodes = nodes.get({ returnType: "Object" });
+    for (let nodeId in allNodes) {
+      if (allNodes[nodeId][selectedProp] && filter['value'].includes((allNodes[nodeId][selectedProp]).toString())) {
+        selectedNodes.push(nodeId)
+      }
+    }
+  }
+  else if (filter['item'] === 'edge'){
+    let allEdges = edges.get({returnType: 'object'});
+    // check if the selected property exists for selected edge and select the nodes connected to the edge
+    for (let edge in allEdges) {
+      if (allEdges[edge][selectedProp] && filter['value'].includes((allEdges[edge][selectedProp]).toString())) {
+        selectedNodes.push(allEdges[edge]['from'])
+        selectedNodes.push(allEdges[edge]['to'])
+      }
+    }
+  }
+  selectNodes(selectedNodes)
+}</script>
+            <link rel="stylesheet" href="../_lib/vis-network.min.css">
+            <script src="../_lib/vis-network.min.js"></script>
+
+
+
+
+
+
+
+
+<center>
+<h1></h1>
+</center>
+
+<!-- <link rel="stylesheet" href="../node_modules/vis/dist/vis.min.css" type="text/css" />
+<script type="text/javascript" src="../node_modules/vis/dist/vis.js"> </script>-->
+
+
+        <center>
+          <h1></h1>
+        </center>
+        <style type="text/css">
+
+             #mynetwork {
+                 width: 100%;
+                 height: 800px;
+                 background-color: #ffffff;
+                 border: 1px solid lightgray;
+                 position: relative;
+                 float: left;
+             }
+
+
+
+
+
+
+        </style>
+    </head>
+
+
+    <body>
+        <div class="card" style="width: 100%">
+
+
+            <div id="mynetwork" class="card-body"></div>
+        </div>
+
+
+
+
+        <script type="text/javascript">
+
+              // initialize global variables.
+              var edges;
+              var nodes;
+              var allNodes;
+              var allEdges;
+              var nodeColors;
+              var originalNodes;
+              var network;
+              var container;
+              var options, data;
+              var filter = {
+                  item : '',
+                  property : '',
+                  value : []
+              };
+
+
+
+
+
+              // This method is responsible for drawing the graph, returns the drawn network
+              function drawGraph() {
+                  var container = document.getElementById('mynetwork');
+
+
+
+                  // parsing and collecting nodes and edges from the python
+                  nodes = new vis.DataSet([{"entityType": "\u65b9\u6cd5", "font": {"color": "#1a1a1a"}, "group": "\u65b9\u6cd5", "id": "\u6e29\u8865\u4e94\u810f", "label": "\u6e29\u8865\u4e94\u810f", "shape": "dot", "source_blocks": ["block_21_-752599364295301943"], "title": "\u65b9\u6cd5", "value": 19.507078032240404, "x": -92.24426934379095, "y": 293.98268332695363}, {"entityType": "\u4eba\u7269", "font": {"color": "#1a1a1a"}, "group": "\u4eba\u7269", "id": "\u5802\u4e3b", "label": "\u5802\u4e3b", "shape": "dot", "source_blocks": ["block_50_-2137992727468772229", "block_52_3685558638210935363"], "title": "\u4eba\u7269", "value": 17.874371594034184, "x": 386.57704379927105, "y": -311.4423221485442}, {"entityType": "\u7ec4\u7ec7", "font": {"color": "#1a1a1a"}, "group": "\u7ec4\u7ec7", "id": "\u9ad8\u4e2d", "label": "\u9ad8\u4e2d", "shape": "dot", "source_blocks": ["block_229_-2115411680574824535", "block_379_5717405026386311739"], "title": "\u7ec4\u7ec7", "value": 16.555441590880786, "x": -198.71385227533236, "y": 628.049531573223}, {"entityType": "\u4eba\u7269", "font": {"color": "#1a1a1a"}, "group": "\u4eba\u7269", "id": "\u4e3b\u7ba1", "label": "\u4e3b\u7ba1", "shape": "dot", "source_blocks": ["block_716_5317938068474040989"], "title": "\u4eba\u7269", "value": 22.041038260700848, "x": -634.8639737431904, "y": -257.17586371154033}, {"entityType": "\u4ea7\u54c1", "font": {"color": "#1a1a1a"}, "group": "\u4ea7\u54c1", "id": "\u5934\u57ab\u513f", "label": "\u5934\u57ab\u513f", "shape": "dot", "source_blocks": ["block_652_3827960328983317011"], "title": "\u4ea7\u54c1", "value": 16.49965965243751, "x": -688.3266347211742, "y": 119.25932870564706}, {"entityType": "\u65b9\u6cd5", "font": {"color": "#1a1a1a"}, "group": "\u65b9\u6cd5", "id": "\u6c11\u95f4\u504f\u65b9", "label": "\u6c11\u95f4\u504f\u65b9", "shape": "dot", "source_blocks": ["block_52_3685558638210935363"], "title": "\u65b9\u6cd5", "value": 16.58945526003526, "x": 192.80212419088255, "y": -218.02655834077154}, {"entityType": "\u4ea7\u54c1", "font": {"color": "#1a1a1a"}, "group": "\u4ea7\u54c1", "id": "\u624b\u5957", "label": "\u624b\u5957", "shape": "dot", "source_blocks": ["block_652_3827960328983317011"], "title": "\u4ea7\u54c1", "value": 16.49965965243751, "x": -694.9279963345402, "y": 344.6915535656621}, {"entityType": "\u529f\u80fd", "font": {"color": "#1a1a1a"}, "group": "\u529f\u80fd", "id": "\u9632\u6ed1", "label": "\u9632\u6ed1", "shape": "dot", "source_blocks": ["block_652_3827960328983317011"], "title": "\u529f\u80fd", "value": 16.503710208806716, "x": -788.1518826430571, "y": 129.80748396212383}, {"entityType": "\u6570\u91cf", "font": {"color": "#1a1a1a"}, "group": "\u6570\u91cf", "id": "\u51e0\u5343\u4e2a", "label": "\u51e0\u5343\u4e2a", "shape": "dot", "source_blocks": ["block_497_8591248725641644074"], "title": "\u6570\u91cf", "value": 18.109207510376493, "x": -870.8523370415783, "y": -180.96589196764464}, {"entityType": "\u5730\u70b9", "font": {"color": "#1a1a1a"}, "group": "\u5730\u70b9", "id": "\u6d77\u5173", "label": "\u6d77\u5173", "shape": "dot", "source_blocks": ["block_394_3326560943051644588", "block_486_9207194625192339364", "block_599_-7455402991029347753", "block_631_-3503239737996269852"], "title": "\u5730\u70b9", "value": 17.930862878021905, "x": 320.6596555989367, "y": 214.41464026418421}, {"entityType": "\u6570\u91cf", "font": {"color": "#1a1a1a"}, "group": "\u6570\u91cf", "id": "\u5341\u4e07\u8d2f", "label": "\u5341\u4e07\u8d2f", "shape": "dot", "source_blocks": ["block_497_8591248725641644074"], "title": "\u6570\u91cf", "value": 18.054044273698466, "x": -792.2172419042341, "y": -146.47522283544814}, {"entityType": "\u6570\u91cf", "font": {"color": "#1a1a1a"}, "group": "\u6570\u91cf", "id": "\u4e8c\u4e09\u5341\u5757\u94b1", "label": "\u4e8c\u4e09\u5341\u5757\u94b1", "shape": "dot", "source_blocks": ["block_497_8591248725641644074"], "title": "\u6570\u91cf", "value": 16.767196804234796, "x": -954.9840331839179, "y": -174.2414808994284}, {"entityType": "\u4eba\u7269\u7c7b\u578b", "font": {"color": "#1a1a1a"}, "group": "\u4eba\u7269\u7c7b\u578b", "id": "\u7a7a\u59d0", "label": "\u7a7a\u59d0", "shape": "dot", "source_blocks": ["block_486_9207194625192339364"], "title": "\u4eba\u7269\u7c7b\u578b", "value": 17.956478518896052, "x": 321.2927613454245, "y": 404.4741085898123}, {"entityType": "\u6570\u91cf", "font": {"color": "#1a1a1a"}, "group": "\u6570\u91cf", "id": "\u4e8c\u5341\u591a\u5c81", "label": "\u4e8c\u5341\u591a\u5c81", "shape": "dot", "source_blocks": ["block_379_5717405026386311739"], "title": "\u6570\u91cf", "value": 16.485482705145294, "x": -328.2322250198612, "y": 490.1142557077114}, {"entityType": "\u4eba\u7269", "font": {"color": "#1a1a1a"}, "group": "\u4eba\u7269", "id": "\u5973\u4eba", "label": "\u5973\u4eba", "shape": "dot", "source_blocks": ["block_12_7132662707597068366", "block_317_-2303784878138964586", "block_408_-2625397958095409724", "block_554_-4376138568738181670", "block_569_-9105783652954943993", "block_675_2892397319768672234", "block_682_674820028554142053", "block_705_1843012200160985918"], "title": "\u4eba\u7269", "value": 26.283652859290108, "x": -351.1932710971842, "y": -402.1947375368639}, {"entityType": "\u5730\u70b9", "font": {"color": "#1a1a1a"}, "group": "\u5730\u70b9", "id": "\u767b\u673a\u53e3", "label": "\u767b\u673a\u53e3", "shape": "dot", "source_blocks": ["block_12_7132662707597068366", "block_499_-4370647915603932746"], "title": "\u5730\u70b9", "value": 19.345367407784938, "x": -177.86639205446616, "y": -218.31769932220206}, {"entityType": "\u65b9\u6cd5", "font": {"color": "#1a1a1a"}, "group": "\u65b9\u6cd5", "id": "\u91c7\u65e5\u6708\u4e4b\u7cbe\u534e", "label": "\u91c7\u65e5\u6708\u4e4b\u7cbe\u534e", "shape": "dot", "source_blocks": ["block_21_-752599364295301943"], "title": "\u65b9\u6cd5", "value": 20.741903505935323, "x": -1.721386552236774, "y": 446.84281779069113}, {"entityType": "\u91d1\u989d", "font": {"color": "#1a1a1a"}, "group": "\u91d1\u989d", "id": "\u51e0\u5341\u4e07", "label": "\u51e0\u5341\u4e07", "shape": "dot", "source_blocks": ["block_497_8591248725641644074", "block_652_3827960328983317011", "block_669_-6673935775901513681", "block_671_-1694865562947838600", "block_716_5317938068474040989"], "title": "\u91d1\u989d", "value": 19.378046466107826, "x": -705.5379606034594, "y": -135.80689099332463}, {"entityType": "\u7ec4\u7ec7", "font": {"color": "#1a1a1a"}, "group": "\u7ec4\u7ec7", "id": "\u6885\u82b1\u62f3", "label": "\u6885\u82b1\u62f3", "shape": "dot", "source_blocks": ["block_21_-752599364295301943"], "title": "\u7ec4\u7ec7", "value": 17.95415304658828, "x": -96.58939310013982, "y": 140.10247652423288}, {"entityType": "\u7ec4\u7ec7", "font": {"color": "#1a1a1a"}, "group": "\u7ec4\u7ec7", "id": "\u673a\u68b0\u5382", "label": "\u673a\u68b0\u5382", "shape": "dot", "source_blocks": ["block_24_-3838897353600394146"], "title": "\u7ec4\u7ec7", "value": 16.643125941924033, "x": 439.25483364988685, "y": 253.75666428496245}, {"entityType": "\u4eba\u7269", "font": {"color": "#1a1a1a"}, "group": "\u4eba\u7269", "id": "\u65e0\u5fe7\u7985\u5e08", "label": "\u65e0\u5fe7\u7985\u5e08", "shape": "dot", "source_blocks": ["block_50_-2137992727468772229", "block_145_4905053955840076207"], "title": "\u4eba\u7269", "value": 19.33838054959239, "x": 353.43259560677467, "y": -225.81207597037331}, {"entityType": "\u65f6\u95f4", "font": {"color": "#1a1a1a"}, "group": "\u65f6\u95f4", "id": "\u5927\u56db\u7b2c\u4e00\u5b66\u671f", "label": "\u5927\u56db\u7b2c\u4e00\u5b66\u671f", "shape": "dot", "source_blocks": ["block_225_-3631149117999936590"], "title": "\u65f6\u95f4", "value": 18.0733354027294, "x": 186.5356576971307, "y": 461.3474268914527}, {"entityType": "\u8eab\u4efd", "font": {"color": "#1a1a1a"}, "group": "\u8eab\u4efd", "id": "\u56fd\u9645\u4eba\u58eb", "label": "\u56fd\u9645\u4eba\u58eb", "shape": "dot", "source_blocks": ["block_24_-3838897353600394146"], "title": "\u8eab\u4efd", "value": 16.485482705145294, "x": 603.8840161462814, "y": 56.405979109397194}, {"entityType": "\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6982\u5ff5", "id": "\u4eba\u7f18", "label": "\u4eba\u7f18", "shape": "dot", "source_blocks": ["block_705_1843012200160985918"], "title": "\u6982\u5ff5", "value": 16.506067237291383, "x": -472.5817260659104, "y": -496.0869202721482}, {"entityType": "\u4eba\u7269", "font": {"color": "#1a1a1a"}, "group": "\u4eba\u7269", "id": "\u7985\u5e08", "label": "\u7985\u5e08", "shape": "dot", "source_blocks": ["block_49_-4627778653103282992"], "title": "\u4eba\u7269", "value": 16.511202635309314, "x": 202.27948567558317, "y": 26.552805948783284}, {"entityType": "\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6982\u5ff5", "id": "\u5584\u672f\u8005", "label": "\u5584\u672f\u8005", "shape": "dot", "source_blocks": ["block_7_8521903513124545272", "block_287_460740752259335811"], "title": "\u6982\u5ff5", "value": 19.537234328243965, "x": 851.0418567594621, "y": -261.6640046484429}, {"entityType": "\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6982\u5ff5", "id": "\u7eff\u8272\u901a\u9053", "label": "\u7eff\u8272\u901a\u9053", "shape": "dot", "source_blocks": ["block_486_9207194625192339364", "block_497_8591248725641644074", "block_501_3619784022285445882"], "title": "\u6982\u5ff5", "value": 22.633934509136576, "x": 209.69918899712107, "y": 211.88909183510654}, {"entityType": "\u7269\u54c1", "font": {"color": "#1a1a1a"}, "group": "\u7269\u54c1", "id": "\u624b\u63d0\u5305", "label": "\u624b\u63d0\u5305", "shape": "dot", "source_blocks": ["block_486_9207194625192339364"], "title": "\u7269\u54c1", "value": 16.485482705145294, "x": 335.7646868717189, "y": 487.62411383071833}, {"entityType": "\u7269\u54c1", "font": {"color": "#1a1a1a"}, "group": "\u7269\u54c1", "id": "\u907f\u5b55\u5957", "label": "\u907f\u5b55\u5957", "shape": "dot", "source_blocks": ["block_379_5717405026386311739", "block_400_-510263566193644935"], "title": "\u7269\u54c1", "value": 16.547668381354622, "x": -286.3690467768327, "y": 568.2998398821229}, {"entityType": "\u5730\u70b9", "font": {"color": "#1a1a1a"}, "group": "\u5730\u70b9", "id": "\u673a\u8231", "label": "\u673a\u8231", "shape": "dot", "source_blocks": ["block_486_9207194625192339364"], "title": "\u5730\u70b9", "value": 16.485482705145294, "x": 247.85741561019773, "y": 362.87350767169784}, {"entityType": "\u5e73\u53f0", "font": {"color": "#1a1a1a"}, "group": "\u5e73\u53f0", "id": "\u6a71\u7a97", "label": "\u6a71\u7a97", "shape": "dot", "source_blocks": ["block_652_3827960328983317011", "block_761_-426372268236214780"], "title": "\u5e73\u53f0", "value": 16.485482705145294, "x": -925.3173644337671, "y": 277.04760427533824}, {"entityType": "\u7269\u54c1", "font": {"color": "#1a1a1a"}, "group": "\u7269\u54c1", "id": "\u6bd5\u4e1a\u8bc1", "label": "\u6bd5\u4e1a\u8bc1", "shape": "dot", "source_blocks": ["block_17_3822484011133288140", "block_30_-1951014792170048984"], "title": "\u7269\u54c1", "value": 19.29219540435759, "x": 293.70475452911296, "y": 131.3451246797755}, {"entityType": "\u65b9\u6cd5", "font": {"color": "#1a1a1a"}, "group": "\u65b9\u6cd5", "id": "\u517b\u751f\u529f\u6cd5", "label": "\u517b\u751f\u529f\u6cd5", "shape": "dot", "source_blocks": ["block_21_-752599364295301943"], "title": "\u65b9\u6cd5", "value": 16.485482705145294, "x": 64.35310446489102, "y": 190.11435751432535}, {"entityType": "\u6570\u91cf", "font": {"color": "#1a1a1a"}, "group": "\u6570\u91cf", "id": "7\u4e2a\u4eba", "label": "7\u4e2a\u4eba", "shape": "dot", "source_blocks": ["block_379_5717405026386311739"], "title": "\u6570\u91cf", "value": 16.485482705145294, "x": -204.41329667077127, "y": 545.3122720623957}, {"entityType": "\u8bbe\u8ba1", "font": {"color": "#1a1a1a"}, "group": "\u8bbe\u8ba1", "id": "\u5c3a\u5bf8\u8bbe\u8ba1", "label": "\u5c3a\u5bf8\u8bbe\u8ba1", "shape": "dot", "source_blocks": ["block_652_3827960328983317011"], "title": "\u8bbe\u8ba1", "value": 17.890573819511, "x": -787.0122038684939, "y": 377.1708655237419}, {"entityType": "\u65b9\u6cd5", "font": {"color": "#1a1a1a"}, "group": "\u65b9\u6cd5", "id": "\u91c7\u9633\u8865\u9633", "label": "\u91c7\u9633\u8865\u9633", "shape": "dot", "source_blocks": ["block_23_-8050319687114774584"], "title": "\u65b9\u6cd5", "value": 16.586722056281747, "x": 124.85833739402473, "y": -143.36295345233293}, {"entityType": "\u65b9\u6cd5", "font": {"color": "#1a1a1a"}, "group": "\u65b9\u6cd5", "id": "\u91c7\u9634\u8865\u9633", "label": "\u91c7\u9634\u8865\u9633", "shape": "dot", "source_blocks": ["block_22_-1393017026843531437", "block_23_-8050319687114774584"], "title": "\u65b9\u6cd5", "value": 17.8968765329277, "x": 173.2928493904459, "y": -74.24379512651242}, {"entityType": "\u4e8b\u4ef6", "font": {"color": "#1a1a1a"}, "group": "\u4e8b\u4ef6", "id": "\u9762\u8bd5\u9080\u8bf7", "label": "\u9762\u8bd5\u9080\u8bf7", "shape": "dot", "source_blocks": ["block_557_5839353437165840506"], "title": "\u4e8b\u4ef6", "value": 16.541973989133016, "x": 540.2439843997046, "y": -8.082067033406402}, {"entityType": "\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6982\u5ff5", "id": "\u51b0\u523a", "label": "\u51b0\u523a", "shape": "dot", "source_blocks": ["block_22_-1393017026843531437"], "title": "\u6982\u5ff5", "value": 16.485482705145294, "x": 467.93262176559756, "y": -211.8192401568648}, {"entityType": "\u65b9\u6cd5", "font": {"color": "#1a1a1a"}, "group": "\u65b9\u6cd5", "id": "\u97f3\u4e50\u7597\u6cd5", "label": "\u97f3\u4e50\u7597\u6cd5", "shape": "dot", "source_blocks": ["block_52_3685558638210935363"], "title": "\u65b9\u6cd5", "value": 16.50798764403881, "x": 391.65652759436205, "y": 3.9396808267311534}, {"entityType": "\u4eba\u7269", "font": {"color": "#1a1a1a"}, "group": "\u4eba\u7269", "id": "\u5c3c\u91c7", "label": "\u5c3c\u91c7", "shape": "dot", "source_blocks": ["block_26_2707924312528937911"], "title": "\u4eba\u7269", "value": 16.485482705145294, "x": 594.0448005413759, "y": 271.0641052024563}, {"entityType": "\u804c\u4e1a", "font": {"color": "#1a1a1a"}, "group": "\u804c\u4e1a", "id": "\u673a\u573a\u5de5\u4f5c\u4eba\u5458", "label": "\u673a\u573a\u5de5\u4f5c\u4eba\u5458", "shape": "dot", "source_blocks": ["block_501_3619784022285445882"], "title": "\u804c\u4e1a", "value": 16.485482705145294, "x": 268.7654016456764, "y": 280.9754876644039}, {"entityType": "\u6570\u91cf", "font": {"color": "#1a1a1a"}, "group": "\u6570\u91cf", "id": "\u552e\u4ef7159", "label": "\u552e\u4ef7159", "shape": "dot", "source_blocks": ["block_652_3827960328983317011"], "title": "\u6570\u91cf", "value": 17.892599097695605, "x": -650.8311071358412, "y": 263.9095216902217}, {"entityType": "\u804c\u4e1a", "font": {"color": "#1a1a1a"}, "group": "\u804c\u4e1a", "id": "\u5fae\u5546", "label": "\u5fae\u5546", "shape": "dot", "source_blocks": ["block_554_-4376138568738181670", "block_716_5317938068474040989"], "title": "\u804c\u4e1a", "value": 19.30169378853846, "x": -509.5041041219877, "y": -394.92345812080305}, {"entityType": "\u7ec4\u7ec7", "font": {"color": "#1a1a1a"}, "group": "\u7ec4\u7ec7", "id": "\u516c\u76ca\u517b\u751f\u73ed", "label": "\u516c\u76ca\u517b\u751f\u73ed", "shape": "dot", "source_blocks": ["block_49_-4627778653103282992"], "title": "\u7ec4\u7ec7", "value": 16.508323213470888, "x": 486.03908472185, "y": -495.88305761715066}, {"entityType": "\u4eba\u7269", "font": {"color": "#1a1a1a"}, "group": "\u4eba\u7269", "id": "\u5b9d\u5988", "label": "\u5b9d\u5988", "shape": "dot", "source_blocks": ["block_12_7132662707597068366"], "title": "\u4eba\u7269", "value": 16.50092110425486, "x": -332.7003140122135, "y": -595.1755287949358}, {"entityType": "\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6982\u5ff5", "id": "\u798f\u7978\u56e0\u679c", "label": "\u798f\u7978\u56e0\u679c", "shape": "dot", "source_blocks": ["block_9_3553279334613374205"], "title": "\u6982\u5ff5", "value": 16.689892086514778, "x": 922.0253463836979, "y": -379.8310413307675}, {"entityType": "\u7ae0\u8282", "font": {"color": "#1a1a1a"}, "group": "\u7ae0\u8282", "id": "\u7b2c55\u7ae0", "label": "\u7b2c55\u7ae0", "shape": "dot", "source_blocks": ["block_779_3119995856911877585"], "title": "\u7ae0\u8282", "value": 17.979319027221646, "x": 444.0228156111899, "y": -569.0813713273851}, {"entityType": "\u65b9\u6cd5", "font": {"color": "#1a1a1a"}, "group": "\u65b9\u6cd5", "id": "\u8df3\u7ea7", "label": "\u8df3\u7ea7", "shape": "dot", "source_blocks": ["block_60_5911253026568212582"], "title": "\u65b9\u6cd5", "value": 18.014498915615285, "x": 518.4234188838461, "y": 227.4320482496468}, {"entityType": "\u75be\u75c5", "font": {"color": "#1a1a1a"}, "group": "\u75be\u75c5", "id": "\u9ea6\u7c92\u80bf", "label": "\u9ea6\u7c92\u80bf", "shape": "dot", "source_blocks": ["block_52_3685558638210935363", "block_53_-7584024858296971698"], "title": "\u75be\u75c5", "value": 17.900091524198203, "x": 232.41922728507163, "y": -143.5024337741206}, {"entityType": "\u7269\u54c1", "font": {"color": "#1a1a1a"}, "group": "\u7269\u54c1", "id": "\u858f\u7c73\u6c34", "label": "\u858f\u7c73\u6c34", "shape": "dot", "source_blocks": ["block_60_5911253026568212582"], "title": "\u7269\u54c1", "value": 17.996983000417647, "x": 662.0736368527209, "y": 211.47682603869004}, {"entityType": "\u8c1a\u8bed", "font": {"color": "#1a1a1a"}, "group": "\u8c1a\u8bed", "id": "\u9762\u65e0\u4e09\u4e24\u8089\uff0c\u5978\u6ed1\u591a\u7b97\u8ba1", "label": "\u9762\u65e0\u4e09\u4e24\u8089\uff0c\u5978\u6ed1\u591a\u7b97\u8ba1", "shape": "dot", "source_blocks": ["block_716_5317938068474040989"], "title": "\u8c1a\u8bed", "value": 16.50075841209634, "x": -700.6156441637731, "y": -396.55931365089947}, {"entityType": "\u6570\u91cf", "font": {"color": "#1a1a1a"}, "group": "\u6570\u91cf", "id": "\u5168\u6821\u524d10\u540d", "label": "\u5168\u6821\u524d10\u540d", "shape": "dot", "source_blocks": ["block_379_5717405026386311739"], "title": "\u6570\u91cf", "value": 17.944330479769675, "x": -246.95739216636142, "y": 473.61154918985136}, {"entityType": "\u7269\u54c1", "font": {"color": "#1a1a1a"}, "group": "\u7269\u54c1", "id": "\u57ab\u5b50", "label": "\u57ab\u5b50", "shape": "dot", "source_blocks": ["block_651_7855422637053493840", "block_652_3827960328983317011"], "title": "\u7269\u54c1", "value": 29.067589630007163, "x": -729.6235409652559, "y": 206.07052218003145}, {"entityType": "\u6570\u91cf", "font": {"color": "#1a1a1a"}, "group": "\u6570\u91cf", "id": "\u4e0a\u5343\u4e07", "label": "\u4e0a\u5343\u4e07", "shape": "dot", "source_blocks": ["block_716_5317938068474040989"], "title": "\u6570\u91cf", "value": 16.502667875465217, "x": -719.0683316501916, "y": -308.289749557107}, {"entityType": "\u529f\u80fd", "font": {"color": "#1a1a1a"}, "group": "\u529f\u80fd", "id": "\u8010\u78e8", "label": "\u8010\u78e8", "shape": "dot", "source_blocks": ["block_652_3827960328983317011"], "title": "\u529f\u80fd", "value": 16.503710208806716, "x": -844.892835519264, "y": 191.47508608459253}, {"entityType": "\u6570\u91cf", "font": {"color": "#1a1a1a"}, "group": "\u6570\u91cf", "id": "\u51e0\u767e\u4e07", "label": "\u51e0\u767e\u4e07", "shape": "dot", "source_blocks": ["block_716_5317938068474040989"], "title": "\u6570\u91cf", "value": 16.502667875465217, "x": -634.8946289958509, "y": -345.97585842019413}, {"entityType": "\u5236\u5ea6", "font": {"color": "#1a1a1a"}, "group": "\u5236\u5ea6", "id": "\u8d2b\u56f0\u8865\u52a9", "label": "\u8d2b\u56f0\u8865\u52a9", "shape": "dot", "source_blocks": ["block_226_-6123881381848092572", "block_227_-6401768045687845409", "block_239_1355757529857256316"], "title": "\u5236\u5ea6", "value": 16.485482705145294, "x": 148.53641739846142, "y": 385.98551518052733}, {"entityType": "\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6982\u5ff5", "id": "\u5229\u6da6\u6bd4", "label": "\u5229\u6da6\u6bd4", "shape": "dot", "source_blocks": ["block_652_3827960328983317011"], "title": "\u6982\u5ff5", "value": 16.583083518010124, "x": -573.4163861844005, "y": 230.28927511153233}, {"entityType": "\u7ae0\u8282", "font": {"color": "#1a1a1a"}, "group": "\u7ae0\u8282", "id": "\u7b2c884\u7ae0", "label": "\u7b2c884\u7ae0", "shape": "dot", "source_blocks": ["block_779_3119995856911877585"], "title": "\u7ae0\u8282", "value": 16.485482705145294, "x": 445.0771964104566, "y": -653.4747850581464}, {"entityType": "\u8d44\u6599", "font": {"color": "#1a1a1a"}, "group": "\u8d44\u6599", "id": "\u7b80\u5386", "label": "\u7b80\u5386", "shape": "dot", "source_blocks": ["block_30_-1951014792170048984", "block_378_-4110570215166161381", "block_557_5839353437165840506"], "title": "\u8d44\u6599", "value": 19.29219540435759, "x": 469.3881574497834, "y": 40.42088371898205}, {"entityType": "\u8eab\u4efd", "font": {"color": "#1a1a1a"}, "group": "\u8eab\u4efd", "id": "\u6d3b\u4f5b\u8f6c\u4e16", "label": "\u6d3b\u4f5b\u8f6c\u4e16", "shape": "dot", "source_blocks": ["block_49_-4627778653103282992"], "title": "\u8eab\u4efd", "value": 16.508323213470888, "x": 473.6454107738895, "y": -404.5191787866033}, {"entityType": "\u75c7\u72b6", "font": {"color": "#1a1a1a"}, "group": "\u75c7\u72b6", "id": "\u5173\u8282\u75bc", "label": "\u5173\u8282\u75bc", "shape": "dot", "source_blocks": ["block_22_-1393017026843531437"], "title": "\u75c7\u72b6", "value": 17.98541344033057, "x": 405.1359441625413, "y": -155.4283075345087}, {"entityType": "\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6982\u5ff5", "id": "\u9aa8\u9abc\u6e05\u5947", "label": "\u9aa8\u9abc\u6e05\u5947", "shape": "dot", "source_blocks": ["block_226_-6123881381848092572"], "title": "\u6982\u5ff5", "value": 16.62461163304812, "x": 905.8115368721824, "y": -77.3628917450151}, {"entityType": "\u5730\u70b9", "font": {"color": "#1a1a1a"}, "group": "\u5730\u70b9", "id": "\u7985\u5802", "label": "\u7985\u5802", "shape": "dot", "source_blocks": ["block_49_-4627778653103282992", "block_319_-4110251288951898083"], "title": "\u5730\u70b9", "value": 16.508323213470888, "x": 287.3035660561262, "y": -414.976986877231}, {"entityType": "\u5730\u70b9", "font": {"color": "#1a1a1a"}, "group": "\u5730\u70b9", "id": "\u5c0f\u5e7f\u573a", "label": "\u5c0f\u5e7f\u573a", "shape": "dot", "source_blocks": ["block_25_-8879010985671004941"], "title": "\u5730\u70b9", "value": 16.511202635309314, "x": 456.75370519129257, "y": -76.68296025356383}, {"entityType": "\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6982\u5ff5", "id": "\u72d0\u72f8\u7cbe", "label": "\u72d0\u72f8\u7cbe", "shape": "dot", "source_blocks": ["block_408_-2625397958095409724"], "title": "\u6982\u5ff5", "value": 16.506067237291383, "x": -237.42491625447127, "y": -478.74915239803045}, {"entityType": "\u7269\u54c1", "font": {"color": "#1a1a1a"}, "group": "\u7269\u54c1", "id": "\u767b\u673a\u724c", "label": "\u767b\u673a\u724c", "shape": "dot", "source_blocks": ["block_499_-4370647915603932746"], "title": "\u7269\u54c1", "value": 16.485482705145294, "x": -206.6896928757174, "y": -299.2021958231599}, {"entityType": "\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6982\u5ff5", "id": "Sp\u540d\u989d", "label": "Sp\u540d\u989d", "shape": "dot", "source_blocks": ["block_26_2707924312528937911"], "title": "\u6982\u5ff5", "value": 16.485482705145294, "x": 585.7570212465134, "y": 179.015896289322}, {"entityType": "\u6570\u91cf", "font": {"color": "#1a1a1a"}, "group": "\u6570\u91cf", "id": "15\u5206\u949f", "label": "15\u5206\u949f", "shape": "dot", "source_blocks": ["block_497_8591248725641644074", "block_499_-4370647915603932746"], "title": "\u6570\u91cf", "value": 17.950319525956775, "x": -4.520431750226416, "y": -10.253931962437479}, {"entityType": "\u65b9\u6cd5", "font": {"color": "#1a1a1a"}, "group": "\u65b9\u6cd5", "id": "\u987a\u53e3\u6e9c", "label": "\u987a\u53e3\u6e9c", "shape": "dot", "source_blocks": ["block_104_-3737342987493147576", "block_226_-6123881381848092572"], "title": "\u65b9\u6cd5", "value": 17.941441992936387, "x": 822.9466065018705, "y": -61.33905591445721}, {"entityType": "\u65b9\u6cd5", "font": {"color": "#1a1a1a"}, "group": "\u65b9\u6cd5", "id": "\u5438\u5929\u5730\u4e4b\u5143\u6c14", "label": "\u5438\u5929\u5730\u4e4b\u5143\u6c14", "shape": "dot", "source_blocks": ["block_21_-752599364295301943"], "title": "\u65b9\u6cd5", "value": 20.798898160648857, "x": -111.751831147675, "y": 382.116253228433}, {"entityType": "\u4ea7\u54c1", "font": {"color": "#1a1a1a"}, "group": "\u4ea7\u54c1", "id": "\u51cf\u80a5\u4ea7\u54c1", "label": "\u51cf\u80a5\u4ea7\u54c1", "shape": "dot", "source_blocks": ["block_554_-4376138568738181670"], "title": "\u4ea7\u54c1", "value": 16.60025728572497, "x": -552.8978507245117, "y": -469.01844580716244}, {"entityType": "\u7ec4\u7ec7", "font": {"color": "#1a1a1a"}, "group": "\u7ec4\u7ec7", "id": "\u836f\u738b\u95e8", "label": "\u836f\u738b\u95e8", "shape": "dot", "source_blocks": ["block_21_-752599364295301943"], "title": "\u7ec4\u7ec7", "value": 17.95415304658828, "x": 95.46041475210478, "y": 285.7204219392322}, {"entityType": "\u65b9\u6cd5", "font": {"color": "#1a1a1a"}, "group": "\u65b9\u6cd5", "id": "\u5145\u76c8\u6b63\u6c14", "label": "\u5145\u76c8\u6b63\u6c14", "shape": "dot", "source_blocks": ["block_21_-752599364295301943"], "title": "\u65b9\u6cd5", "value": 19.507078032240404, "x": -24.373494729835226, "y": 359.46459907330717}, {"entityType": "\u65f6\u95f4", "font": {"color": "#1a1a1a"}, "group": "\u65f6\u95f4", "id": "\u5bd2\u5047", "label": "\u5bd2\u5047", "shape": "dot", "source_blocks": ["block_225_-3631149117999936590"], "title": "\u65f6\u95f4", "value": 16.736733926633068, "x": 156.0870122192259, "y": 540.0636259140311}, {"entityType": "\u52a8\u7269", "font": {"color": "#1a1a1a"}, "group": "\u52a8\u7269", "id": "\u4e4c\u9f9f", "label": "\u4e4c\u9f9f", "shape": "dot", "source_blocks": ["block_184_-7224595166323242428", "block_390_-7199279475647595298"], "title": "\u52a8\u7269", "value": 16.587273297076916, "x": -422.88084610734694, "y": -651.6325305051388}, {"entityType": "\u7ec4\u7ec7", "font": {"color": "#1a1a1a"}, "group": "\u7ec4\u7ec7", "id": "\u9053\u5bb6\u4e5d\u5bab\u516b\u5366\u62f3", "label": "\u9053\u5bb6\u4e5d\u5bab\u516b\u5366\u62f3", "shape": "dot", "source_blocks": ["block_21_-752599364295301943"], "title": "\u7ec4\u7ec7", "value": 17.95415304658828, "x": -172.27997581202453, "y": 262.88010892264634}, {"entityType": "\u65b9\u6cd5", "font": {"color": "#1a1a1a"}, "group": "\u65b9\u6cd5", "id": "\u592a\u9633\u529f", "label": "\u592a\u9633\u529f", "shape": "dot", "source_blocks": ["block_21_-752599364295301943"], "title": "\u65b9\u6cd5", "value": 17.964125728157544, "x": -19.056888492548488, "y": 169.5413709846683}, {"entityType": "\u65f6\u95f4", "font": {"color": "#1a1a1a"}, "group": "\u65f6\u95f4", "id": "\u534a\u5e74\u591a", "label": "\u534a\u5e74\u591a", "shape": "dot", "source_blocks": ["block_22_-1393017026843531437"], "title": "\u65f6\u95f4", "value": 16.485482705145294, "x": 373.8203590819617, "y": -77.0529661887621}, {"entityType": "\u65b9\u6cd5", "font": {"color": "#1a1a1a"}, "group": "\u65b9\u6cd5", "id": "\u505a\u793c\u62dc", "label": "\u505a\u793c\u62dc", "shape": "dot", "source_blocks": ["block_161_-3193688494588915550", "block_652_3827960328983317011"], "title": "\u65b9\u6cd5", "value": 16.581361974898684, "x": -855.9457916773868, "y": 425.86912495665143}, {"entityType": "\u65f6\u95f4", "font": {"color": "#1a1a1a"}, "group": "\u65f6\u95f4", "id": "\u4e09\u4e94\u5929", "label": "\u4e09\u4e94\u5929", "shape": "dot", "source_blocks": ["block_22_-1393017026843531437"], "title": "\u65f6\u95f4", "value": 16.485482705145294, "x": 316.8640776155704, "y": -144.63479748167902}, {"entityType": "\u4eba\u7269", "font": {"color": "#1a1a1a"}, "group": "\u4eba\u7269", "id": "\u767d\u8863\u5973\u5b50", "label": "\u767d\u8863\u5973\u5b50", "shape": "dot", "source_blocks": ["block_379_5717405026386311739"], "title": "\u4eba\u7269", "value": 26.513498765249206, "x": -155.41062828686447, "y": 467.76394560913025}, {"entityType": "\u4e8b\u4ef6", "font": {"color": "#1a1a1a"}, "group": "\u4e8b\u4ef6", "id": "\u4e2d\u8003", "label": "\u4e2d\u8003", "shape": "dot", "source_blocks": ["block_379_5717405026386311739", "block_777_312313342294452924"], "title": "\u4e8b\u4ef6", "value": 16.555441590880786, "x": -281.41101402168823, "y": 398.1735897872458}, {"entityType": "\u5178\u6545", "font": {"color": "#1a1a1a"}, "group": "\u5178\u6545", "id": "\u585e\u7fc1\u5931\u9a6c", "label": "\u585e\u7fc1\u5931\u9a6c", "shape": "dot", "source_blocks": ["block_7_8521903513124545272", "block_9_3553279334613374205", "block_287_460740752259335811"], "title": "\u5178\u6545", "value": 19.330330881825272, "x": 837.7192256286056, "y": -175.35283149650596}, {"entityType": "\u8bc1\u4ef6", "font": {"color": "#1a1a1a"}, "group": "\u8bc1\u4ef6", "id": "\u62a4\u7167", "label": "\u62a4\u7167", "shape": "dot", "source_blocks": ["block_4_6120390755030716216", "block_30_-1951014792170048984", "block_364_1214449879727227036", "block_599_-7455402991029347753"], "title": "\u8bc1\u4ef6", "value": 19.29219540435759, "x": 370.77008129446153, "y": 87.22737983088876}, {"entityType": "\u4eba\u7269", "font": {"color": "#1a1a1a"}, "group": "\u4eba\u7269", "id": "\u585e\u7fc1", "label": "\u585e\u7fc1", "shape": "dot", "source_blocks": ["block_7_8521903513124545272", "block_9_3553279334613374205"], "title": "\u4eba\u7269", "value": 21.03653994041799, "x": 931.9509537758629, "y": -294.5399705065458}, {"entityType": "\u5236\u5ea6", "font": {"color": "#1a1a1a"}, "group": "\u5236\u5ea6", "id": "\u4e5d\u5e74\u4e49\u52a1\u6559\u80b2", "label": "\u4e5d\u5e74\u4e49\u52a1\u6559\u80b2", "shape": "dot", "source_blocks": ["block_7_8521903513124545272", "block_60_5911253026568212582", "block_104_-3737342987493147576", "block_190_-2271986875466993398"], "title": "\u5236\u5ea6", "value": 20.792276693393063, "x": 736.5023412327921, "y": -48.90924846616143}, {"entityType": "\u4eba\u7269", "font": {"color": "#1a1a1a"}, "group": "\u4eba\u7269", "id": "\u5c0f\u5c11\u7237", "label": "\u5c0f\u5c11\u7237", "shape": "dot", "source_blocks": ["block_12_7132662707597068366"], "title": "\u4eba\u7269", "value": 16.506067237291383, "x": -390.16130350711586, "y": -486.85719940810947}, {"entityType": "\u4eba\u7269", "font": {"color": "#1a1a1a"}, "group": "\u4eba\u7269", "id": "\u8521\u603b", "label": "\u8521\u603b", "shape": "dot", "source_blocks": ["block_22_-1393017026843531437", "block_23_-8050319687114774584", "block_24_-3838897353600394146", "block_25_-8879010985671004941", "block_29_-8540621134289382775", "block_30_-1951014792170048984", "block_39_7056806978799496737", "block_40_-5027165356251615834", "block_49_-4627778653103282992", "block_50_-2137992727468772229", "block_52_3685558638210935363", "block_53_-7584024858296971698", "block_60_5911253026568212582", "block_385_9221005856198569915"], "title": "\u4eba\u7269", "value": 37.623157209783464, "x": 274.71546436002905, "y": -47.32804477141069}, {"entityType": "\u804c\u4e1a", "font": {"color": "#1a1a1a"}, "group": "\u804c\u4e1a", "id": "\u6a21\u7279\u513f", "label": "\u6a21\u7279\u513f", "shape": "dot", "source_blocks": ["block_12_7132662707597068366"], "title": "\u804c\u4e1a", "value": 16.508640303809642, "x": -312.0917140848596, "y": -514.8435713507572}, {"entityType": "\u4eba\u7269", "font": {"color": "#1a1a1a"}, "group": "\u4eba\u7269", "id": "\u674e\u5e7f", "label": "\u674e\u5e7f", "shape": "dot", "source_blocks": ["block_24_-3838897353600394146", "block_26_2707924312528937911", "block_30_-1951014792170048984", "block_39_7056806978799496737", "block_40_-5027165356251615834", "block_59_-7955465928685885120", "block_60_5911253026568212582"], "title": "\u4eba\u7269", "value": 41.15387782681431, "x": 449.9777834082215, "y": 153.79682505143228}, {"entityType": "\u4eba\u7269", "font": {"color": "#1a1a1a"}, "group": "\u4eba\u7269", "id": "\u5b9d\u5b9d", "label": "\u5b9d\u5b9d", "shape": "dot", "source_blocks": ["block_12_7132662707597068366", "block_390_-7199279475647595298"], "title": "\u4eba\u7269", "value": 17.89752919269853, "x": -414.6087977793145, "y": -567.6388806471882}, {"entityType": "\u65b9\u6cd5", "font": {"color": "#1a1a1a"}, "group": "\u65b9\u6cd5", "id": "\u91c7\u65e5\u5149\u529f", "label": "\u91c7\u65e5\u5149\u529f", "shape": "dot", "source_blocks": ["block_21_-752599364295301943", "block_22_-1393017026843531437"], "title": "\u65b9\u6cd5", "value": 35.25352021223321, "x": 1.9666763342646214, "y": 263.34770072713434}, {"entityType": "\u5546\u54c1", "font": {"color": "#1a1a1a"}, "group": "\u5546\u54c1", "id": "\u8001\u5e72\u5988", "label": "\u8001\u5e72\u5988", "shape": "dot", "source_blocks": ["block_39_7056806978799496737"], "title": "\u5546\u54c1", "value": 16.625610026726395, "x": 540.2996880369077, "y": 109.65042479773678}, {"entityType": "\u7ec4\u7ec7", "font": {"color": "#1a1a1a"}, "group": "\u7ec4\u7ec7", "id": "\u5927\u5b66", "label": "\u5927\u5b66", "shape": "dot", "source_blocks": ["block_1_3512825708165911950", "block_17_3822484011133288140", "block_60_5911253026568212582", "block_141_-6140633508205995509", "block_174_1348126779278678193", "block_190_-2271986875466993398", "block_225_-3631149117999936590", "block_226_-6123881381848092572", "block_248_-9171588623791489519", "block_373_6859605294015259219", "block_379_5717405026386311739", "block_466_-4551029684261373849", "block_607_140686312747669060", "block_731_-7727807050022408016"], "title": "\u7ec4\u7ec7", "value": 23.775473161089938, "x": 182.64018070238188, "y": 302.60616766917724}, {"entityType": "\u529f\u80fd", "font": {"color": "#1a1a1a"}, "group": "\u529f\u80fd", "id": "\u987a\u6ed1\u5ea6", "label": "\u987a\u6ed1\u5ea6", "shape": "dot", "source_blocks": ["block_652_3827960328983317011"], "title": "\u529f\u80fd", "value": 16.501684930622112, "x": -842.4272104180283, "y": 274.37175954402153}, {"entityType": "\u65b9\u6cd5", "font": {"color": "#1a1a1a"}, "group": "\u65b9\u6cd5", "id": "\u7985\u4fee", "label": "\u7985\u4fee", "shape": "dot", "source_blocks": ["block_49_-4627778653103282992"], "title": "\u65b9\u6cd5", "value": 16.508323213470888, "x": 400.37753326625904, "y": -496.8425360029381}, {"entityType": "\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6982\u5ff5", "id": "\u5927\u6148\u60b2\u5fc3", "label": "\u5927\u6148\u60b2\u5fc3", "shape": "dot", "source_blocks": ["block_52_3685558638210935363"], "title": "\u6982\u5ff5", "value": 16.505785379212487, "x": 330.68877798922193, "y": -541.8026868669675}, {"entityType": "\u5730\u70b9", "font": {"color": "#1a1a1a"}, "group": "\u5730\u70b9", "id": "\u5b9e\u9f99\u5c97\u8def\u7985\u5802", "label": "\u5b9e\u9f99\u5c97\u8def\u7985\u5802", "shape": "dot", "source_blocks": ["block_50_-2137992727468772229"], "title": "\u5730\u70b9", "value": 16.631444741966888, "x": 302.92513548590125, "y": -295.253280716433}, {"entityType": "\u4eba\u7269", "font": {"color": "#1a1a1a"}, "group": "\u4eba\u7269", "id": "\u65e0\u4f18\u7985\u5e08", "label": "\u65e0\u4f18\u7985\u5e08", "shape": "dot", "source_blocks": ["block_49_-4627778653103282992", "block_51_6108806251966335854", "block_52_3685558638210935363", "block_779_3119995856911877585"], "title": "\u4eba\u7269", "value": 26.269346637158602, "x": 380.0589623797046, "y": -405.8843275930884}, {"entityType": "\u6570\u91cf", "font": {"color": "#1a1a1a"}, "group": "\u6570\u91cf", "id": "5000\u591a\u6761", "label": "5000\u591a\u6761", "shape": "dot", "source_blocks": ["block_652_3827960328983317011"], "title": "\u6570\u91cf", "value": 17.892599097695605, "x": -757.0870882176489, "y": 38.366357036244885}, {"entityType": "\u6750\u6599", "font": {"color": "#1a1a1a"}, "group": "\u6750\u6599", "id": "\u73af\u4fdd\u6750\u6599", "label": "\u73af\u4fdd\u6750\u6599", "shape": "dot", "source_blocks": ["block_652_3827960328983317011"], "title": "\u6750\u6599", "value": 16.503710208806716, "x": -762.4772148024919, "y": 296.41571515218686}]);
+                  edges = new vis.DataSet([{"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u5802\u4e3b", "evidence_target": "\u65e0\u5fe7\u7985\u5e08", "font": {"size": 0}, "from": "\u5802\u4e3b", "hoverWidth": 3.3, "label": "\u5c0a\u79f0\u5e08\u7236", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u5802\u4e3b\u7b80\u77ed\u81f4\u8f9e\u540e\uff0c\u5c06\u821e\u53f0\u8ba9\u7ed9\u4e86\u65e0\u4f18\u7985\u5e08\uff1a\u201c\u6211\u5c31\u4e0d\u591a\u8bf4\u4e86\uff0c\u6211\u4eec\u628a\u65f6\u95f4\u7559\u7ed9\u5e08\u7236\u3002\u201d", "to": "\u65e0\u5fe7\u7985\u5e08", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u5802\u4e3b", "evidence_target": "\u65e0\u4f18\u7985\u5e08", "font": {"size": 0}, "from": "\u5802\u4e3b", "hoverWidth": 2.9, "label": "\u4e3b\u6301\u6d3b\u52a8\u5e76\u4ecb\u7ecd\u7985\u5e08", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u4e3b\u6301\u4eba\u5802\u4e3b\u4e0a\u53f0\u4e86\u3002", "to": "\u65e0\u4f18\u7985\u5e08", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u4e3b\u7ba1", "evidence_target": "\u5fae\u5546", "font": {"size": 0}, "from": "\u4e3b\u7ba1", "hoverWidth": 3.1, "label": "\u7c7b\u4f3c\u5fae\u5546\u6a21\u5f0f", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u5979\u4eec\u7c7b\u4f3c\u5fae\u5546\u90a3\u4e00\u5957\uff0c\u5929\u5929\u5728\u670b\u53cb\u5708\u70ab\u7f8e\u70ab\u5bcc\u3002", "to": "\u5fae\u5546", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u4e3b\u7ba1", "evidence_target": "\u9762\u65e0\u4e09\u4e24\u8089\uff0c\u5978\u6ed1\u591a\u7b97\u8ba1", "font": {"size": 0}, "from": "\u4e3b\u7ba1", "hoverWidth": 3.1, "label": "\u7b26\u5408\u9762\u76f8\u63cf\u8ff0", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u8001\u8bdd\u8bb2\uff1a\u9762\u65e0\u4e09\u4e24\u8089\uff0c\u5978\u6ed1\u591a\u7b97\u8ba1\u3002", "to": "\u9762\u65e0\u4e09\u4e24\u8089\uff0c\u5978\u6ed1\u591a\u7b97\u8ba1", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u4e3b\u7ba1", "evidence_target": "\u51e0\u5341\u4e07", "font": {"size": 0}, "from": "\u4e3b\u7ba1", "hoverWidth": 3.3, "label": "\u63d0\u6210\u51e0\u5341\u4e07", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u6bcf\u4eba\u5c06\u8fd110\u4e07\uff0c\u8fd9\u5c31\u662f\u51e0\u767e\u4e07\uff0c\u5979\u7684\u63d0\u6210\u51e0\u5341\u4e07\u5f97\u6709\u5427\uff1f", "to": "\u51e0\u5341\u4e07", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u4e3b\u7ba1", "evidence_target": "\u51e0\u767e\u4e07", "font": {"size": 0}, "from": "\u4e3b\u7ba1", "hoverWidth": 3.3, "label": "\u8d5a\u51e0\u767e\u4e07", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u5979\u8d5a\u4e2a\u51e0\u767e\u4e07\uff0c\u5979\u8001\u516c\u5c31\u80fd\u7ed9\u5979\u7978\u7978\u4e0a\u5343\u4e07\u3002", "to": "\u51e0\u767e\u4e07", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u4e3b\u7ba1", "evidence_target": "\u4e0a\u5343\u4e07", "font": {"size": 0}, "from": "\u4e3b\u7ba1", "hoverWidth": 3.3, "label": "\u8001\u516c\u7978\u7978\u4e0a\u5343\u4e07", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u5979\u8d5a\u4e2a\u51e0\u767e\u4e07\uff0c\u5979\u8001\u516c\u5c31\u80fd\u7ed9\u5979\u7978\u7978\u4e0a\u5343\u4e07\u3002", "to": "\u4e0a\u5343\u4e07", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u51e0\u5343\u4e2a", "evidence_target": "\u4e8c\u4e09\u5341\u5757\u94b1", "font": {"size": 0}, "from": "\u51e0\u5343\u4e2a", "hoverWidth": 3.1, "label": "\u4ef7\u683c", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u5e73\u65f6\u5e38\u89c1\u7684\u53e0\u597d\u7684\u5143\u5b9d\uff0c\u6bcf\u888b\u662f\u4e00\u5343\u4e2a\uff0c\u4e5f\u5c31\u4e8c\u4e09\u5341\u5757\u94b1\u3002", "to": "\u4e8c\u4e09\u5341\u5757\u94b1", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u6d77\u5173", "evidence_target": "\u7eff\u8272\u901a\u9053", "font": {"size": 0}, "from": "\u6d77\u5173", "hoverWidth": 2.9, "label": "\u65e0\u9700\u6392\u961f\u901a\u8fc7", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u5728\u7a7a\u59d0\u4e00\u8def\u7684\u5e26\u9886\u4e0b\uff0c\u6211\u4eec\u8fc7\u6d77\u5173\u4e5f\u6ca1\u7528\u6392\u961f\uff0c\u5237\u4e86\u8eab\u4efd\u8bc1\u5c31\u76f4\u63a5\u4ece\u6377\u5f84\u8dd1\u5230\u4e86\u673a\u8231\u53e3\u3002", "to": "\u7eff\u8272\u901a\u9053", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u5341\u4e07\u8d2f", "evidence_target": "\u51e0\u5343\u4e2a", "font": {"size": 0}, "from": "\u5341\u4e07\u8d2f", "hoverWidth": 3.3, "label": "\u5bf9\u5e94", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u7b97\u51fa\u6765\u7684\u9634\u503a\u7684\u5341\u4e07\u8d2f\uff0c\u5927\u6982\u53ea\u9700\u8981\u51e0\u5343\u4e2a\u5143\u5b9d\u3002", "to": "\u51e0\u5343\u4e2a", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u7a7a\u59d0", "evidence_target": "\u7eff\u8272\u901a\u9053", "font": {"size": 0}, "from": "\u7a7a\u59d0", "hoverWidth": 3.3, "label": "\u5e26\u9886\u8d70", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u7a7a\u59d0\u62ce\u8d77\u6211\u4eec\u7684\u624b\u63d0\u5305\uff0c\u5c31\u5728\u524d\u9762\u8dd1\uff0c\u4e00\u8fb9\u8dd1\u4e00\u8fb9\u558a\uff1a\u201c\u65f6\u95f4\u6765\u4e0d\u53ca\u4e86\uff0c\u5feb\u8ddf\u6211\u8dd1\uff0c\u8d70\u7eff\u8272\u901a\u9053\uff01\u201d", "to": "\u7eff\u8272\u901a\u9053", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u4e8c\u5341\u591a\u5c81", "evidence_target": "\u767d\u8863\u5973\u5b50", "font": {"size": 0}, "from": "\u4e8c\u5341\u591a\u5c81", "hoverWidth": 3.3, "label": "\u9996\u6b21\u4f7f\u7528\u907f\u5b55\u5957\u5e74\u9f84", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u6211\u4e8c\u5341\u591a\u5c81\u624d\u7b2c\u4e00\u6b21\u7528\u907f\u5b55\u5957\u3002", "to": "\u767d\u8863\u5973\u5b50", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u5973\u4eba", "evidence_target": "\u6a21\u7279\u513f", "font": {"size": 0}, "from": "\u5973\u4eba", "hoverWidth": 3.3, "label": "\u8eab\u6750\u50cf", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u6a21\u7279\u513f\u4e00\u6837\u7684\u8eab\u6750\uff0c\u5927\u9ad8\u4e2a\u513f\uff0c\u7626\uff0c\u767d\uff0c\u76f4\u3002", "to": "\u6a21\u7279\u513f", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u5973\u4eba", "evidence_target": "\u5c0f\u5c11\u7237", "font": {"size": 0}, "from": "\u5973\u4eba", "hoverWidth": 3.1, "label": "\u643a\u5e26", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u4e00\u4e2a\u56db\u4e94\u5c81\uff0c\u8fd8\u6ca1\u6709\u884c\u674e\u7bb1\u9ad8\u3002\u7a7f\u7684\u677f\u677f\u6b63\u513f\u6b63\u513f\u7684\u5c0f\u897f\u88c5\uff0c\u4e00\u4e1d\u4e0d\u82df\uff0c\u50cf\u4e2a\u5c0f\u5c11\u7237\u4e00\u6837\u3002", "to": "\u5c0f\u5c11\u7237", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u5973\u4eba", "evidence_target": "\u5b9d\u5b9d", "font": {"size": 0}, "from": "\u5973\u4eba", "hoverWidth": 3.3, "label": "\u643a\u5e26", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u4e00\u4e2a\u66f4\u5c0f\uff0c\u8fd8\u662f\u62b1\u5728\u6000\u91cc\u7684\u3002\u5973\u4eba\u4e00\u8fb9\u7ed9\u5979\u64e6\u5634\uff0c\u4e00\u8fb9\u5728\u6536\u62fe\u5976\u74f6\uff0c\u51c6\u5907\u767b\u673a\u3002", "to": "\u5b9d\u5b9d", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u5973\u4eba", "evidence_target": "\u5b9d\u5988", "font": {"size": 0}, "from": "\u5973\u4eba", "hoverWidth": 2.7, "label": "\u5bf9\u6bd4\u5bf9\u8c61", "origin": "extracted", "selectionWidth": 3.2, "source_block": "", "title": "\u6211\u89c1\u8fc7\u5f88\u591a\u5b9d\u5988\uff0c\u5934\u53d1\u80e1\u4e71\u7684\u98de\u821e\u7740\uff0c\u597d\u50cf\u521a\u8ddf\u8c01\u6253\u5b8c\u67b6\u6253\u8f93\u4e86\u4e00\u6837\uff0c\u7070\u5934\u571f\u8138\u7684\u3002", "to": "\u5b9d\u5988", "weight": 0.6, "width": 2.8}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u5973\u4eba", "evidence_target": "\u72d0\u72f8\u7cbe", "font": {"size": 0}, "from": "\u5973\u4eba", "hoverWidth": 3.1, "label": "\u6253\u626e\u50cf\u72d0\u72f8\u7cbe", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u5c16\u5634\u7334\u816e\u7684\uff0c\u6253\u626e\u7684\u5374\u53c8\u82b1\u91cc\u80e1\u54e8\uff0c\u8bf4\u50cf\u72d0\u72f8\u7cbe\uff0c\u5012\u4e5f\u8bf4\u5f97\u8fc7\u53bb\u3002", "to": "\u72d0\u72f8\u7cbe", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u5973\u4eba", "evidence_target": "\u5fae\u5546", "font": {"size": 0}, "from": "\u5973\u4eba", "hoverWidth": 3.3, "label": "\u5973\u4eba\u505a\u5fae\u5546", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u6211\u6709\u4e2a\u5c0f\u5b66\u540c\u5b66\uff0c\u5973\u7684\uff0c\u524d\u51e0\u5e74\u505a\u5fae\u5546\uff0c\u5356\u51cf\u80a5\u4ea7\u54c1\u3002", "to": "\u5fae\u5546", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u5973\u4eba", "evidence_target": "\u4eba\u7f18", "font": {"size": 0}, "from": "\u5973\u4eba", "hoverWidth": 3.1, "label": "\u5973\u4eba\u7709\u6bdb\u8fc7\u7ec6\u5f71\u54cd\u4eba\u7f18", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u5973\u4eba\u8fc7\u7ec6\u7684\u7709\u6bdb\u4e5f\u6709\u7c7b\u4f3c\u60c5\u51b5\uff0c\u5c24\u5176\u662f\u90a3\u79cd\u7eb9\u6210\u4e00\u6839\u7ebf\u4e00\u6837\u7684\u53c8\u7ec6\u53c8\u957f\u7684\u7709\u6bdb\uff0c\u4e3b\u592b\u59bb\u8fd0\u5dee\uff08\u4eba\u7f18\u4e5f\u5f88\u4e00\u822c\uff09\uff0c\u505a\u4e8b\u61d2\u6563\u3002", "to": "\u4eba\u7f18", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u767b\u673a\u53e3", "evidence_target": "\u5973\u4eba", "font": {"size": 0}, "from": "\u767b\u673a\u53e3", "hoverWidth": 3.3, "label": "\u51fa\u73b0\u5730\u70b9", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u5728\u767b\u673a\u53e3\uff0c\u6211\u770b\u5230\u4e86\u4e00\u4e2a\u7cbe\u81f4\u7684\u5973\u4eba\u3002", "to": "\u5973\u4eba", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u767b\u673a\u53e3", "evidence_target": "15\u5206\u949f", "font": {"size": 0}, "from": "\u767b\u673a\u53e3", "hoverWidth": 3.3, "label": "\u5173\u95ed\u65f6\u95f4", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u767b\u673a\u724c\u4e0a\u8d6b\u7136\u5199\u7740\uff1a\u201c\u767b\u673a\u53e3\u4e8e\u8d77\u98de\u524d15\u5206\u949f\u5173\u95ed\u3002\u201d", "to": "15\u5206\u949f", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u91c7\u65e5\u6708\u4e4b\u7cbe\u534e", "evidence_target": "\u5438\u5929\u5730\u4e4b\u5143\u6c14", "font": {"size": 0}, "from": "\u91c7\u65e5\u6708\u4e4b\u7cbe\u534e", "hoverWidth": 3.3, "label": "\u5e76\u5217\u5173\u7cfb\uff0c\u5171\u540c\u6784\u6210\u91c7\u65e5\u5149\u529f\u7684\u529f\u6548\u63cf\u8ff0", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u91c7\u65e5\u6708\u4e4b\u7cbe\u534e\uff0c\u5438\u5929\u5730\u4e4b\u5143\u6c14\uff0c\u53ef\u4ee5\u6e29\u8865\u4e94\u810f\uff0c\u5145\u76c8\u6b63\u6c14\uff0c\u8fbe\u5230\u7cbe\u529b\u5145\u6c9b\uff0c\u5f00\u542f\u667a\u6167\u7684\u529f\u6548\u3002", "to": "\u5438\u5929\u5730\u4e4b\u5143\u6c14", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u91c7\u65e5\u6708\u4e4b\u7cbe\u534e", "evidence_target": "\u6e29\u8865\u4e94\u810f", "font": {"size": 0}, "from": "\u91c7\u65e5\u6708\u4e4b\u7cbe\u534e", "hoverWidth": 3.1, "label": "\u529f\u6548\u5173\u7cfb", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u91c7\u65e5\u6708\u4e4b\u7cbe\u534e\uff0c\u5438\u5929\u5730\u4e4b\u5143\u6c14\uff0c\u53ef\u4ee5\u6e29\u8865\u4e94\u810f\uff0c\u5145\u76c8\u6b63\u6c14\uff0c\u8fbe\u5230\u7cbe\u529b\u5145\u6c9b\uff0c\u5f00\u542f\u667a\u6167\u7684\u529f\u6548\u3002", "to": "\u6e29\u8865\u4e94\u810f", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u91c7\u65e5\u6708\u4e4b\u7cbe\u534e", "evidence_target": "\u5145\u76c8\u6b63\u6c14", "font": {"size": 0}, "from": "\u91c7\u65e5\u6708\u4e4b\u7cbe\u534e", "hoverWidth": 3.1, "label": "\u529f\u6548\u5173\u7cfb", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u91c7\u65e5\u6708\u4e4b\u7cbe\u534e\uff0c\u5438\u5929\u5730\u4e4b\u5143\u6c14\uff0c\u53ef\u4ee5\u6e29\u8865\u4e94\u810f\uff0c\u5145\u76c8\u6b63\u6c14\uff0c\u8fbe\u5230\u7cbe\u529b\u5145\u6c9b\uff0c\u5f00\u542f\u667a\u6167\u7684\u529f\u6548\u3002", "to": "\u5145\u76c8\u6b63\u6c14", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u51e0\u5341\u4e07", "evidence_target": "\u5341\u4e07\u8d2f", "font": {"size": 0}, "from": "\u51e0\u5341\u4e07", "hoverWidth": 3.1, "label": "\u5bf9\u5e94", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u6700\u591a\u7684\u95ee\u9898\u662f\uff0c\u6b20\u4e86\u51e0\u5341\u4e07\uff0c\u8fd8\u4e0d\u8d77\u3002\u7b97\u51fa\u6765\u7684\u9634\u503a\u7684\u5341\u4e07\u8d2f\uff0c\u5927\u6982\u53ea\u9700\u8981\u51e0\u5343\u4e2a\u5143\u5b9d\u3002", "to": "\u5341\u4e07\u8d2f", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u6885\u82b1\u62f3", "evidence_target": "\u91c7\u65e5\u5149\u529f", "font": {"size": 0}, "from": "\u6885\u82b1\u62f3", "hoverWidth": 3.3, "label": "\u5305\u542b\u5173\u7cfb\uff0c\u5176\u517b\u751f\u529f\u5c5e\u4e8e\u91c7\u65e5\u5149\u529f", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u6bd4\u5982\u9053\u5bb6\u4e5d\u5bab\u516b\u5366\u62f3\u4e4b\u5185\u529f\uff0c\u6885\u82b1\u62f3\u4e4b\u517b\u751f\u529f\uff0c\u836f\u738b\u95e8\u4e4b\u592a\u9633\u529f\uff0c\u90fd\u662f\u6307\u7684\u8fd9\u4e2a\uff0c\u5185\u5bb9\u57fa\u672c\u76f8\u4f3c\u3002", "to": "\u91c7\u65e5\u5149\u529f", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u65e0\u5fe7\u7985\u5e08", "evidence_target": "\u5b9e\u9f99\u5c97\u8def\u7985\u5802", "font": {"size": 0}, "from": "\u65e0\u5fe7\u7985\u5e08", "hoverWidth": 3.1, "label": "\u5230\u8bbf", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u6211\u4eec\u62b5\u8fbe\u5b9e\u9f99\u5c97\u8def\u7985\u5802\u65f6\uff08\u73b0\u5df2\u6539\u5740\uff09\uff0c\u73b0\u573a\u5df2\u662f\u4eba\u5934\u6512\u52a8\uff0c\u65e0\u4f18\u7985\u5e08\u5c1a\u672a\u5230\u6765\u3002", "to": "\u5b9e\u9f99\u5c97\u8def\u7985\u5802", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u5927\u56db\u7b2c\u4e00\u5b66\u671f", "evidence_target": "\u5bd2\u5047", "font": {"size": 0}, "from": "\u5927\u56db\u7b2c\u4e00\u5b66\u671f", "hoverWidth": 3.1, "label": "\u5927\u56db\u7b2c\u4e00\u5b66\u671f\u672b\u5c3e\u4e34\u8fd1\u5bd2\u5047", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u5728\u5927\u56db\u7b2c\u4e00\u5b66\u671f\u7684\u672b\u5c3e\uff0c\u518d\u6709\u4e00\u4e2a\u591a\u6708\u5c31\u8981\u653e\u5bd2\u5047\u7684\u65f6\u5019\uff0c\u6211\u624b\u673a\u4e0d\u77e5\u9053\u600e\u4e48\u5f04\u4e22\u4e86\u3002", "to": "\u5bd2\u5047", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u56fd\u9645\u4eba\u58eb", "evidence_target": "\u674e\u5e7f", "font": {"size": 0}, "from": "\u56fd\u9645\u4eba\u58eb", "hoverWidth": 2.9, "label": "\u79f0\u547c", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u201c\u4f60\u73b0\u5728\u662f\u56fd\u9645\u4eba\u58eb\u4e86\uff0c\u773c\u5149\u5f00\u9614\uff0c\u6709\u673a\u4f1a\u5e2e\u6211\u4e5f\u529e\u8fc7\u53bb\u5427\uff01\u201d\u674e\u5e7f\u7559\u8a00\u9053\u3002", "to": "\u674e\u5e7f", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u5584\u672f\u8005", "evidence_target": "\u585e\u7fc1", "font": {"size": 0}, "from": "\u5584\u672f\u8005", "hoverWidth": 3.3, "label": "\u585e\u7fc1\u662f\u5584\u672f\u8005", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u8fd1\u585e\u4e0a\u4e4b\u4eba\uff0c\u6709\u5584\u672f\u8005\u3002", "to": "\u585e\u7fc1", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u624b\u63d0\u5305", "evidence_target": "\u7a7a\u59d0", "font": {"size": 0}, "from": "\u624b\u63d0\u5305", "hoverWidth": 3.1, "label": "\u88ab\u62ce\u8d77", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u7a7a\u59d0\u62ce\u8d77\u6211\u4eec\u7684\u624b\u63d0\u5305\uff0c\u5c31\u5728\u524d\u9762\u8dd1\uff0c\u4e00\u8fb9\u8dd1\u4e00\u8fb9\u558a\uff1a\u201c\u65f6\u95f4\u6765\u4e0d\u53ca\u4e86\uff0c\u5feb\u8ddf\u6211\u8dd1\uff0c\u8d70\u7eff\u8272\u901a\u9053\uff01\u201d", "to": "\u7a7a\u59d0", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u673a\u8231", "evidence_target": "\u7eff\u8272\u901a\u9053", "font": {"size": 0}, "from": "\u673a\u8231", "hoverWidth": 2.7, "label": "\u901a\u5f80", "origin": "extracted", "selectionWidth": 3.2, "source_block": "", "title": "\u5728\u7a7a\u59d0\u4e00\u8def\u7684\u5e26\u9886\u4e0b\uff0c\u6211\u4eec\u8fc7\u6d77\u5173\u4e5f\u6ca1\u7528\u6392\u961f\uff0c\u5237\u4e86\u8eab\u4efd\u8bc1\u5c31\u76f4\u63a5\u4ece\u6377\u5f84\u8dd1\u5230\u4e86\u673a\u8231\u53e3\u3002", "to": "\u7eff\u8272\u901a\u9053", "weight": 0.6, "width": 2.8}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u6a71\u7a97", "evidence_target": "\u57ab\u5b50", "font": {"size": 0}, "from": "\u6a71\u7a97", "hoverWidth": 2.7, "label": "\u5c55\u793a", "origin": "extracted", "selectionWidth": 3.2, "source_block": "", "title": "\u4ed6\u7684\u6a71\u7a97\u91cc\u8fd8\u6709\u5f88\u591a\u5176\u4ed6\u7684\u7269\u4ef6\u513f\uff0c\u9500\u91cf\u4e5f\u4e0d\u9519\u3002", "to": "\u57ab\u5b50", "weight": 0.6, "width": 2.8}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u6bd5\u4e1a\u8bc1", "evidence_target": "\u5927\u5b66", "font": {"size": 0}, "from": "\u6bd5\u4e1a\u8bc1", "hoverWidth": 3.1, "label": "\u7531\u5927\u5b66\u9881\u53d1", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u90a3\u6240\u5b66\u6821\u672c\u6765\u5c31\u6ca1\u5565\u540d\u6c14\uff0c\u88ab\u5408\u5e76\u540e\uff0c\u66f4\u662f\u6d88\u5931\u7684\u5e72\u51c0\u5f7b\u5e95\u3002", "to": "\u5927\u5b66", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u6bd5\u4e1a\u8bc1", "evidence_target": "\u674e\u5e7f", "font": {"size": 0}, "from": "\u6bd5\u4e1a\u8bc1", "hoverWidth": 3.1, "label": "\u674e\u5e7f\u63d0\u4f9b\u7684\u8d44\u6599", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u674e\u5e7f\u5f53\u4e0b\u5c31\u628a\u8d44\u6599\u4f20\u4e86\u8fc7\u6765\uff0c\u6211\u8f6c\u53d1\u7ed9\u4e86\u8521\u603b\u3002", "to": "\u674e\u5e7f", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u517b\u751f\u529f\u6cd5", "evidence_target": "\u91c7\u65e5\u5149\u529f", "font": {"size": 0}, "from": "\u517b\u751f\u529f\u6cd5", "hoverWidth": 3.3, "label": "\u5305\u542b", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u6700\u6709\u6548\u7684\u53c8\u7b80\u5355\u7684\u4e00\u79cd\uff0c\u79f0\u4e3a\u91c7\u65e5\u5149\u529f\u3002", "to": "\u91c7\u65e5\u5149\u529f", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "7\u4e2a\u4eba", "evidence_target": "\u767d\u8863\u5973\u5b50", "font": {"size": 0}, "from": "7\u4e2a\u4eba", "hoverWidth": 3.3, "label": "\u540c\u5c4a\u8003\u4e0a\u9ad8\u4e2d\u4eba\u6570", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u6211\u4eec\u6574\u4e2a\u5e74\u7ea7\uff0c\u53ea\u67097\u4e2a\u4eba\u8003\u4e0a\u4e86\u9ad8\u4e2d\u3002", "to": "\u767d\u8863\u5973\u5b50", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u5c3a\u5bf8\u8bbe\u8ba1", "evidence_target": "\u505a\u793c\u62dc", "font": {"size": 0}, "from": "\u5c3a\u5bf8\u8bbe\u8ba1", "hoverWidth": 3.1, "label": "\u8003\u8651\u56e0\u7d20", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u4e5f\u5305\u62ec\u5173\u4e8e\u5c3a\u5bf8\u8bbe\u8ba1\u7684\u5927\u5c0f\uff0c\u8003\u8651\u5230\u4e86\u505a\u793c\u62dc\u7684\u65f6\u5019\uff0c\u4eba\u4f53\u4f1a\u79fb\u52a8\u7b49\u60c5\u51b5\u3002", "to": "\u505a\u793c\u62dc", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u91c7\u9634\u8865\u9633", "evidence_target": "\u91c7\u9633\u8865\u9633", "font": {"size": 0}, "from": "\u91c7\u9634\u8865\u9633", "hoverWidth": 3.5, "label": "\u7b49\u540c", "origin": "extracted", "selectionWidth": 4.0, "source_block": "", "title": "\u629b\u5f00\u8fd9\u79cd\u501f\u53e3\u7eb5\u6b32\u7684\u60c5\u51b5\u4e0d\u8bf4\u3002\u5176\u5b9e\uff0c\u91c7\u9634\u8865\u9633\u548c\u91c7\u9633\u8865\u9633\uff0c\u662f\u540c\u4e00\u4ef6\u4e8b\u3002", "to": "\u91c7\u9633\u8865\u9633", "weight": 1.0, "width": 4.0}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u51b0\u523a", "evidence_target": "\u5173\u8282\u75bc", "font": {"size": 0}, "from": "\u51b0\u523a", "hoverWidth": 3.3, "label": "\u5bfc\u81f4", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u4ed6\u7684\u5173\u8282\u75bc\uff0c\u5927\u6982\u5c31\u662f\u8fd9\u4e9b\u51b0\u523a\u5bfc\u81f4\u7684\u3002", "to": "\u5173\u8282\u75bc", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u5c3c\u91c7", "evidence_target": "\u674e\u5e7f", "font": {"size": 0}, "from": "\u5c3c\u91c7", "hoverWidth": 2.5, "label": "\u65e0\u76f4\u63a5\u5173\u7cfb", "origin": "extracted", "selectionWidth": 3.0, "source_block": "", "title": "\u5c3c\u91c7\u8bf4\u8fc7\uff0c\u90a3\u4e9b\u6740\u4e0d\u6b7b\u4f60\u7684\uff0c\u7ec8\u5c06\u4f7f\u4f60\u5f3a\u5927\uff01", "to": "\u674e\u5e7f", "weight": 0.5, "width": 2.5}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u673a\u573a\u5de5\u4f5c\u4eba\u5458", "evidence_target": "\u7eff\u8272\u901a\u9053", "font": {"size": 0}, "from": "\u673a\u573a\u5de5\u4f5c\u4eba\u5458", "hoverWidth": 3.3, "label": "\u4f7f\u7528", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u5982\u679c\u6bcf\u4e00\u4e2a\u673a\u573a\u5de5\u4f5c\u4eba\u5458\uff0c\u90fd\u613f\u610f\u5e26\u7740\u8fdf\u5230\u7684\u4eba\u8d70\u7eff\u8272\u901a\u9053\uff0c\u6211\u4eec\u5c31\u4f1a\u4e0b\u610f\u8bc6\u7684\u4ee5\u4e3a\uff0c\u90a3\u5c31\u662f\u5979\u4eec\u5206\u5185\u7684\u4e8b\u60c5\u3002", "to": "\u7eff\u8272\u901a\u9053", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u552e\u4ef7159", "evidence_target": "\u5229\u6da6\u6bd4", "font": {"size": 0}, "from": "\u552e\u4ef7159", "hoverWidth": 2.9, "label": "\u5173\u8054", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u8fd9\u6b3e\u57ab\u5b50\u552e\u4ef7159\uff0c\u6211\u4e0d\u77e5\u9053\u5229\u6da6\u6bd4\u662f\u591a\u5c11\uff0c\u6b63\u5e38\u6765\u8bf4\uff0c\u4e09\u4e94\u5341\u5757\u94b1\u8fd8\u662f\u6709\u7684\u5427\uff0c\u4ed6\u5df2\u7ecf\u5356\u4e865000\u591a\u6761\uff0c\u8fd9\u5c31\u662f\u51e0\u5341\u4e07\u3002", "to": "\u5229\u6da6\u6bd4", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u5fae\u5546", "evidence_target": "\u51cf\u80a5\u4ea7\u54c1", "font": {"size": 0}, "from": "\u5fae\u5546", "hoverWidth": 3.3, "label": "\u9500\u552e\u51cf\u80a5\u4ea7\u54c1", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u524d\u51e0\u5e74\u505a\u5fae\u5546\uff0c\u5356\u51cf\u80a5\u4ea7\u54c1\u3002", "to": "\u51cf\u80a5\u4ea7\u54c1", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u8df3\u7ea7", "evidence_target": "\u674e\u5e7f", "font": {"size": 0}, "from": "\u8df3\u7ea7", "hoverWidth": 3.1, "label": "\u674e\u5e7f\u8df3\u7ea7", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u6211\u772f\u7740\u773c\u770b\u7740\u674e\u5e7f\uff0c\u626f\u626f\u5634\u89d2\u9053\uff0c\u201c\u8df3\u7ea7\uff01\u201d", "to": "\u674e\u5e7f", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u9ea6\u7c92\u80bf", "evidence_target": "\u6c11\u95f4\u504f\u65b9", "font": {"size": 0}, "from": "\u9ea6\u7c92\u80bf", "hoverWidth": 3.3, "label": "\u9ea6\u7c92\u80bf\u6709\u6c11\u95f4\u504f\u65b9", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u8bf4\u8d77\u9ea6\u7c92\u80bf\uff0c\u5012\u662f\u6709\u4e00\u4e2a\u5f88\u5e38\u7528\u7684\u6c11\u95f4\u504f\u65b9\u3002", "to": "\u6c11\u95f4\u504f\u65b9", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u858f\u7c73\u6c34", "evidence_target": "\u674e\u5e7f", "font": {"size": 0}, "from": "\u858f\u7c73\u6c34", "hoverWidth": 2.9, "label": "\u674e\u5e7f\u559d\u858f\u7c73\u6c34", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u4ed6\u6123\u4e86\u4e00\u4e0b\uff0c\u7b11\u9053\uff0c\u201c\u5165\u4e61\u968f\u4fd7\uff0c\u8fd8\u662f\u559d\u858f\u7c73\u6c34\u5427\u3002\u201d", "to": "\u674e\u5e7f", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u5168\u6821\u524d10\u540d", "evidence_target": "\u767d\u8863\u5973\u5b50", "font": {"size": 0}, "from": "\u5168\u6821\u524d10\u540d", "hoverWidth": 3.3, "label": "\u5b66\u4e1a\u6210\u7ee9", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u6211\u5b66\u4e60\u5f88\u597d\uff0c\u4ece\u6765\u6ca1\u4f4e\u8fc7\u5168\u6821\u524d10\u540d\u3002", "to": "\u767d\u8863\u5973\u5b50", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u57ab\u5b50", "evidence_target": "\u73af\u4fdd\u6750\u6599", "font": {"size": 0}, "from": "\u57ab\u5b50", "hoverWidth": 3.3, "label": "\u7531...\u5236\u6210", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u7528\u7684\u73af\u4fdd\u6750\u6599\uff0c\u6ca1\u6709\u5f02\u5473\u3002", "to": "\u73af\u4fdd\u6750\u6599", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u57ab\u5b50", "evidence_target": "\u9632\u6ed1", "font": {"size": 0}, "from": "\u57ab\u5b50", "hoverWidth": 3.3, "label": "\u5177\u6709\u7279\u6027", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u4e0b\u9762\u9632\u6ed1\uff0c\u4e0a\u9762\u8010\u78e8\uff0c\u8fd8\u8981\u4fdd\u8bc1\u987a\u6ed1\u5ea6\u3002", "to": "\u9632\u6ed1", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u57ab\u5b50", "evidence_target": "\u8010\u78e8", "font": {"size": 0}, "from": "\u57ab\u5b50", "hoverWidth": 3.3, "label": "\u5177\u6709\u7279\u6027", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u4e0b\u9762\u9632\u6ed1\uff0c\u4e0a\u9762\u8010\u78e8\uff0c\u8fd8\u8981\u4fdd\u8bc1\u987a\u6ed1\u5ea6\u3002", "to": "\u8010\u78e8", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u57ab\u5b50", "evidence_target": "\u987a\u6ed1\u5ea6", "font": {"size": 0}, "from": "\u57ab\u5b50", "hoverWidth": 3.1, "label": "\u4fdd\u8bc1", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u4e0b\u9762\u9632\u6ed1\uff0c\u4e0a\u9762\u8010\u78e8\uff0c\u8fd8\u8981\u4fdd\u8bc1\u987a\u6ed1\u5ea6\u3002", "to": "\u987a\u6ed1\u5ea6", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u57ab\u5b50", "evidence_target": "\u5c3a\u5bf8\u8bbe\u8ba1", "font": {"size": 0}, "from": "\u57ab\u5b50", "hoverWidth": 3.1, "label": "\u6d89\u53ca", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u4e5f\u5305\u62ec\u5173\u4e8e\u5c3a\u5bf8\u8bbe\u8ba1\u7684\u5927\u5c0f\uff0c\u8003\u8651\u5230\u4e86\u505a\u793c\u62dc\u7684\u65f6\u5019\uff0c\u4eba\u4f53\u4f1a\u79fb\u52a8\u7b49\u60c5\u51b5\u3002", "to": "\u5c3a\u5bf8\u8bbe\u8ba1", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u57ab\u5b50", "evidence_target": "\u624b\u5957", "font": {"size": 0}, "from": "\u57ab\u5b50", "hoverWidth": 2.9, "label": "\u914d\u5957\u4ea7\u54c1", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u6bd4\u5982\u589e\u52a0\u987a\u6ed1\u5ea6\u7684\u624b\u5957\uff0c\u6bd4\u5982\u5934\u57ab\u513f\u3002", "to": "\u624b\u5957", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u57ab\u5b50", "evidence_target": "\u5934\u57ab\u513f", "font": {"size": 0}, "from": "\u57ab\u5b50", "hoverWidth": 2.9, "label": "\u914d\u5957\u4ea7\u54c1", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u6bd4\u5982\u589e\u52a0\u987a\u6ed1\u5ea6\u7684\u624b\u5957\uff0c\u6bd4\u5982\u5934\u57ab\u513f\u3002", "to": "\u5934\u57ab\u513f", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u57ab\u5b50", "evidence_target": "\u552e\u4ef7159", "font": {"size": 0}, "from": "\u57ab\u5b50", "hoverWidth": 3.3, "label": "\u5b9a\u4ef7\u4e3a", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u8fd9\u6b3e\u57ab\u5b50\u552e\u4ef7159\uff0c\u6211\u4e0d\u77e5\u9053\u5229\u6da6\u6bd4\u662f\u591a\u5c11\uff0c\u6b63\u5e38\u6765\u8bf4\uff0c\u4e09\u4e94\u5341\u5757\u94b1\u8fd8\u662f\u6709\u7684\u5427\uff0c\u4ed6\u5df2\u7ecf\u5356\u4e865000\u591a\u6761\uff0c\u8fd9\u5c31\u662f\u51e0\u5341\u4e07\u3002", "to": "\u552e\u4ef7159", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u57ab\u5b50", "evidence_target": "5000\u591a\u6761", "font": {"size": 0}, "from": "\u57ab\u5b50", "hoverWidth": 3.3, "label": "\u9500\u91cf", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u4ed6\u5df2\u7ecf\u5356\u4e865000\u591a\u6761\uff0c\u8fd9\u5c31\u662f\u51e0\u5341\u4e07\u3002", "to": "5000\u591a\u6761", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u8d2b\u56f0\u8865\u52a9", "evidence_target": "\u5927\u5b66", "font": {"size": 0}, "from": "\u8d2b\u56f0\u8865\u52a9", "hoverWidth": 3.3, "label": "\u5728\u5927\u5b66\u671f\u95f4\u7533\u8bf7", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u6211\u5728\u5927\u5b66\u91cc\uff0c\u8fd8\u662f\u62ff\u8d2b\u56f0\u8865\u52a9\u7684\u4eba\u3002", "to": "\u5927\u5b66", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u7b2c884\u7ae0", "evidence_target": "\u7b2c55\u7ae0", "font": {"size": 0}, "from": "\u7b2c884\u7ae0", "hoverWidth": 3.3, "label": "\u63d0\u53ca", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u7b2c884\u7ae0 \u3010\u7bc7\u5916\uff1a\u76f8\u4fe1\u76f8\u4fe1\u7684\u529b\u91cf\u3011\u5728\u7b2c55\u7ae0\u8bb2\u5230\u65e0\u4f18\u7985\u5e08\u7684\u65f6\u5019\uff0c\u73b0\u573a\u7684\u70ed\u70c8\u6c14\u6c1b\u8ba9\u4eba\u611f\u89c9\u8ddf\u4f20\u9500\u5f88\u50cf\u3002", "to": "\u7b2c55\u7ae0", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u7b80\u5386", "evidence_target": "\u674e\u5e7f", "font": {"size": 0}, "from": "\u7b80\u5386", "hoverWidth": 3.1, "label": "\u674e\u5e7f\u63d0\u4f9b\u7684\u8d44\u6599", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u674e\u5e7f\u5f53\u4e0b\u5c31\u628a\u8d44\u6599\u4f20\u4e86\u8fc7\u6765\uff0c\u6211\u8f6c\u53d1\u7ed9\u4e86\u8521\u603b\u3002", "to": "\u674e\u5e7f", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u7b80\u5386", "evidence_target": "\u9762\u8bd5\u9080\u8bf7", "font": {"size": 0}, "from": "\u7b80\u5386", "hoverWidth": 3.3, "label": "\u6536\u5230", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u6211\u6295\u51fa\u53bb\u7684\u51e0\u4efd\u7b80\u5386\uff0c\u65e0\u4e00\u4f8b\u5916\u7684\u5168\u90fd\u6536\u5230\u4e86\u9762\u8bd5\u9080\u8bf7\u3002", "to": "\u9762\u8bd5\u9080\u8bf7", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u767b\u673a\u724c", "evidence_target": "\u767b\u673a\u53e3", "font": {"size": 0}, "from": "\u767b\u673a\u724c", "hoverWidth": 3.3, "label": "\u6307\u793a", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u767b\u673a\u724c\u4e0a\u8d6b\u7136\u5199\u7740\uff1a\u201c\u767b\u673a\u53e3\u4e8e\u8d77\u98de\u524d15\u5206\u949f\u5173\u95ed\u3002\u201d", "to": "\u767b\u673a\u53e3", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "Sp\u540d\u989d", "evidence_target": "\u674e\u5e7f", "font": {"size": 0}, "from": "Sp\u540d\u989d", "hoverWidth": 2.9, "label": "\u7b26\u5408\u6761\u4ef6", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u8fd9\u4e0d\u7981\u8ba9\u6211\u60f3\u5230\u4e86\u674e\u5e7f\uff0c\u6b63\u5b97c9\u7684\u6bd5\u4e1a\uff0c\u5b66\u5386\u4e0d\u662f\u95ee\u9898\u5440\u3002", "to": "\u674e\u5e7f", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "15\u5206\u949f", "evidence_target": "\u7eff\u8272\u901a\u9053", "font": {"size": 0}, "from": "15\u5206\u949f", "hoverWidth": 3.1, "label": "\u5141\u8bb8\u901a\u8fc7", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u6211\u4eec\u4e4b\u524d\u5728\u65b0\u52a0\u5761\uff0c\u53ea\u526915\u5206\u949f\uff0c\u7a7a\u59d0\u90fd\u80fd\u5e26\u7740\u6211\u4eec\u8d70\u7eff\u8272\u901a\u9053\u3002", "to": "\u7eff\u8272\u901a\u9053", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u987a\u53e3\u6e9c", "evidence_target": "\u9aa8\u9abc\u6e05\u5947", "font": {"size": 0}, "from": "\u987a\u53e3\u6e9c", "hoverWidth": 2.7, "label": "\u5305\u542b\u76f8\u4f3c\u4e3b\u65e8", "origin": "extracted", "selectionWidth": 3.2, "source_block": "", "title": "\u4ed6\u8bed\u901f\u6781\u5feb\u7684\uff0c\u80cc\u7740\u5f88\u591a\u7684\u987a\u53e3\u6e9c\u3002", "to": "\u9aa8\u9abc\u6e05\u5947", "weight": 0.6, "width": 2.8}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u5438\u5929\u5730\u4e4b\u5143\u6c14", "evidence_target": "\u6e29\u8865\u4e94\u810f", "font": {"size": 0}, "from": "\u5438\u5929\u5730\u4e4b\u5143\u6c14", "hoverWidth": 3.1, "label": "\u529f\u6548\u5173\u7cfb", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u91c7\u65e5\u6708\u4e4b\u7cbe\u534e\uff0c\u5438\u5929\u5730\u4e4b\u5143\u6c14\uff0c\u53ef\u4ee5\u6e29\u8865\u4e94\u810f\uff0c\u5145\u76c8\u6b63\u6c14\uff0c\u8fbe\u5230\u7cbe\u529b\u5145\u6c9b\uff0c\u5f00\u542f\u667a\u6167\u7684\u529f\u6548\u3002", "to": "\u6e29\u8865\u4e94\u810f", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u5438\u5929\u5730\u4e4b\u5143\u6c14", "evidence_target": "\u5145\u76c8\u6b63\u6c14", "font": {"size": 0}, "from": "\u5438\u5929\u5730\u4e4b\u5143\u6c14", "hoverWidth": 3.1, "label": "\u529f\u6548\u5173\u7cfb", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u91c7\u65e5\u6708\u4e4b\u7cbe\u534e\uff0c\u5438\u5929\u5730\u4e4b\u5143\u6c14\uff0c\u53ef\u4ee5\u6e29\u8865\u4e94\u810f\uff0c\u5145\u76c8\u6b63\u6c14\uff0c\u8fbe\u5230\u7cbe\u529b\u5145\u6c9b\uff0c\u5f00\u542f\u667a\u6167\u7684\u529f\u6548\u3002", "to": "\u5145\u76c8\u6b63\u6c14", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u836f\u738b\u95e8", "evidence_target": "\u91c7\u65e5\u5149\u529f", "font": {"size": 0}, "from": "\u836f\u738b\u95e8", "hoverWidth": 3.3, "label": "\u5305\u542b\u5173\u7cfb\uff0c\u5176\u592a\u9633\u529f\u5c5e\u4e8e\u91c7\u65e5\u5149\u529f", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u6bd4\u5982\u9053\u5bb6\u4e5d\u5bab\u516b\u5366\u62f3\u4e4b\u5185\u529f\uff0c\u6885\u82b1\u62f3\u4e4b\u517b\u751f\u529f\uff0c\u836f\u738b\u95e8\u4e4b\u592a\u9633\u529f\uff0c\u90fd\u662f\u6307\u7684\u8fd9\u4e2a\uff0c\u5185\u5bb9\u57fa\u672c\u76f8\u4f3c\u3002", "to": "\u91c7\u65e5\u5149\u529f", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u9053\u5bb6\u4e5d\u5bab\u516b\u5366\u62f3", "evidence_target": "\u91c7\u65e5\u5149\u529f", "font": {"size": 0}, "from": "\u9053\u5bb6\u4e5d\u5bab\u516b\u5366\u62f3", "hoverWidth": 3.3, "label": "\u5305\u542b\u5173\u7cfb\uff0c\u5176\u5185\u529f\u5c5e\u4e8e\u91c7\u65e5\u5149\u529f", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u6bd4\u5982\u9053\u5bb6\u4e5d\u5bab\u516b\u5366\u62f3\u4e4b\u5185\u529f\uff0c\u6885\u82b1\u62f3\u4e4b\u517b\u751f\u529f\uff0c\u836f\u738b\u95e8\u4e4b\u592a\u9633\u529f\uff0c\u90fd\u662f\u6307\u7684\u8fd9\u4e2a\uff0c\u5185\u5bb9\u57fa\u672c\u76f8\u4f3c\u3002", "to": "\u91c7\u65e5\u5149\u529f", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u592a\u9633\u529f", "evidence_target": "\u91c7\u65e5\u5149\u529f", "font": {"size": 0}, "from": "\u592a\u9633\u529f", "hoverWidth": 3.3, "label": "\u7b49\u540c\u5173\u7cfb\uff0c\u592a\u9633\u529f\u5373\u91c7\u65e5\u5149\u529f", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u6bd4\u5982\u9053\u5bb6\u4e5d\u5bab\u516b\u5366\u62f3\u4e4b\u5185\u529f\uff0c\u6885\u82b1\u62f3\u4e4b\u517b\u751f\u529f\uff0c\u836f\u738b\u95e8\u4e4b\u592a\u9633\u529f\uff0c\u90fd\u662f\u6307\u7684\u8fd9\u4e2a\uff0c\u5185\u5bb9\u57fa\u672c\u76f8\u4f3c\u3002", "to": "\u91c7\u65e5\u5149\u529f", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u534a\u5e74\u591a", "evidence_target": "\u8521\u603b", "font": {"size": 0}, "from": "\u534a\u5e74\u591a", "hoverWidth": 3.3, "label": "\u8521\u603b\u7ec3\u6c14\u529f\u534a\u5e74\u591a", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u4ed6\u4ecb\u7ecd\u81ea\u5df1\u59d3\u8521\uff0c\u7ec3\u6c14\u529f\u6709\u534a\u5e74\u591a\u4e86\uff0c\u88ab\u4e2d\u56fd\u8fd9\u79cd\u795e\u5947\u7684\u53e4\u8001\u6587\u5316\u6240\u6298\u670d\u3002", "to": "\u8521\u603b", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u4e09\u4e94\u5929", "evidence_target": "\u8521\u603b", "font": {"size": 0}, "from": "\u4e09\u4e94\u5929", "hoverWidth": 3.1, "label": "\u8521\u603b\u7ec3\u4e60\u4e09\u4e94\u5929\u5373\u53ef\u6253\u51fa\u6c14\u611f", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u6211\u5f53\u65f6\u53ea\u7ec3\u4e60\u4e86\u4e09\u4e94\u5929\uff0c\u5c31\u53ef\u4ee5\u7528\u5251\u6307\u6253\u51fa\u6c14\u611f\u6765\u3002", "to": "\u8521\u603b", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u767d\u8863\u5973\u5b50", "evidence_target": "\u5168\u6821\u524d10\u540d", "font": {"size": 0}, "from": "\u767d\u8863\u5973\u5b50", "hoverWidth": 3.3, "label": "\u58f0\u79f0\u4fdd\u6301\u5168\u6821\u524d10\u540d", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u6211\u5b66\u4e60\u5f88\u597d\uff0c\u4ece\u6765\u6ca1\u4f4e\u8fc7\u5168\u6821\u524d10\u540d\u3002", "to": "\u5168\u6821\u524d10\u540d", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u767d\u8863\u5973\u5b50", "evidence_target": "\u907f\u5b55\u5957", "font": {"size": 0}, "from": "\u767d\u8863\u5973\u5b50", "hoverWidth": 3.1, "label": "\u63d0\u53ca\u9996\u6b21\u4f7f\u7528\u5e74\u9f84", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u6211\u4e8c\u5341\u591a\u5c81\u624d\u7b2c\u4e00\u6b21\u7528\u907f\u5b55\u5957\u3002", "to": "\u907f\u5b55\u5957", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u767d\u8863\u5973\u5b50", "evidence_target": "\u4e2d\u8003", "font": {"size": 0}, "from": "\u767d\u8863\u5973\u5b50", "hoverWidth": 3.3, "label": "\u7ecf\u5386\u4e2d\u8003\u5236\u5ea6\u53d8\u66f4", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u6211\u4eec\u4e2d\u8003\u90a3\u4e00\u5e74\uff0c\u521d\u4e2d\u56db\u5e74\u5236\u8981\u6539\u6210\u4e09\u5e74\u5236\u3002", "to": "\u4e2d\u8003", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u767d\u8863\u5973\u5b50", "evidence_target": "\u9ad8\u4e2d", "font": {"size": 0}, "from": "\u767d\u8863\u5973\u5b50", "hoverWidth": 3.3, "label": "\u672a\u8003\u4e0a\u9ad8\u4e2d", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u6211\u4eec\u6574\u4e2a\u5e74\u7ea7\uff0c\u53ea\u67097\u4e2a\u4eba\u8003\u4e0a\u4e86\u9ad8\u4e2d\u3002", "to": "\u9ad8\u4e2d", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u767d\u8863\u5973\u5b50", "evidence_target": "\u5927\u5b66", "font": {"size": 0}, "from": "\u767d\u8863\u5973\u5b50", "hoverWidth": 3.3, "label": "\u672a\u8003\u4e0a\u5927\u5b66", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u90a3\u4e2a\u2026\u2026\u5927\u5b66\u6ca1\u8003\u4e0a\u3002", "to": "\u5927\u5b66", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u585e\u7fc1\u5931\u9a6c", "evidence_target": "\u585e\u7fc1", "font": {"size": 0}, "from": "\u585e\u7fc1\u5931\u9a6c", "hoverWidth": 3.3, "label": "\u585e\u7fc1\u5931\u9a6c\u6545\u4e8b\u4e2d\u7684\u4e3b\u89d2\u662f\u585e\u7fc1", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u585e\u7fc1\u5931\u9a6c\u4e2d\uff0c\u4ed6\u513f\u5b50\u9a91\u9a6c\u817f\u6454\u65ad\u4e86\uff0c\u585e\u7fc1\u4e00\u770b\uff0c\u8bf4\u4e86\u53e5\uff1a\u8fd9\u662f\u4e2a\u597d\u4e8b\u513f\u5440\u3002", "to": "\u585e\u7fc1", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u585e\u7fc1\u5931\u9a6c", "evidence_target": "\u5584\u672f\u8005", "font": {"size": 0}, "from": "\u585e\u7fc1\u5931\u9a6c", "hoverWidth": 3.3, "label": "\u5305\u542b\u6545\u4e8b\u4eba\u7269", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u8fd9\u5c31\u597d\u6bd4\u8bf4\u585e\u7fc1\u5931\u9a6c\u3002\u5584\u672f\u8005\uff0c\u770b\u89c1\u513f\u5b50\u817f\u65ad\u4e86\uff0c\u8bf4\u8fd9\u672a\u5fc5\u662f\u4ef6\u574f\u4e8b\u513f\u554a\uff01", "to": "\u5584\u672f\u8005", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u62a4\u7167", "evidence_target": "\u674e\u5e7f", "font": {"size": 0}, "from": "\u62a4\u7167", "hoverWidth": 3.1, "label": "\u674e\u5e7f\u63d0\u4f9b\u7684\u8d44\u6599", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u674e\u5e7f\u5f53\u4e0b\u5c31\u628a\u8d44\u6599\u4f20\u4e86\u8fc7\u6765\uff0c\u6211\u8f6c\u53d1\u7ed9\u4e86\u8521\u603b\u3002", "to": "\u674e\u5e7f", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u62a4\u7167", "evidence_target": "\u6d77\u5173", "font": {"size": 0}, "from": "\u62a4\u7167", "hoverWidth": 3.3, "label": "\u76d6\u7ae0", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u7531\u4e8e\u8fdb\u51fa\u5883\u592a\u9891\u7e41\uff0c\u62a4\u7167\u88ab\u6d77\u5173\u76d6\u7ae0\u76d6\u6ee1\u4e86", "to": "\u6d77\u5173", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u585e\u7fc1", "evidence_target": "\u5584\u672f\u8005", "font": {"size": 0}, "from": "\u585e\u7fc1", "hoverWidth": 3.3, "label": "\u8eab\u4efd\u63cf\u8ff0", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u201c\u5584\u672f\u8005\uff1f\uff01\u201d\u6211\u6293\u5230\u4e86\u91cd\u70b9\uff0c\u96be\u4ee5\u7f6e\u4fe1\u7684\u558a\u9053\uff0c\u201c\u585e\u7fc1\u662f\u4e2a\u4f1a\u7b97\u547d\u7684\u4eba\uff1f\uff01\u201d", "to": "\u5584\u672f\u8005", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u585e\u7fc1", "evidence_target": "\u798f\u7978\u56e0\u679c", "font": {"size": 0}, "from": "\u585e\u7fc1", "hoverWidth": 3.3, "label": "\u585e\u7fc1\u770b\u61c2\u4e86\u798f\u7978\u56e0\u679c", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u8fd9\u662f\u56e0\u4e3a\u4ed6\u770b\u61c2\u4e86\u798f\u7978\u56e0\u679c\uff0c\u6454\u65ad\u817f\u53ef\u4ee5\u4fdd\u547d\u3002", "to": "\u798f\u7978\u56e0\u679c", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u4e5d\u5e74\u4e49\u52a1\u6559\u80b2", "evidence_target": "\u585e\u7fc1\u5931\u9a6c", "font": {"size": 0}, "from": "\u4e5d\u5e74\u4e49\u52a1\u6559\u80b2", "hoverWidth": 3.1, "label": "\u4e5d\u5e74\u4e49\u52a1\u6559\u80b2\u5305\u542b\u585e\u7fc1\u5931\u9a6c", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u585e\u7fc1\u5931\u9a6c\uff0c\u7109\u77e5\u7978\u798f\u3002\u53c2\u52a0\u8fc7\u4e5d\u5e74\u4e49\u52a1\u6559\u80b2\u7684\u4eba\uff0c\u90fd\u5b66\u8fc7\u3002", "to": "\u585e\u7fc1\u5931\u9a6c", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u4e5d\u5e74\u4e49\u52a1\u6559\u80b2", "evidence_target": "\u674e\u5e7f", "font": {"size": 0}, "from": "\u4e5d\u5e74\u4e49\u52a1\u6559\u80b2", "hoverWidth": 3.1, "label": "\u674e\u5e7f\u672a\u63a5\u53d7\u5b8c", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u4e00\u4f4d\u6ca1\u63a5\u53d7\u5b8c\u4e5d\u5e74\u4e49\u52a1\u6559\u80b2\u7684\u5929\u624d\u3002", "to": "\u674e\u5e7f", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u4e5d\u5e74\u4e49\u52a1\u6559\u80b2", "evidence_target": "\u987a\u53e3\u6e9c", "font": {"size": 0}, "from": "\u4e5d\u5e74\u4e49\u52a1\u6559\u80b2", "hoverWidth": 3.1, "label": "\u5173\u8054", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u4e5d\u5e74\u4e49\u52a1\u6559\u80b2\u666e\u53ca\u4e4b\u524d\uff0c\u5f88\u591a\u4eba\u4e0d\u8bc6\u5b57\uff0c\u7528\u987a\u53e3\u6e9c\uff0c\u65b9\u4fbf\u8bb0\u5fc6\u548c\u4f20\u64ad\u3002", "to": "\u987a\u53e3\u6e9c", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u8521\u603b", "evidence_target": "\u5173\u8282\u75bc", "font": {"size": 0}, "from": "\u8521\u603b", "hoverWidth": 3.3, "label": "\u60a3\u6709", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u201c\u5c31\u662f\u6d51\u8eab\u5173\u8282\u75bc\uff0c\u53bb\u533b\u9662\u4e5f\u6ca1\u67e5\u51fa\u4ec0\u4e48\u75c5\u3002\u201d", "to": "\u5173\u8282\u75bc", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u8521\u603b", "evidence_target": "\u91c7\u65e5\u5149\u529f", "font": {"size": 0}, "from": "\u8521\u603b", "hoverWidth": 2.9, "label": "\u4e86\u89e3", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u8521\u603b\u662f\u4e2a\u516b\u9762\u73b2\u73d1\u7684\u4eba\uff0c\u5f88\u4f1a\u627e\u8bdd\u9898\uff0c\u4ed6\u95ee\u6211\uff0c\u201c\u4f60\u521a\u521a\u7ec3\u7684\u662f\u91c7\u65e5\u5149\u529f\u662f\u5417\uff1f\u201d", "to": "\u91c7\u65e5\u5149\u529f", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u8521\u603b", "evidence_target": "\u91c7\u9634\u8865\u9633", "font": {"size": 0}, "from": "\u8521\u603b", "hoverWidth": 2.9, "label": "\u63d0\u53ca", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u4f46\u6211\u53c8\u770b\u5f71\u89c6\u5267\u91cc\u7ecf\u5e38\u63d0\u5230\u8bf4\u91c7\u9634\u8865\u9633\u4e4b\u672f\u3002\u90a3\u7a76\u7adf\u662f\u91c7\u9633\u8865\u9633\uff0c\u8fd8\u662f\u91c7\u9634\u8865\u9633\uff1f\u201d", "to": "\u91c7\u9634\u8865\u9633", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u8521\u603b", "evidence_target": "\u5c0f\u5e7f\u573a", "font": {"size": 0}, "from": "\u8521\u603b", "hoverWidth": 3.1, "label": "\u4f4d\u4e8e", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u4e0a\u8bfe\u65f6\uff0c\u5927\u5bb6\u5728\u5c0f\u5e7f\u573a\u5217\u961f\u6210\u5706\uff0c\u5434\u5e08\u7236\u8ba9\u6211\u548c\u8521\u603b\u4ee5\u53ca\u5176\u4ed6\u4e00\u4e9b\u6bd4\u8f83\u65b0\u7684\u4eba\uff0c\u7ad9\u5728\u4e2d\u95f4\uff0c\u8001\u5b66\u5458\u7ad9\u5916\u56f4\u3002", "to": "\u5c0f\u5e7f\u573a", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u8521\u603b", "evidence_target": "\u7b80\u5386", "font": {"size": 0}, "from": "\u8521\u603b", "hoverWidth": 3.3, "label": "\u8981\u6c42\u63d0\u4f9b", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u201c\u7b80\u5386\uff0c\u62a4\u7167\uff0c\u6bd5\u4e1a\u8bc1\u3002\u201d\u8521\u603b\u7cbe\u7b80\u7684\u8bf4\u9053\u3002", "to": "\u7b80\u5386", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u8521\u603b", "evidence_target": "\u62a4\u7167", "font": {"size": 0}, "from": "\u8521\u603b", "hoverWidth": 3.3, "label": "\u8981\u6c42\u63d0\u4f9b", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u201c\u7b80\u5386\uff0c\u62a4\u7167\uff0c\u6bd5\u4e1a\u8bc1\u3002\u201d\u8521\u603b\u7cbe\u7b80\u7684\u8bf4\u9053\u3002", "to": "\u62a4\u7167", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u8521\u603b", "evidence_target": "\u6bd5\u4e1a\u8bc1", "font": {"size": 0}, "from": "\u8521\u603b", "hoverWidth": 3.3, "label": "\u8981\u6c42\u63d0\u4f9b", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u201c\u7b80\u5386\uff0c\u62a4\u7167\uff0c\u6bd5\u4e1a\u8bc1\u3002\u201d\u8521\u603b\u7cbe\u7b80\u7684\u8bf4\u9053\u3002", "to": "\u6bd5\u4e1a\u8bc1", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u8521\u603b", "evidence_target": "\u7985\u5e08", "font": {"size": 0}, "from": "\u8521\u603b", "hoverWidth": 3.1, "label": "\u62dc\u8bbf", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u201c\u4e09\u5408\u5148\u751f\uff0c\u6211\u4eca\u665a\u8981\u53bb\u89c1\u4e00\u4f4d\u7985\u5e08\uff0c\u4f60\u8981\u4e0d\u8981\u4e00\u8d77\u53bb\uff0c\u6211\u770b\u4f60\u5bf9\u7384\u5b66\u65b9\u9762\u4e5f\u5f88\u611f\u5174\u8da3\u3002\u201d\u8521\u603b\u6311\u7740\u7709\uff0c\u773c\u775b\u4eae\u6676\u6676\u7684\u8bf4\u9053\u3002", "to": "\u7985\u5e08", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u8521\u603b", "evidence_target": "\u65e0\u4f18\u7985\u5e08", "font": {"size": 0}, "from": "\u8521\u603b", "hoverWidth": 3.1, "label": "\u4ecb\u7ecd", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u54c1\u5c1d\u7740\u7f8e\u98df\uff0c\u8521\u603b\u5411\u6211\u4ecb\u7ecd\u4e86\u4eca\u665a\u5c06\u8981\u89c1\u9762\u7684\u7985\u5e08\u7684\u80cc\u666f\u3002", "to": "\u65e0\u4f18\u7985\u5e08", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u8521\u603b", "evidence_target": "\u65e0\u5fe7\u7985\u5e08", "font": {"size": 0}, "from": "\u8521\u603b", "hoverWidth": 3.3, "label": "\u656c\u4ef0", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u6211\u4e5f\u662f\u4e4b\u524d\u5728\u5168\u7403\u7684\u7f51\u7edc\u5927\u4f1a\u4e0a\uff0c\u6709\u5e78\u89c1\u8fc7\u7985\u5e08\u7684\u89c6\u9891\uff0c\u4eca\u5929\u4e5f\u662f\u7b2c\u4e00\u6b21\u89c1\u5230\u65e0\u5fe7\u7985\u5e08\u672c\u4eba\u5462\uff01", "to": "\u65e0\u5fe7\u7985\u5e08", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u8521\u603b", "evidence_target": "\u97f3\u4e50\u7597\u6cd5", "font": {"size": 0}, "from": "\u8521\u603b", "hoverWidth": 2.9, "label": "\u8ba8\u8bba\u97f3\u4e50\u7597\u6cd5", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u201c\u97f3\u4e50\u8fd8\u80fd\u6cbb\u75c5\uff1f\u201d\u8521\u603b\u4e0d\u53ef\u601d\u8bae\u7684\u95ee\u3002", "to": "\u97f3\u4e50\u7597\u6cd5", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u8521\u603b", "evidence_target": "\u9ea6\u7c92\u80bf", "font": {"size": 0}, "from": "\u8521\u603b", "hoverWidth": 3.1, "label": "\u8521\u603b\u7684\u5973\u513f\u60a3\u6709\u9ea6\u7c92\u80bf", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u4e0d\u8fc7\u6211\u8ddf\u8521\u603b\u96be\u5f97\u6295\u7f18\uff0c\u7565\u5fae\u72b9\u8c6b\u4e86\u4e00\u4e0b\uff0c\u6211\u8fd8\u662f\u5f00\u53e3\u9053\uff1a\u201c\u8521\u603b\uff0c\u5982\u679c\u662f\u9ea6\u7c92\u80bf\u7684\u8bdd\uff0c\u53ef\u4ee5\u8bd5\u4e00\u4e0b\u7528\u7ea2\u7ebf\u7ed1\u5728\u4e2d\u6307\u6839\u90e8\uff0c\u8f7b\u8f7b\u7cfb\u4e0a\u5c31\u884c\uff0c\u4e0d\u8981\u592a\u7d27\u3002\u901a\u5e38\u60c5\u51b5\uff0c\u4e00\u665a\u4e0a\u5c31\u4f1a\u6709\u6548\u679c\u3002\u201d", "to": "\u9ea6\u7c92\u80bf", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u8521\u603b", "evidence_target": "\u674e\u5e7f", "font": {"size": 0}, "from": "\u8521\u603b", "hoverWidth": 3.1, "label": "\u8521\u603b\u662f\u5176\u8001\u677f", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u8c22\u8c22\u4f60\u7ed9\u6211\u4ecb\u7ecd\u4e86\u8fd9\u4e48\u597d\u7684\u4e00\u4e2a\u5de5\u4f5c\uff0c\u8521\u603b\u4eba\u7279\u522b\u597d\u3002", "to": "\u674e\u5e7f", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u674e\u5e7f", "evidence_target": "\u673a\u68b0\u5382", "font": {"size": 0}, "from": "\u674e\u5e7f", "hoverWidth": 3.3, "label": "\u5728\u673a\u68b0\u5382\u5de5\u4f5c", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u674e\u5e7f\u662f\u6211\u4e00\u4e2a\u5bbf\u820d\u7684\uff0c\u4e00\u7c73\u516b\u4e94\u7684\u4e2a\u5b50\uff0c\u957f\u7684\u50cf\u674e\u9035\u4f3c\u7684\uff0c\u9ad8\u5927\u9b41\u68a7\u3002\u5c31\u662f\u5634\u6bd4\u6211\u8fd8\u7b28\uff0c\u6bd5\u4e1a\u65f6\u627e\u4e86\u4e2a\u673a\u68b0\u5382\u7684\u5de5\u4f5c\uff0c\u4e5f\u6ca1\u6df7\u51fa\u4e2a\u5565\u6837\u513f\u3002", "to": "\u673a\u68b0\u5382", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u674e\u5e7f", "evidence_target": "\u8001\u5e72\u5988", "font": {"size": 0}, "from": "\u674e\u5e7f", "hoverWidth": 3.1, "label": "\u88ab\u8981\u6c42\u643a\u5e26", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u201c\u8981\u4e0d\u5e2e\u6211\u5e26\u74f6\u8001\u5e72\u5988\u5427\uff0c\u201d\u6211\u53c8\u7279\u610f\u53ee\u5631\u9053\uff0c\u201c\u8bb0\u5f97\u6258\u8fd0\u3002\u6211\u6765\u7684\u65f6\u5019\u653e\u5728\u624b\u63d0\u5305\u91cc\uff0c\u767b\u673a\u65f6\u88ab\u6ca1\u6536\u4e86\u3002\u201d", "to": "\u8001\u5e72\u5988", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u674e\u5e7f", "evidence_target": "\u4e5d\u5e74\u4e49\u52a1\u6559\u80b2", "font": {"size": 0}, "from": "\u674e\u5e7f", "hoverWidth": 3.1, "label": "\u672a\u63a5\u53d7\u5b8c", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u4e00\u4f4d\u6ca1\u63a5\u53d7\u5b8c\u4e5d\u5e74\u4e49\u52a1\u6559\u80b2\u7684\u5929\u624d\u3002", "to": "\u4e5d\u5e74\u4e49\u52a1\u6559\u80b2", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u674e\u5e7f", "evidence_target": "\u8df3\u7ea7", "font": {"size": 0}, "from": "\u674e\u5e7f", "hoverWidth": 3.1, "label": "\u901a\u8fc7\u8df3\u7ea7\u4e0a\u5927\u5b66", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u6211\u772f\u7740\u773c\u770b\u7740\u674e\u5e7f\uff0c\u626f\u626f\u5634\u89d2\u9053\uff0c\u201c\u8df3\u7ea7\uff01\u201d", "to": "\u8df3\u7ea7", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u674e\u5e7f", "evidence_target": "\u5927\u5b66", "font": {"size": 0}, "from": "\u674e\u5e7f", "hoverWidth": 3.1, "label": "\u4e0a\u5927\u5b66", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u4ee5\u524d\u54b1\u4eec\u4e0a\u5927\u5b66\u7684\u65f6\u5019\uff0c\u5076\u5c14\u4e5f\u4f1a\u51fa\u53bb\u805a\u805a\u3002", "to": "\u5927\u5b66", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u674e\u5e7f", "evidence_target": "\u858f\u7c73\u6c34", "font": {"size": 0}, "from": "\u674e\u5e7f", "hoverWidth": 2.9, "label": "\u559d\u858f\u7c73\u6c34", "origin": "extracted", "selectionWidth": 3.4, "source_block": "", "title": "\u4ed6\u6123\u4e86\u4e00\u4e0b\uff0c\u7b11\u9053\uff0c\u201c\u5165\u4e61\u968f\u4fd7\uff0c\u8fd8\u662f\u559d\u858f\u7c73\u6c34\u5427\u3002\u201d", "to": "\u858f\u7c73\u6c34", "weight": 0.7, "width": 3.0999999999999996}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u674e\u5e7f", "evidence_target": "\u8521\u603b", "font": {"size": 0}, "from": "\u674e\u5e7f", "hoverWidth": 3.1, "label": "\u8521\u603b\u662f\u5176\u8001\u677f", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u8c22\u8c22\u4f60\u7ed9\u6211\u4ecb\u7ecd\u4e86\u8fd9\u4e48\u597d\u7684\u4e00\u4e2a\u5de5\u4f5c\uff0c\u8521\u603b\u4eba\u7279\u522b\u597d\u3002", "to": "\u8521\u603b", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "\u5b9d\u5b9d", "evidence_target": "\u4e4c\u9f9f", "font": {"size": 0}, "from": "\u5b9d\u5b9d", "hoverWidth": 3.3, "label": "\u5b9d\u5b9d\u770b\u5230\u4e4c\u9f9f\u7f29\u5934\u800c\u5174\u594b", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u6bcf\u6b21\u4e4c\u9f9f\u7684\u5934\u88ab\u6253\u7684\u7f29\u4e86\u56de\u53bb\uff0c\u5b9d\u5b9d\u5c31\u5174\u594b\u7684\u54c8\u54c8\u5927\u7b11", "to": "\u4e4c\u9f9f", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u91c7\u65e5\u5149\u529f", "evidence_target": "\u91c7\u65e5\u6708\u4e4b\u7cbe\u534e", "font": {"size": 0}, "from": "\u91c7\u65e5\u5149\u529f", "hoverWidth": 3.3, "label": "\u6d89\u53ca", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u91c7\u65e5\u6708\u4e4b\u7cbe\u534e\uff0c\u5438\u5929\u5730\u4e4b\u5143\u6c14\uff0c\u53ef\u4ee5\u6e29\u8865\u4e94\u810f\uff0c\u5145\u76c8\u6b63\u6c14\uff0c\u8fbe\u5230\u7cbe\u529b\u5145\u6c9b\uff0c\u5f00\u542f\u667a\u6167\u7684\u529f\u6548\u3002", "to": "\u91c7\u65e5\u6708\u4e4b\u7cbe\u534e", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u91c7\u65e5\u5149\u529f", "evidence_target": "\u5438\u5929\u5730\u4e4b\u5143\u6c14", "font": {"size": 0}, "from": "\u91c7\u65e5\u5149\u529f", "hoverWidth": 3.3, "label": "\u6d89\u53ca", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u91c7\u65e5\u6708\u4e4b\u7cbe\u534e\uff0c\u5438\u5929\u5730\u4e4b\u5143\u6c14\uff0c\u53ef\u4ee5\u6e29\u8865\u4e94\u810f\uff0c\u5145\u76c8\u6b63\u6c14\uff0c\u8fbe\u5230\u7cbe\u529b\u5145\u6c9b\uff0c\u5f00\u542f\u667a\u6167\u7684\u529f\u6548\u3002", "to": "\u5438\u5929\u5730\u4e4b\u5143\u6c14", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u91c7\u65e5\u5149\u529f", "evidence_target": "\u6e29\u8865\u4e94\u810f", "font": {"size": 0}, "from": "\u91c7\u65e5\u5149\u529f", "hoverWidth": 3.3, "label": "\u529f\u6548", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u91c7\u65e5\u6708\u4e4b\u7cbe\u534e\uff0c\u5438\u5929\u5730\u4e4b\u5143\u6c14\uff0c\u53ef\u4ee5\u6e29\u8865\u4e94\u810f\uff0c\u5145\u76c8\u6b63\u6c14\uff0c\u8fbe\u5230\u7cbe\u529b\u5145\u6c9b\uff0c\u5f00\u542f\u667a\u6167\u7684\u529f\u6548\u3002", "to": "\u6e29\u8865\u4e94\u810f", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u91c7\u65e5\u5149\u529f", "evidence_target": "\u5145\u76c8\u6b63\u6c14", "font": {"size": 0}, "from": "\u91c7\u65e5\u5149\u529f", "hoverWidth": 3.3, "label": "\u529f\u6548", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u91c7\u65e5\u6708\u4e4b\u7cbe\u534e\uff0c\u5438\u5929\u5730\u4e4b\u5143\u6c14\uff0c\u53ef\u4ee5\u6e29\u8865\u4e94\u810f\uff0c\u5145\u76c8\u6b63\u6c14\uff0c\u8fbe\u5230\u7cbe\u529b\u5145\u6c9b\uff0c\u5f00\u542f\u667a\u6167\u7684\u529f\u6548\u3002", "to": "\u5145\u76c8\u6b63\u6c14", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u91c7\u65e5\u5149\u529f", "evidence_target": "\u9053\u5bb6\u4e5d\u5bab\u516b\u5366\u62f3", "font": {"size": 0}, "from": "\u91c7\u65e5\u5149\u529f", "hoverWidth": 3.1, "label": "\u76f8\u5173", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u6bd4\u5982\u9053\u5bb6\u4e5d\u5bab\u516b\u5366\u62f3\u4e4b\u5185\u529f\uff0c\u6885\u82b1\u62f3\u4e4b\u517b\u751f\u529f\uff0c\u836f\u738b\u95e8\u4e4b\u592a\u9633\u529f\uff0c\u90fd\u662f\u6307\u7684\u8fd9\u4e2a\uff0c\u5185\u5bb9\u57fa\u672c\u76f8\u4f3c\u3002", "to": "\u9053\u5bb6\u4e5d\u5bab\u516b\u5366\u62f3", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u91c7\u65e5\u5149\u529f", "evidence_target": "\u6885\u82b1\u62f3", "font": {"size": 0}, "from": "\u91c7\u65e5\u5149\u529f", "hoverWidth": 3.1, "label": "\u76f8\u5173", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u6bd4\u5982\u9053\u5bb6\u4e5d\u5bab\u516b\u5366\u62f3\u4e4b\u5185\u529f\uff0c\u6885\u82b1\u62f3\u4e4b\u517b\u751f\u529f\uff0c\u836f\u738b\u95e8\u4e4b\u592a\u9633\u529f\uff0c\u90fd\u662f\u6307\u7684\u8fd9\u4e2a\uff0c\u5185\u5bb9\u57fa\u672c\u76f8\u4f3c\u3002", "to": "\u6885\u82b1\u62f3", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u91c7\u65e5\u5149\u529f", "evidence_target": "\u836f\u738b\u95e8", "font": {"size": 0}, "from": "\u91c7\u65e5\u5149\u529f", "hoverWidth": 3.1, "label": "\u76f8\u5173", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u6bd4\u5982\u9053\u5bb6\u4e5d\u5bab\u516b\u5366\u62f3\u4e4b\u5185\u529f\uff0c\u6885\u82b1\u62f3\u4e4b\u517b\u751f\u529f\uff0c\u836f\u738b\u95e8\u4e4b\u592a\u9633\u529f\uff0c\u90fd\u662f\u6307\u7684\u8fd9\u4e2a\uff0c\u5185\u5bb9\u57fa\u672c\u76f8\u4f3c\u3002", "to": "\u836f\u738b\u95e8", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u91c7\u65e5\u5149\u529f", "evidence_target": "\u592a\u9633\u529f", "font": {"size": 0}, "from": "\u91c7\u65e5\u5149\u529f", "hoverWidth": 3.3, "label": "\u7b49\u540c", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u6bd4\u5982\u9053\u5bb6\u4e5d\u5bab\u516b\u5366\u62f3\u4e4b\u5185\u529f\uff0c\u6885\u82b1\u62f3\u4e4b\u517b\u751f\u529f\uff0c\u836f\u738b\u95e8\u4e4b\u592a\u9633\u529f\uff0c\u90fd\u662f\u6307\u7684\u8fd9\u4e2a\uff0c\u5185\u5bb9\u57fa\u672c\u76f8\u4f3c\u3002", "to": "\u592a\u9633\u529f", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u5927\u5b66", "evidence_target": "\u674e\u5e7f", "font": {"size": 0}, "from": "\u5927\u5b66", "hoverWidth": 3.1, "label": "\u674e\u5e7f\u4e0a\u5927\u5b66", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u4ee5\u524d\u54b1\u4eec\u4e0a\u5927\u5b66\u7684\u65f6\u5019", "to": "\u674e\u5e7f", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u5927\u5b66", "evidence_target": "\u5927\u56db\u7b2c\u4e00\u5b66\u671f", "font": {"size": 0}, "from": "\u5927\u5b66", "hoverWidth": 3.3, "label": "\u5927\u5b66\u5305\u542b\u5927\u56db\u7b2c\u4e00\u5b66\u671f", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u6211\u5c31\u8ddf\u5927\u5bb6\u4e00\u6837\uff0c\u6309\u90e8\u5c31\u73ed\u7684\u4e0a\u5230\u4e86\u5927\u5b66\u3002\u5728\u5927\u56db\u7b2c\u4e00\u5b66\u671f\u7684\u672b\u5c3e\uff0c\u518d\u6709\u4e00\u4e2a\u591a\u6708\u5c31\u8981\u653e\u5bd2\u5047\u7684\u65f6\u5019\uff0c\u6211\u624b\u673a\u4e0d\u77e5\u9053\u600e\u4e48\u5f04\u4e22\u4e86\u3002", "to": "\u5927\u56db\u7b2c\u4e00\u5b66\u671f", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u65e0\u4f18\u7985\u5e08", "evidence_target": "\u6d3b\u4f5b\u8f6c\u4e16", "font": {"size": 0}, "from": "\u65e0\u4f18\u7985\u5e08", "hoverWidth": 3.3, "label": "\u8eab\u4efd", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u201c\u8fd9\u4f4d\u7985\u5e08\uff0c\u636e\u8bf4\u662f\u6d3b\u4f5b\u8f6c\u4e16\uff0c\u6148\u60b2\u4e3a\u6000\u3002\u4eba\u79f0\u65e0\u4f18\u7985\u5e08\u3002", "to": "\u6d3b\u4f5b\u8f6c\u4e16", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u65e0\u4f18\u7985\u5e08", "evidence_target": "\u516c\u76ca\u517b\u751f\u73ed", "font": {"size": 0}, "from": "\u65e0\u4f18\u7985\u5e08", "hoverWidth": 3.3, "label": "\u5f00\u8bbe", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u4ed6\u5e38\u5e74\u5f00\u8bbe\u516c\u76ca\u517b\u751f\u73ed\uff0c\u65e0\u507f\u5e26\u9886\u4f17\u4eba\u7985\u4fee\uff0c\u5df2\u575a\u6301\u6570\u5341\u5e74\u3002", "to": "\u516c\u76ca\u517b\u751f\u73ed", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u65e0\u4f18\u7985\u5e08", "evidence_target": "\u7985\u4fee", "font": {"size": 0}, "from": "\u65e0\u4f18\u7985\u5e08", "hoverWidth": 3.3, "label": "\u5e26\u9886", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u4ed6\u5e38\u5e74\u5f00\u8bbe\u516c\u76ca\u517b\u751f\u73ed\uff0c\u65e0\u507f\u5e26\u9886\u4f17\u4eba\u7985\u4fee\uff0c\u5df2\u575a\u6301\u6570\u5341\u5e74\u3002", "to": "\u7985\u4fee", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u65e0\u4f18\u7985\u5e08", "evidence_target": "\u7985\u5802", "font": {"size": 0}, "from": "\u65e0\u4f18\u7985\u5e08", "hoverWidth": 3.3, "label": "\u8bbe\u7acb", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u65e0\u5fe7\u7985\u5e08\uff0c\u5728\u4e16\u754c\u5f88\u591a\u5730\u533a\uff0c\u90fd\u8bbe\u6709\u516c\u76ca\u6027\u7684\u7985\u5802\u3002", "to": "\u7985\u5802", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u65e0\u4f18\u7985\u5e08", "evidence_target": "\u5927\u6148\u60b2\u5fc3", "font": {"size": 0}, "from": "\u65e0\u4f18\u7985\u5e08", "hoverWidth": 3.1, "label": "\u4f53\u73b0\u5927\u6148\u60b2\u5fc3", "origin": "extracted", "selectionWidth": 3.6, "source_block": "", "title": "\u6709\u5927\u6148\u60b2\u5fc3\u7684\u4eba\uff0c\u4e0d\u9700\u8981\u88c5\u795e\u5f04\u9b3c\u7684\u3002", "to": "\u5927\u6148\u60b2\u5fc3", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "evidence_blocks": [], "evidence_source": "\u65e0\u4f18\u7985\u5e08", "evidence_target": "\u7b2c55\u7ae0", "font": {"size": 0}, "from": "\u65e0\u4f18\u7985\u5e08", "hoverWidth": 3.3, "label": "\u51fa\u73b0\u4e8e", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u5728\u7b2c55\u7ae0\u8bb2\u5230\u65e0\u4f18\u7985\u5e08\u7684\u65f6\u5019\uff0c\u73b0\u573a\u7684\u70ed\u70c8\u6c14\u6c1b\u8ba9\u4eba\u611f\u89c9\u8ddf\u4f20\u9500\u5f88\u50cf\u3002", "to": "\u7b2c55\u7ae0", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "evidence_blocks": [], "evidence_source": "5000\u591a\u6761", "evidence_target": "\u51e0\u5341\u4e07", "font": {"size": 0}, "from": "5000\u591a\u6761", "hoverWidth": 3.3, "label": "\u4ea7\u751f\u6536\u5165", "origin": "extracted", "selectionWidth": 3.8, "source_block": "", "title": "\u4ed6\u5df2\u7ecf\u5356\u4e865000\u591a\u6761\uff0c\u8fd9\u5c31\u662f\u51e0\u5341\u4e07\u3002", "to": "\u51e0\u5341\u4e07", "weight": 0.9, "width": 3.7}]);
+
+                  nodeColors = {};
+                  allNodes = nodes.get({ returnType: "Object" });
+                  for (nodeId in allNodes) {
+                    nodeColors[nodeId] = allNodes[nodeId].color;
+                  }
+                  allEdges = edges.get({ returnType: "Object" });
+                  // adding nodes and edges to the graph
+                  data = {nodes: nodes, edges: edges};
+
+                  var options = {"nodes": {"shape": "dot", "scaling": {"min": 10, "max": 40, "label": {"enabled": true, "min": 14, "max": 24}}, "font": {"size": 14, "face": "MicrosoftYaHei,SimHei,sans-serif", "color": "#1a1a1a"}, "borderWidth": 2, "borderWidthSelected": 4, "shadow": {"enabled": false, "size": 10, "x": 3, "y": 3}}, "edges": {"width": 1, "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "smooth": false, "selectionWidth": 3, "hoverWidth": 2, "arrows": {"to": {"enabled": true, "scaleFactor": 0.5}}, "font": {"size": 0, "face": "MicrosoftYaHei", "color": "#666666", "align": "middle", "background": "rgba(255,255,255,0.9)"}}, "interaction": {"hover": true, "tooltipDelay": 100, "hideEdgesOnDrag": true, "hideNodesOnDrag": false, "dragNodes": true, "dragView": true, "zoomView": true, "multiselect": true, "navigationButtons": false, "keyboard": true}, "layout": {"improvedLayout": false}, "physics": {"enabled": false, "stabilization": {"enabled": false}}};
+
+
+
+
+
+
+                  network = new vis.Network(container, data, options);
+
+
+
+
+
+
+
+
+
+
+                  return network;
+
+              }
+              drawGraph();
+        </script>
+
+            <div class="community-back-bar">
+                <a href="改命记实录(道之光).html">← 返回社区列表</a>
+                <span>蔡总（103 个节点）</span>
+            </div>
+
+<style>
+  div.vis-configuration-wrapper,
+  div.vis-network div.vis-manipulation,
+  div.vis-network div.vis-edit-mode-btn,
+  div.vis-network div.vis-close-btn { display: none !important; }
+
+  .graph-floating-panel {
+    position: absolute; z-index: 2000; box-sizing: border-box;
+    border: 1px solid #e5e7eb; border-radius: 10px;
+    background: rgba(255,255,255,.96); box-shadow: 0 5px 20px rgba(15,23,42,.12);
+    color: #334155; backdrop-filter: blur(10px); overflow: hidden;
+  }
+  .graph-panel-header {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    min-height: 34px; padding: 0 8px 0 10px; font-size: 12px; font-weight: 700;
+    border-bottom: 1px solid #eef2f7; cursor: default;
+  }
+  .graph-panel-collapse {
+    width: 24px; height: 24px; padding: 0; border: 0; border-radius: 5px;
+    background: transparent; color: #64748b; cursor: pointer; font-size: 16px;
+  }
+  .graph-panel-collapse:hover { background: #f1f5f9; color: #2563eb; }
+  .graph-panel-body { padding: 8px; }
+  .graph-floating-panel.is-collapsed { width: auto !important; min-width: 112px; }
+  .graph-floating-panel.is-collapsed .graph-panel-body { display: none; }
+  .graph-floating-panel.is-collapsed .graph-panel-header { border-bottom: 0; }
+
+  .search-panel { top: 8px; left: 8px; width: 268px; }
+  .control-panel { top: 8px; right: 8px; width: 250px; }
+  .filter-panel { bottom: 8px; left: 8px; width: 268px; }
+  .community-directory { right: 8px; bottom: 8px; width: 310px; max-height: min(58vh, 440px); }
+  .community-directory .graph-panel-body { overflow: hidden; }
+
+  .graph-text-input, .graph-select {
+    box-sizing: border-box; width: 100%; height: 30px; margin-bottom: 6px;
+    padding: 4px 8px; border: 1px solid #dbe2ea; border-radius: 6px;
+    outline: none; background: #fff; color: #334155; font-size: 11px;
+  }
+  .graph-text-input:focus, .graph-select:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px #dbeafe; }
+  .search-results {
+    display: block; max-height: min(38vh, 270px); overflow-y: auto;
+    border: 1px solid #eef2f7; border-radius: 6px; background: #fff;
+  }
+  .search-result-item {
+    display: flex; align-items: center; gap: 6px; padding: 6px 7px;
+    border-bottom: 1px solid #f1f5f9; cursor: pointer; font-size: 10px;
+  }
+  .search-result-item:last-child { border-bottom: 0; }
+  .search-result-item:hover { background: #eff6ff; color: #1d4ed8; }
+  .result-main { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .result-meta { color: #94a3b8; flex: none; }
+  .type-badge {
+    max-width: 84px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    padding: 2px 5px; border-radius: 10px; background: #dbeafe; color: #1d4ed8; font-size: 9px;
+  }
+  .type-badge.edge { background: #f3e8ff; color: #7e22ce; }
+  .graph-empty-state { padding: 12px 8px; color: #94a3b8; text-align: center; font-size: 11px; }
+  .status-bar { margin-top: 6px; color: #94a3b8; font-size: 10px; }
+  .status-bar strong { color: #2563eb; }
+
+  .control-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+  .control-btn, .small-action-btn {
+    min-height: 28px; padding: 4px 6px; border: 1px solid #dbe2ea; border-radius: 6px;
+    background: #f8fafc; color: #475569; cursor: pointer; font-size: 10px;
+  }
+  .control-btn:hover, .small-action-btn:hover { border-color: #3b82f6; color: #2563eb; }
+  .control-btn.active { border-color: #2563eb; background: #2563eb; color: #fff; }
+
+  .filter-label { display: flex; justify-content: space-between; margin: 2px 0 4px; color: #64748b; font-size: 10px; }
+  .filter-slider { width: 100%; accent-color: #2563eb; }
+  .filter-section + .filter-section { margin-top: 9px; padding-top: 8px; border-top: 1px solid #eef2f7; }
+  .entity-type-actions { display: flex; gap: 5px; margin-bottom: 5px; }
+  .entity-type-options { max-height: 142px; overflow-y: auto; border: 1px solid #eef2f7; border-radius: 6px; }
+  .entity-type-option {
+    display: flex; align-items: center; gap: 6px; padding: 5px 7px;
+    border-bottom: 1px solid #f5f7fa; cursor: pointer; color: #475569; font-size: 10px;
+  }
+  .entity-type-option:last-child { border-bottom: 0; }
+  .entity-type-option:hover { background: #f8fafc; }
+  .entity-type-option input { accent-color: #2563eb; }
+  .entity-type-count { margin-left: auto; color: #94a3b8; }
+
+  .community-list { max-height: min(39vh, 300px); overflow-y: auto; }
+  .community-list-item {
+    display: block; padding: 8px; border: 1px solid #eef2f7; border-radius: 7px;
+    margin-bottom: 6px; color: #334155;
+  }
+  .community-list-item:hover { border-color: #93c5fd; background: #eff6ff; }
+  .community-list-item.search-match { border-color: #60a5fa; background: #eff6ff; }
+  .community-item-link { display: block; color: #334155; text-decoration: none; }
+  .community-item-name { display: block; font-size: 11px; font-weight: 700; }
+  .community-item-meta {
+    display: block; overflow: hidden; margin-top: 3px; color: #64748b;
+    font-size: 9px; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .community-source-link {
+    margin-top: 6px; padding: 3px 6px; border: 1px solid #bfdbfe; border-radius: 5px;
+    background: #eff6ff; color: #2563eb; cursor: pointer; font-size: 9px;
+  }
+  .community-source-link:hover { background: #dbeafe; border-color: #60a5fa; }
+  .community-back-bar {
+    position: fixed; z-index: 1900; right: 10px; bottom: 10px; display: flex; gap: 10px;
+    padding: 7px 10px; border: 1px solid #e5e7eb; border-radius: 18px;
+    background: rgba(255,255,255,.94); box-shadow: 0 3px 12px rgba(15,23,42,.12);
+    color: #64748b; font-size: 10px;
+  }
+  .community-back-bar a { color: #2563eb; text-decoration: none; }
+
+  .immersive-toggle {
+    position: absolute; z-index: 2100; top: 8px; left: 50%; transform: translateX(-50%);
+    height: 30px; padding: 0 11px; border: 1px solid #dbe2ea; border-radius: 16px;
+    background: rgba(255,255,255,.92); color: #475569; cursor: pointer; font-size: 10px;
+    box-shadow: 0 2px 8px rgba(15,23,42,.08);
+  }
+  .immersive-toggle:hover { border-color: #3b82f6; color: #2563eb; }
+  #edge-tooltip, #node-tooltip {
+    position: fixed; z-index: 10000; display: none; max-width: 310px;
+    padding: 8px 10px; border: 1px solid #e2e8f0; border-radius: 7px;
+    background: rgba(255,255,255,.98); color: #334155; font-size: 10px;
+    box-shadow: 0 5px 18px rgba(15,23,42,.16);
+  }
+  #edge-tooltip { pointer-events: none; }
+  #node-tooltip { max-height: 260px; overflow-y: auto; pointer-events: auto; }
+  #node-tooltip .edge-item { padding: 4px 0; border-bottom: 1px dashed #e5e7eb; }
+  #node-tooltip .edge-label { color: #2563eb; font-weight: 600; }
+  #node-tooltip .edge-meta { color: #94a3b8; font-size: 9px; }
+  .graph-context-menu {
+    position: fixed; z-index: 12000; display: none; min-width: 150px;
+    padding: 4px; border: 1px solid #dbe2ea; border-radius: 8px;
+    background: rgba(255,255,255,.98); box-shadow: 0 8px 24px rgba(15,23,42,.18);
+  }
+  .graph-context-menu button {
+    display: block; width: 100%; padding: 7px 9px; border: 0; border-radius: 5px;
+    background: transparent; color: #334155; text-align: left; cursor: pointer; font-size: 11px;
+  }
+  .graph-context-menu button:hover { background: #eff6ff; color: #1d4ed8; }
+  .graph-context-menu button.danger:hover { background: #fef2f2; color: #dc2626; }
+  .graph-editor-dialog-mask {
+    position: fixed; z-index: 13000; inset: 0; display: flex; align-items: center; justify-content: center;
+    padding: 16px; background: rgba(15,23,42,.42);
+  }
+  .graph-editor-dialog {
+    width: min(560px, calc(100vw - 32px)); max-height: min(88vh, 720px); overflow-y: auto;
+    box-sizing: border-box; padding: 16px; border-radius: 10px; background: #fff;
+    color: #334155; box-shadow: 0 18px 50px rgba(15,23,42,.3); font-size: 12px;
+  }
+  .graph-editor-dialog h3 { margin: 0 0 14px; font-size: 15px; color: #0f172a; }
+  .graph-editor-field { margin-bottom: 10px; }
+  .graph-editor-field label { display: block; margin-bottom: 4px; color: #64748b; font-weight: 600; }
+  .graph-editor-field input, .graph-editor-field textarea {
+    box-sizing: border-box; width: 100%; padding: 7px 8px; border: 1px solid #dbe2ea;
+    border-radius: 6px; outline: none; color: #334155; background: #fff; font: inherit;
+  }
+  .graph-editor-field textarea { min-height: 96px; resize: vertical; }
+  .graph-editor-field input:focus, .graph-editor-field textarea:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px #dbeafe; }
+  .graph-editor-field input[readonly], .graph-editor-field textarea[readonly] { background: #f8fafc; }
+  .graph-editor-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+  .graph-editor-actions button { padding: 7px 13px; border: 1px solid #dbe2ea; border-radius: 6px; background: #f8fafc; color: #475569; cursor: pointer; }
+  .graph-editor-actions button.primary { border-color: #2563eb; background: #2563eb; color: #fff; }
+  .graph-editor-actions button:hover { filter: brightness(.97); }
+
+  @media (max-width: 720px) {
+    .search-panel, .filter-panel { width: 230px; }
+    .control-panel { width: 220px; }
+    .community-directory { width: min(280px, calc(100vw - 16px)); }
+  }
+</style>
+<script>
+(function () {
+  const GRAPH_EDITOR_VERSION = 3;
+  const NODE_COUNT = 103;
+  const EDGE_COUNT = 124;
+  const GRAPH_NAME = "改命记实录(道之光)";
+  const GRAPH_STATIC_LAYOUT_VERSION = 2;
+  let searchTimer = null;
+  let minimumWeight = 0.5;
+  let focusKeepNodes = null;
+  let hubsCollapsed = false;
+  let immersive = false;
+  const activeEntityTypes = new Set();
+  const collapsedEdgeIds = new Set();
+  const edgeStates = {};
+  const edgeOriginalWidths = {};
+  const nodeDegrees = {};
+  const hubNodes = new Set();
+  let editorRevision = 0;
+  let contextTarget = { type: 'canvas', id: null };
+  let contextMenu = null;
+  const edgeApiIds = new Map();
+  const edgeDetails = new Map();
+  const nodeDetails = new Map();
+  let editorMetadataReady = Promise.resolve();
+
+  function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>'"]/g, char => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+    })[char]);
+  }
+
+  function entityTypeOf(node) {
+    return String(node.entityType || node.group || '未分类');
+  }
+
+  function normalizeCommunitySearchText(value) {
+    return String(value || '').normalize('NFKC').toLocaleLowerCase('zh-CN')
+      .replace(/[\s.,，。！？!?、:：;；'"“”‘’()[\]{}<>《》【】_+*\/\\|@#$%^&=~`·-]+/g, '');
+  }
+
+  function fuzzyCommunityNameScore(name, query) {
+    const normalizedName = normalizeCommunitySearchText(name);
+    const normalizedQuery = normalizeCommunitySearchText(query);
+    if (!normalizedQuery) return 0;
+    if (normalizedName === normalizedQuery) return 1000;
+    if (normalizedName.startsWith(normalizedQuery)) return 900 - normalizedName.length;
+    const substringIndex = normalizedName.indexOf(normalizedQuery);
+    if (substringIndex >= 0) return 800 - substringIndex;
+    let queryIndex = 0;
+    let firstMatch = -1;
+    let lastMatch = -1;
+    let nameIndex = 0;
+    for (const character of normalizedName) {
+      if (character === normalizedQuery[queryIndex]) {
+        if (firstMatch < 0) firstMatch = nameIndex;
+        lastMatch = nameIndex;
+        queryIndex += 1;
+      }
+      if (queryIndex === normalizedQuery.length) {
+        return 600 - (lastMatch - firstMatch) - firstMatch;
+      }
+      nameIndex += 1;
+    }
+    return -1;
+  }
+
+  function communitySearchRank(item, query) {
+    const representative = item.dataset.representativeNode || item.dataset.name || '';
+    const communityName = item.dataset.communityName || '';
+    let memberNames = [];
+    try {
+      memberNames = JSON.parse(item.dataset.memberNames || '[]');
+    } catch (error) {
+      console.warn('社区节点名列表格式无效:', error);
+    }
+    const primaryScore = Math.max(
+      fuzzyCommunityNameScore(representative, query),
+      fuzzyCommunityNameScore(communityName, query)
+    );
+    const memberScore = memberNames.reduce((best, name) =>
+      Math.max(best, fuzzyCommunityNameScore(name, query)), -1);
+    if (primaryScore >= 0) return 2000 + primaryScore;
+    if (memberScore >= 0) return 1000 + memberScore;
+    return -1;
+  }
+
+  function initializeGraphMetadata() {
+    network.body.data.nodes.get().forEach(node => {
+      nodeDegrees[node.id] = network.getConnectedNodes(node.id).length;
+    });
+    const degrees = Object.values(nodeDegrees).sort((a, b) => b - a);
+    const threshold = degrees[Math.floor(degrees.length * 0.2)] || 0;
+    Object.entries(nodeDegrees).forEach(([id, degree]) => {
+      if (degree >= threshold && degree > 3) hubNodes.add(id);
+    });
+    network.body.data.edges.get().forEach(edge => {
+      edgeStates[edge.id] = { clicked: false, labelVisible: false };
+      edgeOriginalWidths[edge.id] = edge.width || 1;
+    });
+  }
+
+  function moveLegacyIsolatedNodesOutside() {
+    const nodes = network.body.data.nodes.get();
+    const isolated = nodes.filter(node => network.getConnectedNodes(node.id).length === 0);
+    const connected = nodes.filter(node => network.getConnectedNodes(node.id).length > 0);
+    if (!isolated.length) return;
+    // A graph can consist entirely of isolated nodes. Use all current
+    // positions only to choose a stable center, then place every node on rings.
+    const referenceNodes = connected.length ? connected : nodes;
+    const connectedPositions = network.getPositions(referenceNodes.map(node => node.id));
+    const values = Object.values(connectedPositions).filter(position =>
+      Number.isFinite(position?.x) && Number.isFinite(position?.y)
+    );
+    const centerX = values.length
+      ? values.reduce((sum, position) => sum + position.x, 0) / values.length
+      : 0;
+    const centerY = values.length
+      ? values.reduce((sum, position) => sum + position.y, 0) / values.length
+      : 0;
+    const connectedRadius = connected.length && values.length
+      ? Math.max(...values.map(position =>
+        Math.hypot(position.x - centerX, position.y - centerY)
+      ))
+      : 0;
+    const ringSpacing = 180;
+    const radius = Math.max(connectedRadius + 260, 360);
+    const updates = [];
+    let offset = 0;
+    let ringIndex = 0;
+    while (offset < isolated.length) {
+      const ringRadius = radius + ringIndex * ringSpacing;
+      const capacity = Math.max(8, Math.floor(2 * Math.PI * ringRadius / ringSpacing));
+      const ringNodes = isolated.slice(offset, offset + capacity);
+      ringNodes.forEach((node, index) => {
+        const angle = 2 * Math.PI * index / ringNodes.length - Math.PI / 2;
+        updates.push({
+          id: node.id,
+          x: centerX + ringRadius * Math.cos(angle),
+          y: centerY + ringRadius * Math.sin(angle)
+        });
+      });
+      offset += ringNodes.length;
+      ringIndex += 1;
+    }
+    network.body.data.nodes.update(updates);
+  }
+
+  function prepareLegacyStaticForceLayout(nodeCount) {
+    const graphContainer = document.getElementById('mynetwork');
+    if (!graphContainer) return false;
+    // Keep degree-zero nodes out of the hidden ForceAtlas2 run. They are
+    // positioned after the related graph has stabilized, on the outer rings.
+    const isolatedNodes = network.body.data.nodes.get().filter(node =>
+      network.getConnectedNodes(node.id).length === 0
+    );
+    if (isolatedNodes.length) {
+      network.body.data.nodes.update(isolatedNodes.map(node => ({
+        id: node.id,
+        physics: false
+      })));
+    }
+    graphContainer.style.visibility = 'hidden';
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      moveLegacyIsolatedNodesOutside();
+      network.setOptions({ physics: { enabled: false } });
+      graphContainer.style.visibility = 'visible';
+      updateVisibleStatus(nodeCount, network.body.data.edges.get().length);
+      network.fit({ animation: false });
+    };
+    network.once('stabilized', finish);
+    network.setOptions({
+      physics: {
+        enabled: true,
+        solver: 'forceAtlas2Based',
+        forceAtlas2Based: {
+          gravitationalConstant: -80,
+          centralGravity: 0.01,
+          springLength: 200,
+          springConstant: 0.08,
+          damping: 0.4,
+          avoidOverlap: 1.0
+        },
+        stabilization: {
+          enabled: true,
+          iterations: nodeCount > 500 ? 50 : 80,
+          updateInterval: 25,
+          fit: true
+        }
+      },
+      layout: { improvedLayout: true }
+    });
+    network.stabilize(nodeCount > 500 ? 50 : 80);
+    window.setTimeout(finish, 5000);
+    return true;
+  }
+
+  function applyLargeGraphPerformance() {
+    const nodes = network.body?.data?.nodes?.get?.() || [];
+    const edges = network.body?.data?.edges?.get?.() || [];
+    const hasIsolatedNodes = nodes.some(node => network.getConnectedNodes(node.id).length === 0);
+    if (nodes.length <= 50 && !hasIsolatedNodes) return false;
+
+    // Newly generated pages already contain server-side ForceAtlas2 coordinates.
+    // Legacy pages are stabilized while hidden, then physics is disabled before
+    // they are shown, so users do not see the original continuous bouncing.
+    network.setOptions({
+      physics: { enabled: false, stabilization: { enabled: false } },
+      layout: { improvedLayout: false },
+      interaction: {
+        dragNodes: true, dragView: true, zoomView: true,
+        hideEdgesOnDrag: true
+      }
+    });
+    const hasCoordinates = nodes.length > 0 && nodes.every(node =>
+      Number.isFinite(Number(node.x)) && Number.isFinite(Number(node.y))
+    );
+    if (GRAPH_STATIC_LAYOUT_VERSION < 2 || !hasCoordinates) {
+      prepareLegacyStaticForceLayout(nodes.length);
+    }
+    updateVisibleStatus(nodes.length, edges.length);
+    network.fit({ animation: false });
+    return true;
+  }
+
+  function nodePassesFilters(node) {
+    if (activeEntityTypes.size && !activeEntityTypes.has(entityTypeOf(node))) return false;
+    if (focusKeepNodes && !focusKeepNodes.has(node.id)) return false;
+    return true;
+  }
+
+  function applyVisibilityFilters(fitGraph = false) {
+    const visibleNodeIds = new Set();
+    const nodeUpdates = network.body.data.nodes.get().map(node => {
+      const visible = nodePassesFilters(node);
+      if (visible) visibleNodeIds.add(node.id);
+      return { ...node, hidden: !visible };
+    });
+    network.body.data.nodes.update(nodeUpdates);
+
+    const edgeUpdates = network.body.data.edges.get().map(edge => ({
+      ...edge,
+      hidden: !visibleNodeIds.has(edge.from)
+        || !visibleNodeIds.has(edge.to)
+        || Number(edge.weight || 0.5) < minimumWeight
+        || collapsedEdgeIds.has(edge.id)
+    }));
+    network.body.data.edges.update(edgeUpdates);
+    updateVisibleStatus(visibleNodeIds.size, edgeUpdates.filter(edge => !edge.hidden).length);
+    if (fitGraph && visibleNodeIds.size) network.fit({ animation: { duration: 350 } });
+  }
+
+  function updateVisibleStatus(nodes, edges) {
+    const status = document.getElementById('visibleGraphStatus');
+    if (status) status.innerHTML = `<strong>${nodes}</strong> 节点 · <strong>${edges}</strong> 关系`;
+  }
+
+  function createPanel(className, title, bodyHtml) {
+    const panel = document.createElement('section');
+    panel.className = `graph-floating-panel ${className}`;
+    panel.innerHTML = `
+      <div class="graph-panel-header">
+        <span>${title}</span>
+        <button class="graph-panel-collapse" type="button" aria-label="收起面板">−</button>
+      </div>
+      <div class="graph-panel-body">${bodyHtml}</div>`;
+    return panel;
+  }
+
+  function bindPanelCollapse(panel) {
+    const button = panel.querySelector('.graph-panel-collapse');
+    if (!button) return;
+    button.addEventListener('click', () => {
+      const collapsed = panel.classList.toggle('is-collapsed');
+      button.textContent = collapsed ? '+' : '−';
+      button.setAttribute('aria-label', collapsed ? '展开面板' : '收起面板');
+    });
+  }
+
+  function renderEntityTypeOptions(container) {
+    const counts = new Map();
+    network.body.data.nodes.get().forEach(node => {
+      const type = entityTypeOf(node);
+      counts.set(type, (counts.get(type) || 0) + 1);
+    });
+    container.innerHTML = [...counts.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0], 'zh-CN'))
+      .map(([type, count]) => `
+        <label class="entity-type-option">
+          <input type="checkbox" value="${escapeHtml(type)}">
+          <span title="${escapeHtml(type)}">${escapeHtml(type)}</span>
+          <span class="entity-type-count">${count}</span>
+        </label>`).join('');
+    container.querySelectorAll('input[type="checkbox"]').forEach(input => {
+      input.addEventListener('change', () => {
+        if (input.checked) activeEntityTypes.add(input.value);
+        else activeEntityTypes.delete(input.value);
+        focusKeepNodes = null;
+        document.getElementById('focusModeBtn')?.classList.remove('active');
+        applyVisibilityFilters(true);
+        renderSearchResults();
+      });
+    });
+  }
+
+  function renderSearchResults() {
+    const input = document.getElementById('searchInput');
+    const container = document.getElementById('searchResults');
+    if (!input || !container) return;
+    const term = input.value.toLowerCase().trim();
+    const nodes = network.body.data.nodes.get()
+      .filter(node => !node.hidden)
+      .filter(node => !term || String(node.label || node.id).toLowerCase().includes(term))
+      .map(node => ({
+        kind: 'node', id: node.id, label: node.label || node.id,
+        type: entityTypeOf(node), extra: `${nodeDegrees[node.id] || 0} 连接`
+      }));
+    const edges = term ? network.body.data.edges.get()
+      .filter(edge => !edge.hidden && String(edge.label || '').toLowerCase().includes(term))
+      .map(edge => ({
+        kind: 'edge', id: edge.id, label: edge.label || '未命名关系',
+        type: '关系', extra: Number(edge.weight || .5).toFixed(2)
+      })) : [];
+    const results = [...nodes, ...edges].slice(0, 80);
+    container.innerHTML = results.length ? results.map(result => `
+      <div class="search-result-item" data-kind="${result.kind}" data-id="${escapeHtml(result.id)}">
+        <span class="type-badge ${result.kind === 'edge' ? 'edge' : ''}" title="${escapeHtml(result.type)}">${escapeHtml(result.type)}</span>
+        <span class="result-main" title="${escapeHtml(result.label)}">${escapeHtml(result.label)}</span>
+        <span class="result-meta">${escapeHtml(result.extra)}</span>
+      </div>`).join('') : '<div class="graph-empty-state">没有匹配的实体或关系</div>';
+    container.querySelectorAll('.search-result-item').forEach(item => {
+      item.addEventListener('click', () => {
+        const id = item.dataset.id;
+        if (item.dataset.kind === 'node') {
+          const node = network.body.data.nodes.get(id)
+            || network.body.data.nodes.get().find(candidate => String(candidate.id) === id);
+          if (!node) return;
+          network.selectNodes([node.id]);
+          network.focus(node.id, { scale: 1.45, animation: { duration: 350 } });
+          requestEvidence('node', node.id);
+        } else {
+          const edge = network.body.data.edges.get(id)
+            || network.body.data.edges.get().find(candidate => String(candidate.id) === id);
+          if (!edge) return;
+          network.selectEdges([edge.id]);
+          network.fit({ nodes: [edge.from, edge.to], animation: { duration: 350 } });
+          requestEvidence('edge', edge.id);
+        }
+      });
+    });
+  }
+
+  function bindCommunitySourceButton(button) {
+    if (!button || button.dataset.bound === '1') return;
+    button.dataset.bound = '1';
+    button.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      let sourceBlocks = [];
+      try {
+        sourceBlocks = JSON.parse(button.dataset.sourceBlocks || '[]');
+      } catch (error) {
+        console.warn('社区主节点出处文本块格式无效:', error);
+      }
+      window.parent?.postMessage({
+        type: 'knowledge-graph-evidence',
+        graphName: GRAPH_NAME,
+        kind: 'node',
+        id: button.dataset.nodeId || '',
+        sourceBlocks,
+        entityTerms: [button.dataset.nodeId || ''].filter(Boolean),
+        relationTerms: []
+      }, '*');
+    });
+  }
+
+  function refreshCommunityMetadata() {
+    const directory = document.getElementById('communityDirectory');
+    if (!directory || !nodeDetails.size) return;
+    const findNodeDetail = label => nodeDetails.get(String(label))
+      || [...nodeDetails.values()].find(node => String(node.name || node.id) === String(label));
+    const types = new Set();
+    directory.querySelectorAll('.community-list-item').forEach(item => {
+      const representative = item.dataset.representativeNode || item.dataset.name || '';
+      const detail = findNodeDetail(representative);
+      if (!detail) return;
+      const type = String(detail.entityType || '未分类');
+      types.add(type);
+      item.dataset.types = type;
+      const meta = item.querySelector('.community-item-meta');
+      if (meta) {
+        const count = (meta.textContent.match(/\d+/) || [''])[0];
+        meta.textContent = `${count ? `${count} 个节点 · ` : ''}主节点类型：${type}`;
+      }
+      let sourceButton = item.querySelector('.community-source-link');
+      if (!sourceButton) {
+        sourceButton = document.createElement('button');
+        sourceButton.type = 'button';
+        sourceButton.className = 'community-source-link';
+        sourceButton.textContent = '查看原文文本块';
+        item.appendChild(sourceButton);
+      }
+      sourceButton.dataset.nodeId = String(detail.id);
+      const detailSourceBlocks = Array.isArray(detail.source_blocks) ? detail.source_blocks : [];
+      if (detailSourceBlocks.length) {
+        sourceButton.dataset.sourceBlocks = JSON.stringify(detailSourceBlocks);
+      }
+      bindCommunitySourceButton(sourceButton);
+    });
+    const typeFilter = document.getElementById('communityTypeFilter');
+    if (typeFilter && types.size) {
+      typeFilter.innerHTML = '<option value="">全部实体类型</option>'
+        + [...types].sort((a, b) => a.localeCompare(b, 'zh-CN'))
+          .map(type => `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`).join('');
+    }
+    const communityNodes = network.body.data.nodes.get().map(node => {
+      const detail = findNodeDetail(node.label || node.id);
+      return detail ? {
+        ...node,
+        entityType: detail.entityType || '未分类',
+        group: detail.entityType || '未分类',
+        source_blocks: detail.source_blocks?.length ? detail.source_blocks : (node.source_blocks || [])
+      } : node;
+    });
+    network.body.data.nodes.update(communityNodes);
+    const typeOptions = document.getElementById('entityTypeOptions');
+    if (typeOptions) renderEntityTypeOptions(typeOptions);
+    applyVisibilityFilters();
+    renderSearchResults();
+  }
+
+  function setupCommunityDirectory() {
+    const directory = document.getElementById('communityDirectory');
+    if (!directory) return;
+    directory.querySelector('.graph-panel-collapse')?.addEventListener('click', event => {
+      const collapsed = directory.classList.toggle('is-collapsed');
+      event.currentTarget.textContent = collapsed ? '+' : '−';
+    });
+    const search = document.getElementById('communitySearchInput');
+    const typeFilter = document.getElementById('communityTypeFilter');
+    const list = document.getElementById('communityList');
+    const items = [...directory.querySelectorAll('.community-list-item')];
+    const originalOrder = new Map(items.map((item, index) => [item, index]));
+    const empty = document.getElementById('communityEmptyState');
+    directory.querySelectorAll('.community-source-link').forEach(bindCommunitySourceButton);
+    editorMetadataReady.then(refreshCommunityMetadata);
+    const apply = () => {
+      const term = (search?.value || '').toLowerCase().trim();
+      const type = typeFilter?.value || '';
+      const rankedItems = [];
+      items.forEach(item => {
+        const rank = term ? communitySearchRank(item, term) : 0;
+        const types = (item.dataset.types || '').split('|');
+        const matchesType = !type || types.includes(type);
+        item.hidden = !matchesType;
+        item.classList.toggle('search-match', Boolean(term) && rank >= 0 && matchesType);
+        rankedItems.push({ item, rank: matchesType ? rank : -1 });
+      });
+      rankedItems.sort((left, right) =>
+        right.rank - left.rank
+        || originalOrder.get(left.item) - originalOrder.get(right.item));
+      rankedItems.forEach(({ item }) => list?.appendChild(item));
+      const matchedCount = term
+        ? rankedItems.filter(({ item, rank }) => !item.hidden && rank >= 0).length
+        : rankedItems.filter(({ item }) => !item.hidden).length;
+      if (empty) empty.hidden = matchedCount > 0;
+    };
+    search?.addEventListener('input', apply);
+    typeFilter?.addEventListener('change', apply);
+  }
+
+  function editorApi(path, options = {}) {
+    return fetch(`/api${path}`, {
+      ...options,
+      headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }
+    }).then(async response => {
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || payload.error || '图谱操作失败');
+      return payload;
+    });
+  }
+
+  function edgeSignature(edge) {
+    return [edge.from, edge.to, edge.label || '', edge.title || ''].join('|');
+  }
+
+  function syncEditorRevision() {
+    if (!GRAPH_NAME) return Promise.resolve();
+    return editorApi(`/graph-data/${encodeURIComponent(GRAPH_NAME)}`)
+      .then(payload => {
+        editorRevision = Number(payload.revision || 0);
+        nodeDetails.clear();
+        edgeApiIds.clear();
+        (payload.nodes || []).forEach(node => nodeDetails.set(String(node.id), node));
+        edgeDetails.clear();
+        (payload.links || []).forEach(link => edgeDetails.set(String(link.id), link));
+        const apiBySignature = new Map(
+          (payload.links || []).map(link => [
+            [link.source, link.target, link.relation || '', link.context || ''].join('|'),
+            link.id
+          ])
+        );
+        network.body.data.edges.get().forEach(edge => {
+          const apiId = apiBySignature.get(edgeSignature(edge));
+          if (apiId) edgeApiIds.set(String(edge.id), apiId);
+        });
+      })
+      .catch(error => console.warn('图谱编辑接口暂不可用:', error.message));
+  }
+
+  function requestEvidence(kind, id) {
+    const requestedId = String(id ?? '');
+    if (!requestedId) return;
+    editorMetadataReady.then(() => {
+      let sourceBlocks = [];
+      let entityTerms = [];
+      let relationTerms = [];
+      if (kind === 'node') {
+        const detail = nodeDetails.get(requestedId);
+        const graphNode = network.body.data.nodes.get(id)
+          || network.body.data.nodes.get().find(candidate => String(candidate.id) === requestedId);
+        sourceBlocks = detail?.source_blocks?.length
+          ? detail.source_blocks
+          : (graphNode?.source_blocks || []);
+        entityTerms = [detail?.name || graphNode?.label || graphNode?.id || requestedId];
+      } else if (kind === 'edge') {
+        const edge = network.body.data.edges.get(id)
+          || network.body.data.edges.get().find(candidate => String(candidate.id) === requestedId);
+        const apiId = edgeApiIds.get(requestedId) || requestedId;
+        const detail = edgeDetails.get(String(apiId)) || {};
+        sourceBlocks = detail.evidence_blocks || [];
+        if (!sourceBlocks.length && detail.source_block) sourceBlocks = [detail.source_block];
+        if (edge && !sourceBlocks.length) {
+          const fallback = edgeDetails.get(String(edge.id));
+          sourceBlocks = fallback?.evidence_blocks || [];
+        }
+        if (edge && !sourceBlocks.length) {
+          sourceBlocks = edge.evidence_blocks || [];
+          if (!sourceBlocks.length && edge.source_block) sourceBlocks = [edge.source_block];
+        }
+        entityTerms = [
+          edge?.from, edge?.to, edge?.evidence_source, edge?.evidence_target
+        ].filter(Boolean);
+        entityTerms.push(detail.source, detail.target, detail.relation);
+        relationTerms = [edge?.label, detail.relation];
+      }
+      window.parent?.postMessage({
+        type: 'knowledge-graph-evidence',
+        graphName: GRAPH_NAME,
+        kind,
+        id: requestedId,
+        sourceBlocks,
+        entityTerms: [...new Set(entityTerms.map(value => String(value || '').trim()).filter(Boolean))],
+        relationTerms: [...new Set(relationTerms.map(value => String(value || '').trim()).filter(Boolean))]
+      }, '*');
+    });
+  }
+
+  function showNodeDialog(target) {
+    const node = network.body.data.nodes.get(target.id);
+    if (!node) return;
+    const detail = nodeDetails.get(String(node.id)) || {};
+    const detailSourceBlocks = Array.isArray(detail.source_blocks) ? detail.source_blocks : [];
+    const sourceBlocks = detailSourceBlocks.length ? detailSourceBlocks : (node.source_blocks || []);
+    const mask = document.createElement('div');
+    mask.className = 'graph-editor-dialog-mask';
+    mask.innerHTML = `
+      <section class="graph-editor-dialog" role="dialog" aria-modal="true">
+        <h3>节点详情</h3>
+        <div class="graph-editor-field"><label>节点名称</label><input value="${escapeHtml(node.label || node.id)}" readonly></div>
+        <div class="graph-editor-field"><label>节点类型</label><input value="${escapeHtml(entityTypeOf(node))}" readonly></div>
+        <div class="graph-editor-field"><label>连接数</label><input value="${escapeHtml(network.getConnectedNodes(node.id).length)}" readonly></div>
+        <div class="graph-editor-field"><label>出处文本块（只读）</label><textarea readonly>${escapeHtml(sourceBlocks.length ? sourceBlocks.join('\n') : '无可定位出处')}</textarea></div>
+        <div class="graph-editor-actions">
+          <button type="button" data-dialog-close>关闭</button>
+          <button type="button" class="primary" data-dialog-locate>原文查找</button>
+        </div>
+      </section>`;
+    document.body.appendChild(mask);
+    const close = () => mask.remove();
+    mask.addEventListener('click', event => {
+      if (event.target === mask || event.target.closest('[data-dialog-close]')) close();
+    });
+    mask.querySelector('[data-dialog-locate]').addEventListener('click', () => {
+      requestEvidence('node', target.id);
+      close();
+    });
+  }
+
+  function highlightGraphTarget(kind, id) {
+    const requestedId = String(id ?? '');
+    if (!requestedId) return;
+    editorMetadataReady.then(() => {
+      if (kind === 'node') {
+        const node = network.body.data.nodes.get(requestedId)
+          || network.body.data.nodes.get().find(item => String(item.id) === requestedId);
+        if (!node) return;
+        network.selectNodes([node.id]);
+        network.focus(node.id, { scale: 1.45, animation: { duration: 350 } });
+        requestEvidence('node', node.id);
+        return;
+      }
+      const edge = network.body.data.edges.get(requestedId)
+        || network.body.data.edges.get().find(item =>
+          String(item.id) === requestedId || String(edgeApiIds.get(String(item.id))) === requestedId
+        );
+      if (!edge) return;
+      network.selectEdges([edge.id]);
+      network.fit({ nodes: [edge.from, edge.to], animation: { duration: 350 } });
+      requestEvidence('edge', edge.id);
+    });
+  }
+
+  function showContextMenu(event, target) {
+    contextTarget = target;
+    if (!contextMenu) {
+      contextMenu = document.createElement('div');
+      contextMenu.className = 'graph-context-menu';
+      document.body.appendChild(contextMenu);
+      contextMenu.addEventListener('click', event => {
+        const action = event.target.closest('button')?.dataset.action;
+        if (!action) return;
+        hideContextMenu();
+        runGraphAction(action, contextTarget);
+      });
+    }
+    const nodeActions = `
+      <button data-action="view-node">查看节点</button>
+      <button data-action="edit-node">编辑节点</button>
+      <button data-action="add-edge">从此节点新增关系</button>
+      <button class="danger" data-action="delete-node">删除节点</button>`;
+    const edgeActions = `
+      <button data-action="view-edge">查看关系</button>
+      <button data-action="edit-edge">编辑关系</button>
+      <button class="danger" data-action="delete-edge">删除关系</button>`;
+    const canvasActions = '<button data-action="add-node">新增节点</button>';
+    contextMenu.innerHTML = `${target.type === 'node' ? nodeActions : target.type === 'edge' ? edgeActions : canvasActions}
+      <button data-action="history">历史记录与还原</button>`;
+    contextMenu.style.display = 'block';
+    contextMenu.style.left = `${Math.min(event.clientX, window.innerWidth - 170)}px`;
+    contextMenu.style.top = `${Math.min(event.clientY, window.innerHeight - 180)}px`;
+  }
+
+  function hideContextMenu() {
+    if (contextMenu) contextMenu.style.display = 'none';
+  }
+
+  function askText(label, value = '') {
+    const result = window.prompt(label, value);
+    return result === null ? null : result.trim();
+  }
+
+  function mutation(operation, payload = {}) {
+    if (!GRAPH_NAME) return Promise.reject(new Error('当前图谱页面缺少文件标识'));
+    return editorApi(`/graph-mutation/${encodeURIComponent(GRAPH_NAME)}`, {
+      method: 'POST',
+      body: JSON.stringify({ operation, revision: editorRevision, ...payload })
+    }).then(() => window.location.reload());
+  }
+
+  function selectedNode(target) {
+    return network.body.data.nodes.get(target.id);
+  }
+
+  function selectedEdge(target) {
+    return network.body.data.edges.get(target.id);
+  }
+
+  function editNode(target) {
+    const node = selectedNode(target);
+    if (!node) return;
+    const name = askText('节点名称：', node.label || node.id);
+    if (!name) return;
+    const entityType = askText('节点类型：', entityTypeOf(node));
+    if (!entityType) return;
+    mutation('update_node', { node_id: String(node.id), name, entity_type: entityType })
+      .catch(error => window.alert(error.message));
+  }
+
+  function addNode() {
+    const name = askText('新节点名称：');
+    if (!name) return;
+    const entityType = askText('节点类型：', '未知标签');
+    if (!entityType) return;
+    mutation('add_node', { name, entity_type: entityType })
+      .catch(error => window.alert(error.message));
+  }
+
+  function addEdge(target) {
+    const source = String(target.id);
+    const nodeNames = network.body.data.nodes.get().map(node => node.label || node.id).join('、');
+    const targetName = askText(`关系终点节点（已有节点：${nodeNames}）：`);
+    if (!targetName) return;
+    const relation = askText('关系名称：');
+    if (!relation) return;
+    const context = askText('关系说明：', relation) || relation;
+    mutation('add_edge', { source, target: targetName, relation, context, weight: 0.5 })
+      .catch(error => window.alert(error.message));
+  }
+
+  function edgeRecord(target) {
+    const edge = selectedEdge(target);
+    if (!edge) return null;
+    const edgeId = edgeApiIds.get(String(edge.id)) || edge.id;
+    const detail = edgeDetails.get(String(edgeId)) || {};
+    return {
+      ...edge,
+      ...detail,
+      editId: edgeId,
+      source: detail.source || edge.from,
+      target: detail.target || edge.to,
+      relation: detail.relation || edge.label || '',
+      evidence: detail.evidence || detail.context || edge.title || '',
+      sourceBlock: detail.source_block || edge.source_block || '无',
+      evidenceBlocks: Array.isArray(detail.evidence_blocks) && detail.evidence_blocks.length
+        ? detail.evidence_blocks
+        : (Array.isArray(edge.evidence_blocks) ? edge.evidence_blocks : []),
+      score: detail.score ?? detail.weight ?? edge.weight ?? 0.5,
+      origin: (detail.origin || edge.origin) === 'manual' ? '用户新增' : 'AI抽取'
+    };
+  }
+
+  function showEdgeDialog(target, readonly = false) {
+    const edge = edgeRecord(target);
+    if (!edge) return;
+    const mask = document.createElement('div');
+    mask.className = 'graph-editor-dialog-mask';
+    const disabled = readonly ? ' readonly' : '';
+    mask.innerHTML = `
+      <section class="graph-editor-dialog" role="dialog" aria-modal="true">
+        <h3>${readonly ? '关系详情' : '编辑关系'}</h3>
+        <div class="graph-editor-field"><label>起点节点</label><input id="edgeEditorSource" value="${escapeHtml(edge.source)}"${disabled}></div>
+        <div class="graph-editor-field"><label>终点节点</label><input id="edgeEditorTarget" value="${escapeHtml(edge.target)}"${disabled}></div>
+        <div class="graph-editor-field"><label>关系名称</label><input id="edgeEditorRelation" value="${escapeHtml(edge.relation)}"${disabled}></div>
+        <div class="graph-editor-field"><label>出处依据 / 关系说明</label><textarea id="edgeEditorEvidence"${disabled}>${escapeHtml(edge.evidence)}</textarea></div>
+        <div class="graph-editor-field"><label>出处文本块（只读）</label><textarea readonly>${escapeHtml(edge.evidenceBlocks.length
+          ? edge.evidenceBlocks.map(item => item.source_block || item).filter(Boolean).join('\n')
+          : edge.sourceBlock)}</textarea></div>
+        <div class="graph-editor-field"><label>得分 / 权重（0-1）</label><input id="edgeEditorScore" type="number" min="0" max="1" step="0.01" value="${escapeHtml(edge.score)}"${disabled}></div>
+        <div class="graph-editor-field"><label>关系来源</label><input value="${escapeHtml(edge.origin)}" readonly></div>
+        <div class="graph-editor-field"><label>关系 ID</label><input value="${escapeHtml(edge.editId)}" readonly></div>
+        <div class="graph-editor-actions">
+          <button type="button" data-dialog-close>关闭</button>
+          <button type="button" data-dialog-locate>原文查找</button>
+          ${readonly ? '' : '<button type="button" class="primary" data-dialog-save>保存修改</button>'}
+        </div>
+      </section>`;
+    document.body.appendChild(mask);
+    const close = () => mask.remove();
+    mask.addEventListener('click', event => {
+      if (event.target === mask || event.target.closest('[data-dialog-close]')) close();
+    });
+    mask.querySelector('[data-dialog-locate]').addEventListener('click', () => {
+      requestEvidence('edge', target.id);
+      close();
+    });
+    if (!readonly) {
+      mask.querySelector('[data-dialog-save]').addEventListener('click', () => {
+        const score = Number(mask.querySelector('#edgeEditorScore').value);
+        if (!Number.isFinite(score) || score < 0 || score > 1) return window.alert('得分必须在0到1之间');
+        mutation('update_edge', {
+          edge_id: edge.editId,
+          source: mask.querySelector('#edgeEditorSource').value.trim(),
+          target: mask.querySelector('#edgeEditorTarget').value.trim(),
+          relation: mask.querySelector('#edgeEditorRelation').value.trim(),
+          context: mask.querySelector('#edgeEditorEvidence').value.trim(),
+          weight: score
+        }).catch(error => window.alert(error.message));
+      });
+    }
+  }
+
+  function editEdge(target) {
+    showEdgeDialog(target, false);
+  }
+
+  function deleteTarget(target) {
+    const isNode = target.type === 'node';
+    const item = isNode ? selectedNode(target) : selectedEdge(target);
+    if (!item || !window.confirm(isNode ? '删除节点会同时删除相连关系，是否继续？' : '是否删除这条关系？')) return;
+    const id = isNode ? item.id : (edgeApiIds.get(String(item.id)) || item.id);
+    mutation(isNode ? 'delete_node' : 'delete_edge', isNode ? { node_id: String(id) } : { edge_id: id })
+      .catch(error => window.alert(error.message));
+  }
+
+  function viewTarget(target) {
+    const item = target.type === 'node' ? selectedNode(target) : selectedEdge(target);
+    if (!item) return;
+    if (target.type === 'node') {
+      showNodeDialog(target);
+    } else {
+      showEdgeDialog(target, true);
+    }
+  }
+
+  function showHistory() {
+    editorApi(`/graph-history/${encodeURIComponent(GRAPH_NAME)}`).then(payload => {
+      const versions = payload.versions || [];
+      if (!versions.length) return window.alert('暂无图谱修改历史');
+      const description = versions.map(version =>
+        `${version.revision}: ${version.description || version.operation || '图谱修改'} (${version.created_at})`).join('\n');
+      const revision = askText(`历史版本（输入版本号还原）：\n${description}`);
+      if (!revision) return;
+      const number = Number(revision);
+      if (!Number.isInteger(number)) return window.alert('版本号必须是整数');
+      if (!window.confirm(`确认还原到版本 ${number}？还原会创建新的历史版本。`)) return;
+      editorApi(`/graph-restore/${encodeURIComponent(GRAPH_NAME)}/${number}`, {
+        method: 'POST',
+        body: JSON.stringify({ operation: 'restore', revision: editorRevision })
+      }).then(() => {
+        window.parent?.postMessage({ type: 'knowledge-graph-restored', filename: GRAPH_NAME }, '*');
+        window.location.reload();
+      }).catch(error => window.alert(error.message));
+    }).catch(error => window.alert(error.message));
+  }
+
+  function runGraphAction(action, target) {
+    if (action === 'add-node') return addNode();
+    if (action === 'edit-node') return editNode(target);
+    if (action === 'delete-node') return deleteTarget(target);
+    if (action === 'add-edge') return addEdge(target);
+    if (action === 'edit-edge') return editEdge(target);
+    if (action === 'delete-edge') return deleteTarget(target);
+    if (action === 'view-node' || action === 'view-edge') return viewTarget(target);
+    if (action === 'history') return showHistory();
+  }
+
+  document.addEventListener('DOMContentLoaded', function () {
+    const graphContainer = document.getElementById('mynetwork');
+    if (!graphContainer || typeof network === 'undefined') return;
+    const host = graphContainer.parentNode;
+    applyLargeGraphPerformance();
+    let readyNotified = false;
+    const notifyGraphReady = () => {
+      if (readyNotified) return;
+      readyNotified = true;
+      window.parent?.postMessage({ type: 'knowledge-graph-ready' }, '*');
+    };
+    network.once('afterDrawing', notifyGraphReady);
+    network.once('stabilized', () => {
+      network.setOptions({ physics: { enabled: false } });
+      notifyGraphReady();
+    });
+    window.setTimeout(notifyGraphReady, 2500);
+    initializeGraphMetadata();
+    editorMetadataReady = syncEditorRevision();
+    window.addEventListener('message', event => {
+      if (event.source !== window.parent || event.data?.type !== 'knowledge-graph-highlight') return;
+      if (event.data.graphName && event.data.graphName !== GRAPH_NAME) return;
+      highlightGraphTarget(event.data.kind, event.data.id);
+    });
+    document.addEventListener('click', hideContextMenu);
+    // vis-network's `oncontext` is not emitted consistently across its
+    // versions, especially when the canvas is inside a sandboxed iframe.
+    // Bind the native DOM event as the authoritative browser-menu blocker.
+    graphContainer.addEventListener('contextmenu', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = graphContainer.getBoundingClientRect();
+      const pointer = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+      const nodeId = network.getNodeAt(pointer);
+      const hasNode = nodeId !== undefined && nodeId !== null;
+      const edgeId = hasNode ? undefined : network.getEdgeAt(pointer);
+      const hasEdge = edgeId !== undefined && edgeId !== null;
+      showContextMenu(event, hasNode
+        ? { type: 'node', id: nodeId }
+        : hasEdge
+          ? { type: 'edge', id: edgeId }
+          : { type: 'canvas', id: null });
+    }, true);
+    network.on('oncontext', params => {
+      params.event?.srcEvent?.preventDefault?.();
+      const nodeId = params.nodes?.[0];
+      const edgeId = params.edges?.[0];
+      const sourceEvent = params.event?.srcEvent;
+      if (!sourceEvent) return;
+      showContextMenu(sourceEvent, nodeId !== undefined
+        ? { type: 'node', id: nodeId }
+        : edgeId !== undefined
+          ? { type: 'edge', id: edgeId }
+          : { type: 'canvas', id: null });
+    });
+
+    const runtimeNodeCount = network.body.data.nodes.get().length;
+    const runtimeEdgeCount = network.body.data.edges.get().length;
+    const searchPanel = createPanel('search-panel', '🔍 实体与关系', `
+      <input type="search" id="searchInput" class="graph-text-input" placeholder="搜索实体或关系...">
+      <div class="search-results" id="searchResults"></div>
+      <div class="status-bar" id="visibleGraphStatus"><strong>${Math.max(NODE_COUNT, runtimeNodeCount)}</strong> 节点 · <strong>${Math.max(EDGE_COUNT, runtimeEdgeCount)}</strong> 关系</div>`);
+    host.insertBefore(searchPanel, graphContainer);
+
+    const controlPanel = createPanel('control-panel', '⚙️ 图谱控制', `
+      <div class="control-actions">
+        <button id="showAllBtn" class="control-btn">显示标签</button>
+        <button id="hideAllBtn" class="control-btn active">隐藏标签</button>
+        <button id="toggleHubsBtn" class="control-btn">折叠 Hub</button>
+        <button id="focusModeBtn" class="control-btn">节点聚焦</button>
+        <button id="fitBtn" class="control-btn">适应画布</button>
+        <button id="resetBtn" class="control-btn">重置</button>
+      </div>
+      <div class="status-bar">右键节点、关系或空白处，可进行增删改查</div>
+      <div class="status-bar">已标记关系：<strong id="counter">0</strong></div>`);
+    host.insertBefore(controlPanel, graphContainer);
+
+    const filterPanel = createPanel('filter-panel', '🔧 筛选与类型聚焦', `
+      <div class="filter-section">
+        <div class="filter-label"><span>最小关系权重</span><strong id="weightValue">0.5</strong></div>
+        <input type="range" id="weightFilter" class="filter-slider" min="0.5" max="1" step="0.1" value="0.5">
+      </div>
+      <div class="filter-section">
+        <div class="filter-label"><span>Hub 关系透明度</span><strong id="hubOpacityValue">0.3</strong></div>
+        <input type="range" id="hubOpacity" class="filter-slider" min="0" max="1" step="0.1" value="0.3">
+      </div>
+      <div class="filter-section">
+        <div class="filter-label"><span>实体类型（可多选）</span><strong id="selectedTypeCount">0</strong></div>
+        <div class="entity-type-actions">
+          <button type="button" id="selectAllTypesBtn" class="small-action-btn">全选</button>
+          <button type="button" id="clearTypesBtn" class="small-action-btn">清除</button>
+        </div>
+        <div class="entity-type-options" id="entityTypeOptions"></div>
+      </div>`);
+    host.insertBefore(filterPanel, graphContainer);
+
+    [searchPanel, controlPanel, filterPanel].forEach(bindPanelCollapse);
+
+    const immersiveButton = document.createElement('button');
+    immersiveButton.className = 'immersive-toggle';
+    immersiveButton.type = 'button';
+    immersiveButton.textContent = '⛶ 沉浸模式';
+    immersiveButton.addEventListener('click', () => {
+      immersive = !immersive;
+      document.querySelectorAll('.graph-floating-panel').forEach(panel => {
+        panel.classList.toggle('is-collapsed', immersive);
+        const button = panel.querySelector('.graph-panel-collapse');
+        if (button) button.textContent = immersive ? '+' : '−';
+      });
+      immersiveButton.textContent = immersive ? '退出沉浸' : '⛶ 沉浸模式';
+    });
+    host.insertBefore(immersiveButton, graphContainer);
+
+    const typeOptions = document.getElementById('entityTypeOptions');
+    renderEntityTypeOptions(typeOptions);
+    const updateSelectedTypeCount = () => {
+      document.getElementById('selectedTypeCount').textContent = activeEntityTypes.size;
+    };
+    typeOptions.addEventListener('change', updateSelectedTypeCount);
+    document.getElementById('selectAllTypesBtn').addEventListener('click', () => {
+      typeOptions.querySelectorAll('input').forEach(input => { input.checked = true; activeEntityTypes.add(input.value); });
+      updateSelectedTypeCount(); applyVisibilityFilters(true); renderSearchResults();
+    });
+    document.getElementById('clearTypesBtn').addEventListener('click', () => {
+      typeOptions.querySelectorAll('input').forEach(input => { input.checked = false; });
+      activeEntityTypes.clear(); updateSelectedTypeCount(); applyVisibilityFilters(true); renderSearchResults();
+    });
+
+    document.getElementById('searchInput').addEventListener('input', () => {
+      clearTimeout(searchTimer); searchTimer = setTimeout(renderSearchResults, 120);
+    });
+    document.getElementById('weightFilter').addEventListener('input', event => {
+      minimumWeight = Number(event.target.value);
+      document.getElementById('weightValue').textContent = minimumWeight.toFixed(1);
+      applyVisibilityFilters(); renderSearchResults();
+    });
+    document.getElementById('hubOpacity').addEventListener('input', event => {
+      const opacity = Number(event.target.value);
+      document.getElementById('hubOpacityValue').textContent = opacity.toFixed(1);
+      const updates = network.body.data.edges.get()
+        .filter(edge => hubNodes.has(String(edge.from)) || hubNodes.has(String(edge.to)))
+        .map(edge => ({ ...edge, color: { ...edge.color, opacity } }));
+      network.body.data.edges.update(updates);
+    });
+
+    const updateCounter = () => {
+      document.getElementById('counter').textContent = Object.values(edgeStates).filter(state => state.clicked).length;
+    };
+    document.getElementById('showAllBtn').addEventListener('click', event => {
+      network.body.data.edges.get().forEach(edge => {
+        edge.font = { size: 10, color: '#64748b' }; edgeStates[edge.id].labelVisible = true;
+        network.body.data.edges.update(edge);
+      });
+      document.getElementById('hideAllBtn').classList.remove('active'); event.currentTarget.classList.add('active');
+    });
+    document.getElementById('hideAllBtn').addEventListener('click', event => {
+      network.body.data.edges.get().forEach(edge => {
+        if (!edgeStates[edge.id].clicked) edge.font = { size: 0 };
+        edgeStates[edge.id].labelVisible = false; network.body.data.edges.update(edge);
+      });
+      document.getElementById('showAllBtn').classList.remove('active'); event.currentTarget.classList.add('active');
+    });
+    document.getElementById('toggleHubsBtn').addEventListener('click', event => {
+      hubsCollapsed = !hubsCollapsed; collapsedEdgeIds.clear();
+      if (hubsCollapsed) hubNodes.forEach(hubId => {
+        network.body.data.edges.get().filter(edge => String(edge.from) === hubId || String(edge.to) === hubId)
+          .sort((a, b) => Number(b.weight || 0) - Number(a.weight || 0)).slice(3)
+          .forEach(edge => collapsedEdgeIds.add(edge.id));
+      });
+      event.currentTarget.classList.toggle('active', hubsCollapsed); applyVisibilityFilters();
+    });
+    document.getElementById('focusModeBtn').addEventListener('click', event => {
+      if (focusKeepNodes) {
+        focusKeepNodes = null; event.currentTarget.classList.remove('active'); applyVisibilityFilters(true); return;
+      }
+      const selected = network.getSelectedNodes();
+      if (!selected.length) { alert('请先选中一个或多个节点'); return; }
+      focusKeepNodes = new Set(selected);
+      selected.forEach(id => network.getConnectedNodes(id).forEach(neighbor => focusKeepNodes.add(neighbor)));
+      event.currentTarget.classList.add('active'); applyVisibilityFilters(true);
+    });
+    document.getElementById('fitBtn').addEventListener('click', () => network.fit({ animation: { duration: 350 } }));
+    document.getElementById('resetBtn').addEventListener('click', () => {
+      activeEntityTypes.clear(); collapsedEdgeIds.clear(); focusKeepNodes = null; hubsCollapsed = false; minimumWeight = .5;
+      typeOptions.querySelectorAll('input').forEach(input => { input.checked = false; });
+      document.getElementById('weightFilter').value = .5; document.getElementById('weightValue').textContent = '0.5';
+      document.getElementById('searchInput').value = ''; document.getElementById('focusModeBtn').classList.remove('active');
+      document.getElementById('toggleHubsBtn').classList.remove('active'); updateSelectedTypeCount();
+      network.body.data.edges.get().forEach(edge => {
+        edge.font = { size: 0 }; edge.width = edgeOriginalWidths[edge.id]; edgeStates[edge.id] = { clicked: false, labelVisible: false };
+        network.body.data.edges.update(edge);
+      });
+      applyVisibilityFilters(true); renderSearchResults(); updateCounter();
+    });
+
+    network.on('selectEdge', params => {
+      if (!params.edges.length) return;
+      const edge = network.body.data.edges.get(params.edges[0]);
+      edgeStates[edge.id].clicked = true; edge.font = { size: 10, color: '#2563eb' };
+      network.body.data.edges.update(edge); updateCounter();
+    });
+    network.on('hoverEdge', params => {
+      const edge = network.body.data.edges.get(params.edge);
+      let tooltip = document.getElementById('edge-tooltip');
+      if (!tooltip) { tooltip = document.createElement('div'); tooltip.id = 'edge-tooltip'; document.body.appendChild(tooltip); }
+      tooltip.innerHTML = `<strong>${escapeHtml(edge.label || '未命名关系')}</strong><div>${escapeHtml(edge.title || '无描述')}</div>`;
+      tooltip.style.left = `${(params.event?.clientX || 80) + 12}px`; tooltip.style.top = `${(params.event?.clientY || 80) + 12}px`; tooltip.style.display = 'block';
+    });
+    network.on('blurEdge', () => { const tip = document.getElementById('edge-tooltip'); if (tip) tip.style.display = 'none'; });
+    network.on('hoverNode', params => {
+      let tooltip = document.getElementById('node-tooltip');
+      if (!tooltip) { tooltip = document.createElement('div'); tooltip.id = 'node-tooltip'; document.body.appendChild(tooltip); }
+      const edges = network.getConnectedEdges(params.node).slice(0, 30).map(id => network.body.data.edges.get(id));
+      tooltip.innerHTML = `<strong>${escapeHtml(network.body.data.nodes.get(params.node)?.label || params.node)}</strong>`
+        + edges.map(edge => `<div class="edge-item"><div class="edge-label">${escapeHtml(edge.label || '关系')}</div><div class="edge-meta">${escapeHtml(edge.from)} → ${escapeHtml(edge.to)}</div></div>`).join('');
+      tooltip.style.left = `${(params.event?.clientX || 80) + 12}px`; tooltip.style.top = `${(params.event?.clientY || 80) + 12}px`; tooltip.style.display = 'block';
+    });
+    network.on('blurNode', () => { const tip = document.getElementById('node-tooltip'); if (tip) tip.style.display = 'none'; });
+
+    setupCommunityDirectory();
+    applyVisibilityFilters(); renderSearchResults(); updateCounter();
+  });
+})();
+</script>
+</body>
+</html>

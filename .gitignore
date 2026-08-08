@@ -27,3 +27,9 @@ backend/validation/result*.html
 # Frontend dependencies and build output
 frontend/node_modules/
 frontend/dist/
+
+# Documentation site dependencies, cache, and build output
+docs-site/node_modules/
+docs-site/docs/.vitepress/cache/
+docs-site/docs/.vitepress/dist/
+docs-site/docs/public/examples/graph-*/cover.*

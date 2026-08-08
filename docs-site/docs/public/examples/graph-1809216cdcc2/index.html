@@ -1,0 +1,1454 @@
+<html>
+    <head>
+        <meta charset="utf-8">
+
+            <script>function neighbourhoodHighlight(params) {
+  // console.log("in nieghbourhoodhighlight");
+  allNodes = nodes.get({ returnType: "Object" });
+  // originalNodes = JSON.parse(JSON.stringify(allNodes));
+  // if something is selected:
+  if (params.nodes.length > 0) {
+    highlightActive = true;
+    var i, j;
+    var selectedNode = params.nodes[0];
+    var degrees = 2;
+
+    // mark all nodes as hard to read.
+    for (let nodeId in allNodes) {
+      // nodeColors[nodeId] = allNodes[nodeId].color;
+      allNodes[nodeId].color = "rgba(200,200,200,0.5)";
+      if (allNodes[nodeId].hiddenLabel === undefined) {
+        allNodes[nodeId].hiddenLabel = allNodes[nodeId].label;
+        allNodes[nodeId].label = undefined;
+      }
+    }
+    var connectedNodes = network.getConnectedNodes(selectedNode);
+    var allConnectedNodes = [];
+
+    // get the second degree nodes
+    for (i = 1; i < degrees; i++) {
+      for (j = 0; j < connectedNodes.length; j++) {
+        allConnectedNodes = allConnectedNodes.concat(
+          network.getConnectedNodes(connectedNodes[j])
+        );
+      }
+    }
+
+    // all second degree nodes get a different color and their label back
+    for (i = 0; i < allConnectedNodes.length; i++) {
+      // allNodes[allConnectedNodes[i]].color = "pink";
+      allNodes[allConnectedNodes[i]].color = "rgba(150,150,150,0.75)";
+      if (allNodes[allConnectedNodes[i]].hiddenLabel !== undefined) {
+        allNodes[allConnectedNodes[i]].label =
+          allNodes[allConnectedNodes[i]].hiddenLabel;
+        allNodes[allConnectedNodes[i]].hiddenLabel = undefined;
+      }
+    }
+
+    // all first degree nodes get their own color and their label back
+    for (i = 0; i < connectedNodes.length; i++) {
+      // allNodes[connectedNodes[i]].color = undefined;
+      allNodes[connectedNodes[i]].color = nodeColors[connectedNodes[i]];
+      if (allNodes[connectedNodes[i]].hiddenLabel !== undefined) {
+        allNodes[connectedNodes[i]].label =
+          allNodes[connectedNodes[i]].hiddenLabel;
+        allNodes[connectedNodes[i]].hiddenLabel = undefined;
+      }
+    }
+
+    // the main node gets its own color and its label back.
+    // allNodes[selectedNode].color = undefined;
+    allNodes[selectedNode].color = nodeColors[selectedNode];
+    if (allNodes[selectedNode].hiddenLabel !== undefined) {
+      allNodes[selectedNode].label = allNodes[selectedNode].hiddenLabel;
+      allNodes[selectedNode].hiddenLabel = undefined;
+    }
+  } else if (highlightActive === true) {
+    // console.log("highlightActive was true");
+    // reset all nodes
+    for (let nodeId in allNodes) {
+      // allNodes[nodeId].color = "purple";
+      allNodes[nodeId].color = nodeColors[nodeId];
+      // delete allNodes[nodeId].color;
+      if (allNodes[nodeId].hiddenLabel !== undefined) {
+        allNodes[nodeId].label = allNodes[nodeId].hiddenLabel;
+        allNodes[nodeId].hiddenLabel = undefined;
+      }
+    }
+    highlightActive = false;
+  }
+
+  // transform the object into an array
+  var updateArray = [];
+  if (params.nodes.length > 0) {
+    for (let nodeId in allNodes) {
+      if (allNodes.hasOwnProperty(nodeId)) {
+        // console.log(allNodes[nodeId]);
+        updateArray.push(allNodes[nodeId]);
+      }
+    }
+    nodes.update(updateArray);
+  } else {
+    // console.log("Nothing was selected");
+    for (let nodeId in allNodes) {
+      if (allNodes.hasOwnProperty(nodeId)) {
+        // console.log(allNodes[nodeId]);
+        // allNodes[nodeId].color = {};
+        updateArray.push(allNodes[nodeId]);
+      }
+    }
+    nodes.update(updateArray);
+  }
+}
+
+function filterHighlight(params) {
+  allNodes = nodes.get({ returnType: "Object" });
+  // if something is selected:
+  if (params.nodes.length > 0) {
+    filterActive = true;
+    let selectedNodes = params.nodes;
+
+    // hiding all nodes and saving the label
+    for (let nodeId in allNodes) {
+      allNodes[nodeId].hidden = true;
+      if (allNodes[nodeId].savedLabel === undefined) {
+        allNodes[nodeId].savedLabel = allNodes[nodeId].label;
+        allNodes[nodeId].label = undefined;
+      }
+    }
+
+    for (let i=0; i < selectedNodes.length; i++) {
+      allNodes[selectedNodes[i]].hidden = false;
+      if (allNodes[selectedNodes[i]].savedLabel !== undefined) {
+        allNodes[selectedNodes[i]].label = allNodes[selectedNodes[i]].savedLabel;
+        allNodes[selectedNodes[i]].savedLabel = undefined;
+      }
+    }
+
+  } else if (filterActive === true) {
+    // reset all nodes
+    for (let nodeId in allNodes) {
+      allNodes[nodeId].hidden = false;
+      if (allNodes[nodeId].savedLabel !== undefined) {
+        allNodes[nodeId].label = allNodes[nodeId].savedLabel;
+        allNodes[nodeId].savedLabel = undefined;
+      }
+    }
+    filterActive = false;
+  }
+
+  // transform the object into an array
+  var updateArray = [];
+  if (params.nodes.length > 0) {
+    for (let nodeId in allNodes) {
+      if (allNodes.hasOwnProperty(nodeId)) {
+        updateArray.push(allNodes[nodeId]);
+      }
+    }
+    nodes.update(updateArray);
+  } else {
+    for (let nodeId in allNodes) {
+      if (allNodes.hasOwnProperty(nodeId)) {
+        updateArray.push(allNodes[nodeId]);
+      }
+    }
+    nodes.update(updateArray);
+  }
+}
+
+function selectNode(nodes) {
+  network.selectNodes(nodes);
+  neighbourhoodHighlight({ nodes: nodes });
+  return nodes;
+}
+
+function selectNodes(nodes) {
+  network.selectNodes(nodes);
+  filterHighlight({nodes: nodes});
+  return nodes;
+}
+
+function highlightFilter(filter) {
+  let selectedNodes = []
+  let selectedProp = filter['property']
+  if (filter['item'] === 'node') {
+    let allNodes = nodes.get({ returnType: "Object" });
+    for (let nodeId in allNodes) {
+      if (allNodes[nodeId][selectedProp] && filter['value'].includes((allNodes[nodeId][selectedProp]).toString())) {
+        selectedNodes.push(nodeId)
+      }
+    }
+  }
+  else if (filter['item'] === 'edge'){
+    let allEdges = edges.get({returnType: 'object'});
+    // check if the selected property exists for selected edge and select the nodes connected to the edge
+    for (let edge in allEdges) {
+      if (allEdges[edge][selectedProp] && filter['value'].includes((allEdges[edge][selectedProp]).toString())) {
+        selectedNodes.push(allEdges[edge]['from'])
+        selectedNodes.push(allEdges[edge]['to'])
+      }
+    }
+  }
+  selectNodes(selectedNodes)
+}</script>
+            <link rel="stylesheet" href="../_lib/vis-network.min.css">
+            <script src="../_lib/vis-network.min.js"></script>
+
+
+
+
+
+
+
+
+<center>
+<h1></h1>
+</center>
+
+<!-- <link rel="stylesheet" href="../node_modules/vis/dist/vis.min.css" type="text/css" />
+<script type="text/javascript" src="../node_modules/vis/dist/vis.js"> </script>-->
+
+
+        <center>
+          <h1></h1>
+        </center>
+        <style type="text/css">
+
+             #mynetwork {
+                 width: 100%;
+                 height: 800px;
+                 background-color: #ffffff;
+                 border: 1px solid lightgray;
+                 position: relative;
+                 float: left;
+             }
+
+
+
+
+
+
+        </style>
+    </head>
+
+
+    <body>
+        <div class="card" style="width: 100%">
+
+
+            <div id="mynetwork" class="card-body"></div>
+        </div>
+
+
+
+
+        <script type="text/javascript">
+
+              // initialize global variables.
+              var edges;
+              var nodes;
+              var allNodes;
+              var allEdges;
+              var nodeColors;
+              var originalNodes;
+              var network;
+              var container;
+              var options, data;
+              var filter = {
+                  item : '',
+                  property : '',
+                  value : []
+              };
+
+
+
+
+
+              // This method is responsible for drawing the graph, returns the drawn network
+              function drawGraph() {
+                  var container = document.getElementById('mynetwork');
+
+
+
+                  // parsing and collecting nodes and edges from the python
+                  nodes = new vis.DataSet([{"entityType": "\u6570\u636e\u7ed3\u6784", "font": {"color": "#1a1a1a"}, "group": "\u6570\u636e\u7ed3\u6784", "id": "\u54c8\u5e0c\u8868", "label": "\u54c8\u5e0c\u8868", "shape": "dot", "source_blocks": ["block_1_-1814035886152590563"], "title": "\u6570\u636e\u7ed3\u6784", "value": 40.6983644599281}, {"entityType": "\u6570\u636e\u5b58\u50a8\u65b9\u5f0f", "font": {"color": "#1a1a1a"}, "group": "\u6570\u636e\u5b58\u50a8\u65b9\u5f0f", "id": "\u952e\u503c\u5bf9", "label": "\u952e\u503c\u5bf9", "shape": "dot", "source_blocks": ["block_1_-1814035886152590563"], "title": "\u6570\u636e\u5b58\u50a8\u65b9\u5f0f", "value": 20.825565684158768}, {"entityType": "\u65b9\u6cd5", "font": {"color": "#1a1a1a"}, "group": "\u65b9\u6cd5", "id": "\u54c8\u5e0c\u51fd\u6570", "label": "\u54c8\u5e0c\u51fd\u6570", "shape": "dot", "source_blocks": ["block_1_-1814035886152590563"], "title": "\u65b9\u6cd5", "value": 20.825565684158768}, {"entityType": "\u6570\u91cf", "font": {"color": "#1a1a1a"}, "group": "\u6570\u91cf", "id": "O(1)\u65f6\u95f4\u590d\u6742\u5ea6", "label": "O(1)\u65f6\u95f4\u590d\u6742\u5ea6", "shape": "dot", "source_blocks": ["block_1_-1814035886152590563"], "title": "\u6570\u91cf", "value": 20.811432214799805}, {"entityType": "\u65b9\u6cd5", "font": {"color": "#1a1a1a"}, "group": "\u65b9\u6cd5", "id": "\u94fe\u5730\u5740\u6cd5", "label": "\u94fe\u5730\u5740\u6cd5", "shape": "dot", "source_blocks": ["block_1_-1814035886152590563"], "title": "\u65b9\u6cd5", "value": 20.811432214799805}, {"entityType": "\u65b9\u6cd5", "font": {"color": "#1a1a1a"}, "group": "\u65b9\u6cd5", "id": "\u5f00\u653e\u5bfb\u5740\u6cd5", "label": "\u5f00\u653e\u5bfb\u5740\u6cd5", "shape": "dot", "source_blocks": ["block_1_-1814035886152590563"], "title": "\u65b9\u6cd5", "value": 20.811432214799805}, {"entityType": "\u5b66\u79d1\u9886\u57df", "font": {"color": "#1a1a1a"}, "group": "\u5b66\u79d1\u9886\u57df", "id": "\u6df1\u5ea6\u5b66\u4e60", "label": "\u6df1\u5ea6\u5b66\u4e60", "shape": "dot", "source_blocks": ["block_1_-1814035886152590563"], "title": "\u5b66\u79d1\u9886\u57df", "value": 35.6983644599281}, {"entityType": "\u6a21\u578b", "font": {"color": "#1a1a1a"}, "group": "\u6a21\u578b", "id": "\u795e\u7ecf\u7f51\u7edc", "label": "\u795e\u7ecf\u7f51\u7edc", "shape": "dot", "source_blocks": ["block_1_-1814035886152590563"], "title": "\u6a21\u578b", "value": 35.86025692713077}, {"entityType": "\u7ec4\u4ef6", "font": {"color": "#1a1a1a"}, "group": "\u7ec4\u4ef6", "id": "\u8f93\u5165\u5c42", "label": "\u8f93\u5165\u5c42", "shape": "dot", "source_blocks": ["block_1_-1814035886152590563"], "title": "\u7ec4\u4ef6", "value": 20.942105348706125}, {"entityType": "\u7ec4\u4ef6", "font": {"color": "#1a1a1a"}, "group": "\u7ec4\u4ef6", "id": "\u9690\u85cf\u5c42", "label": "\u9690\u85cf\u5c42", "shape": "dot", "source_blocks": ["block_1_-1814035886152590563"], "title": "\u7ec4\u4ef6", "value": 20.942105348706125}, {"entityType": "\u7ec4\u4ef6", "font": {"color": "#1a1a1a"}, "group": "\u7ec4\u4ef6", "id": "\u8f93\u51fa\u5c42", "label": "\u8f93\u51fa\u5c42", "shape": "dot", "source_blocks": ["block_1_-1814035886152590563"], "title": "\u7ec4\u4ef6", "value": 20.942105348706125}, {"entityType": "\u65b9\u6cd5", "font": {"color": "#1a1a1a"}, "group": "\u65b9\u6cd5", "id": "\u53cd\u5411\u4f20\u64ad", "label": "\u53cd\u5411\u4f20\u64ad", "shape": "dot", "source_blocks": ["block_1_-1814035886152590563"], "title": "\u65b9\u6cd5", "value": 20.84226887521936}, {"entityType": "\u5de5\u5177", "font": {"color": "#1a1a1a"}, "group": "\u5de5\u5177", "id": "PyTorch", "label": "PyTorch", "shape": "dot", "source_blocks": ["block_1_-1814035886152590563"], "title": "\u5de5\u5177", "value": 20.84226887521936}, {"entityType": "\u5de5\u5177", "font": {"color": "#1a1a1a"}, "group": "\u5de5\u5177", "id": "TensorFlow", "label": "TensorFlow", "shape": "dot", "source_blocks": ["block_1_-1814035886152590563"], "title": "\u5de5\u5177", "value": 20.84226887521936}, {"entityType": "\u5b9a\u7406", "font": {"color": "#1a1a1a"}, "group": "\u5b9a\u7406", "id": "\u8d1d\u53f6\u65af\u5b9a\u7406", "label": "\u8d1d\u53f6\u65af\u5b9a\u7406", "shape": "dot", "source_blocks": ["block_1_-1814035886152590563"], "title": "\u5b9a\u7406", "value": 25.6983644599281}, {"entityType": "\u65b9\u6cd5", "font": {"color": "#1a1a1a"}, "group": "\u65b9\u6cd5", "id": "\u6982\u7387\u63a8\u65ad", "label": "\u6982\u7387\u63a8\u65ad", "shape": "dot", "source_blocks": ["block_1_-1814035886152590563"], "title": "\u65b9\u6cd5", "value": 21.012626308027397}, {"entityType": "\u5e94\u7528", "font": {"color": "#1a1a1a"}, "group": "\u5e94\u7528", "id": "\u5783\u573e\u90ae\u4ef6\u5206\u7c7b", "label": "\u5783\u573e\u90ae\u4ef6\u5206\u7c7b", "shape": "dot", "source_blocks": ["block_1_-1814035886152590563"], "title": "\u5e94\u7528", "value": 20.97770832490525}, {"entityType": "\u5b66\u79d1\u9886\u57df", "font": {"color": "#1a1a1a"}, "group": "\u5b66\u79d1\u9886\u57df", "id": "\u7ebf\u6027\u4ee3\u6570", "label": "\u7ebf\u6027\u4ee3\u6570", "shape": "dot", "source_blocks": ["block_1_-1814035886152590563"], "title": "\u5b66\u79d1\u9886\u57df", "value": 30.6983644599281}, {"entityType": "\u8fd0\u7b97", "font": {"color": "#1a1a1a"}, "group": "\u8fd0\u7b97", "id": "\u77e9\u9635\u4e58\u6cd5", "label": "\u77e9\u9635\u4e58\u6cd5", "shape": "dot", "source_blocks": ["block_1_-1814035886152590563"], "title": "\u8fd0\u7b97", "value": 25.912062516635622}, {"entityType": "\u6027\u8d28", "font": {"color": "#1a1a1a"}, "group": "\u6027\u8d28", "id": "\u4ea4\u6362\u5f8b", "label": "\u4ea4\u6362\u5f8b", "shape": "dot", "source_blocks": ["block_1_-1814035886152590563"], "title": "\u6027\u8d28", "value": 21.473624551304617}, {"entityType": "\u6570\u5b66\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6570\u5b66\u6982\u5ff5", "id": "\u7279\u5f81\u503c", "label": "\u7279\u5f81\u503c", "shape": "dot", "source_blocks": ["block_1_-1814035886152590563"], "title": "\u6570\u5b66\u6982\u5ff5", "value": 25.888318288112565}, {"entityType": "\u6570\u5b66\u6982\u5ff5", "font": {"color": "#1a1a1a"}, "group": "\u6570\u5b66\u6982\u5ff5", "id": "\u7279\u5f81\u5411\u91cf", "label": "\u7279\u5f81\u5411\u91cf", "shape": "dot", "source_blocks": ["block_1_-1814035886152590563"], "title": "\u6570\u5b66\u6982\u5ff5", "value": 26.64339455967796}]);
+                  edges = new vis.DataSet([{"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "font": {"size": 0}, "from": "\u54c8\u5e0c\u8868", "hoverWidth": 3.3, "id": "edge-cc16486b8d9cf5a11936", "label": "\u901a\u8fc7\u952e\u503c\u5bf9\u5b58\u50a8\u6570\u636e", "selectionWidth": 3.8, "smooth": {"roundness": 0.3, "type": "curvedCW"}, "title": "\u54c8\u5e0c\u8868\uff08Hash Table\uff09\u662f\u4e00\u79cd\u6570\u636e\u7ed3\u6784\uff0c\u901a\u8fc7\u952e\u503c\u5bf9\u5b58\u50a8\u6570\u636e\u3002", "to": "\u952e\u503c\u5bf9", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "font": {"size": 0}, "from": "\u54c8\u5e0c\u8868", "hoverWidth": 3.3, "id": "edge-3e0ecb8e8a36ef69df64", "label": "\u4f7f\u7528\u54c8\u5e0c\u51fd\u6570\u8ba1\u7b97\u952e\u7684\u7d22\u5f15", "selectionWidth": 3.8, "smooth": {"roundness": 0.3, "type": "curvedCW"}, "title": "\u5b83\u4f7f\u7528\u54c8\u5e0c\u51fd\u6570\u8ba1\u7b97\u952e\u7684\u7d22\u5f15\uff0c\u5b9e\u73b0O(1)\u65f6\u95f4\u590d\u6742\u5ea6\u7684\u67e5\u627e\u3002", "to": "\u54c8\u5e0c\u51fd\u6570", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "font": {"size": 0}, "from": "\u54c8\u5e0c\u8868", "hoverWidth": 3.1, "id": "edge-834a6c2beea2294cbe0b", "label": "\u5b9e\u73b0O(1)\u65f6\u95f4\u590d\u6742\u5ea6\u7684\u67e5\u627e", "selectionWidth": 3.6, "smooth": {"roundness": 0.3, "type": "curvedCW"}, "title": "\u5b83\u4f7f\u7528\u54c8\u5e0c\u51fd\u6570\u8ba1\u7b97\u952e\u7684\u7d22\u5f15\uff0c\u5b9e\u73b0O(1)\u65f6\u95f4\u590d\u6742\u5ea6\u7684\u67e5\u627e\u3002", "to": "O(1)\u65f6\u95f4\u590d\u6742\u5ea6", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "font": {"size": 0}, "from": "\u54c8\u5e0c\u8868", "hoverWidth": 3.1, "id": "edge-f48794cdac839f83685c", "label": "\u51b2\u7a81\u89e3\u51b3\u65b9\u6cd5\u5305\u62ec\u94fe\u5730\u5740\u6cd5", "selectionWidth": 3.6, "smooth": {"roundness": 0.3, "type": "curvedCW"}, "title": "\u51b2\u7a81\u89e3\u51b3\u65b9\u6cd5\uff1a\u94fe\u5730\u5740\u6cd5\uff08Chaining\uff09\u3001\u5f00\u653e\u5bfb\u5740\u6cd5\uff08Open Addressing\uff09\u3002", "to": "\u94fe\u5730\u5740\u6cd5", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "font": {"size": 0}, "from": "\u54c8\u5e0c\u8868", "hoverWidth": 3.1, "id": "edge-61ad1eeeb23d68f76fb7", "label": "\u51b2\u7a81\u89e3\u51b3\u65b9\u6cd5\u5305\u62ec\u5f00\u653e\u5bfb\u5740\u6cd5", "selectionWidth": 3.6, "smooth": {"roundness": 0.3, "type": "curvedCW"}, "title": "\u51b2\u7a81\u89e3\u51b3\u65b9\u6cd5\uff1a\u94fe\u5730\u5740\u6cd5\uff08Chaining\uff09\u3001\u5f00\u653e\u5bfb\u5740\u6cd5\uff08Open Addressing\uff09\u3002", "to": "\u5f00\u653e\u5bfb\u5740\u6cd5", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "font": {"size": 0}, "from": "\u6df1\u5ea6\u5b66\u4e60", "hoverWidth": 3.3, "id": "edge-2d1935d6db9aaadc849b", "label": "\u795e\u7ecf\u7f51\u7edc\u662f\u6df1\u5ea6\u5b66\u4e60\u7684\u6838\u5fc3", "selectionWidth": 3.8, "smooth": {"roundness": 0.3, "type": "curvedCW"}, "title": "\u795e\u7ecf\u7f51\u7edc\u7531\u8f93\u5165\u5c42\u3001\u9690\u85cf\u5c42\u3001\u8f93\u51fa\u5c42\u7ec4\u6210\u3002", "to": "\u795e\u7ecf\u7f51\u7edc", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "font": {"size": 0}, "from": "\u6df1\u5ea6\u5b66\u4e60", "hoverWidth": 3.1, "id": "edge-131a9908f6da421f9d86", "label": "\u53cd\u5411\u4f20\u64ad\u7528\u4e8e\u4f18\u5316\u6a21\u578b\u53c2\u6570", "selectionWidth": 3.6, "smooth": {"roundness": 0.3, "type": "curvedCW"}, "title": "\u53cd\u5411\u4f20\u64ad\u7528\u4e8e\u4f18\u5316\u6a21\u578b\u53c2\u6570\u3002", "to": "\u53cd\u5411\u4f20\u64ad", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "font": {"size": 0}, "from": "\u6df1\u5ea6\u5b66\u4e60", "hoverWidth": 3.1, "id": "edge-78551ddb9d45b989dd26", "label": "PyTorch\u662f\u6df1\u5ea6\u5b66\u4e60\u5e38\u89c1\u6846\u67b6", "selectionWidth": 3.6, "smooth": {"roundness": 0.3, "type": "curvedCW"}, "title": "\u5e38\u89c1\u6846\u67b6\uff1aPyTorch\u3001TensorFlow\u3002", "to": "PyTorch", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "font": {"size": 0}, "from": "\u6df1\u5ea6\u5b66\u4e60", "hoverWidth": 3.1, "id": "edge-f06e3ade902a72a90968", "label": "TensorFlow\u662f\u6df1\u5ea6\u5b66\u4e60\u5e38\u89c1\u6846\u67b6", "selectionWidth": 3.6, "smooth": {"roundness": 0.3, "type": "curvedCW"}, "title": "\u5e38\u89c1\u6846\u67b6\uff1aPyTorch\u3001TensorFlow\u3002", "to": "TensorFlow", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "font": {"size": 0}, "from": "\u795e\u7ecf\u7f51\u7edc", "hoverWidth": 3.3, "id": "edge-420da0218ccad60508fa", "label": "\u795e\u7ecf\u7f51\u7edc\u7531\u8f93\u5165\u5c42\u7ec4\u6210", "selectionWidth": 3.8, "smooth": {"roundness": 0.3, "type": "curvedCW"}, "title": "\u795e\u7ecf\u7f51\u7edc\u7531\u8f93\u5165\u5c42\u3001\u9690\u85cf\u5c42\u3001\u8f93\u51fa\u5c42\u7ec4\u6210\u3002", "to": "\u8f93\u5165\u5c42", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "font": {"size": 0}, "from": "\u795e\u7ecf\u7f51\u7edc", "hoverWidth": 3.3, "id": "edge-19eb736426e678ed1662", "label": "\u795e\u7ecf\u7f51\u7edc\u7531\u9690\u85cf\u5c42\u7ec4\u6210", "selectionWidth": 3.8, "smooth": {"roundness": 0.3, "type": "curvedCW"}, "title": "\u795e\u7ecf\u7f51\u7edc\u7531\u8f93\u5165\u5c42\u3001\u9690\u85cf\u5c42\u3001\u8f93\u51fa\u5c42\u7ec4\u6210\u3002", "to": "\u9690\u85cf\u5c42", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "font": {"size": 0}, "from": "\u795e\u7ecf\u7f51\u7edc", "hoverWidth": 3.3, "id": "edge-57c06d645846dc72a26a", "label": "\u795e\u7ecf\u7f51\u7edc\u7531\u8f93\u51fa\u5c42\u7ec4\u6210", "selectionWidth": 3.8, "smooth": {"roundness": 0.3, "type": "curvedCW"}, "title": "\u795e\u7ecf\u7f51\u7edc\u7531\u8f93\u5165\u5c42\u3001\u9690\u85cf\u5c42\u3001\u8f93\u51fa\u5c42\u7ec4\u6210\u3002", "to": "\u8f93\u51fa\u5c42", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "font": {"size": 0}, "from": "\u8d1d\u53f6\u65af\u5b9a\u7406", "hoverWidth": 3.3, "id": "edge-06ebafde71635a8d2039", "label": "\u7528\u4e8e\u6982\u7387\u63a8\u65ad", "selectionWidth": 3.8, "smooth": {"roundness": 0.3, "type": "curvedCW"}, "title": "\u7528\u4e8e\u6982\u7387\u63a8\u65ad\uff0c\u5982\u5783\u573e\u90ae\u4ef6\u5206\u7c7b\u3002", "to": "\u6982\u7387\u63a8\u65ad", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "font": {"size": 0}, "from": "\u8d1d\u53f6\u65af\u5b9a\u7406", "hoverWidth": 3.1, "id": "edge-a28946a51e6a3d486857", "label": "\u7528\u4e8e\u5783\u573e\u90ae\u4ef6\u5206\u7c7b", "selectionWidth": 3.6, "smooth": {"roundness": 0.3, "type": "curvedCW"}, "title": "\u7528\u4e8e\u6982\u7387\u63a8\u65ad\uff0c\u5982\u5783\u573e\u90ae\u4ef6\u5206\u7c7b\u3002", "to": "\u5783\u573e\u90ae\u4ef6\u5206\u7c7b", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "font": {"size": 0}, "from": "\u7ebf\u6027\u4ee3\u6570", "hoverWidth": 3.3, "id": "edge-b6bc0db6aeddc60f9945", "label": "\u77e9\u9635\u4e58\u6cd5\u662f\u7ebf\u6027\u4ee3\u6570\u5185\u5bb9", "selectionWidth": 3.8, "smooth": {"roundness": 0.3, "type": "curvedCW"}, "title": "\u77e9\u9635\u4e58\u6cd5\u4e0d\u6ee1\u8db3\u4ea4\u6362\u5f8b\uff1aA\u00d7B \u2260 B\u00d7A\u3002", "to": "\u77e9\u9635\u4e58\u6cd5", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "font": {"size": 0}, "from": "\u7ebf\u6027\u4ee3\u6570", "hoverWidth": 3.1, "id": "edge-122a65375ed8e64eaba9", "label": "\u7279\u5f81\u503c\u662f\u7ebf\u6027\u4ee3\u6570\u5185\u5bb9", "selectionWidth": 3.6, "smooth": {"roundness": 0.3, "type": "curvedCW"}, "title": "\u7279\u5f81\u503c\u548c\u7279\u5f81\u5411\u91cf\uff1aAv = \u03bbv\u3002", "to": "\u7279\u5f81\u503c", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "font": {"size": 0}, "from": "\u7ebf\u6027\u4ee3\u6570", "hoverWidth": 3.1, "id": "edge-df6800b26bbd79cf66d3", "label": "\u7279\u5f81\u5411\u91cf\u662f\u7ebf\u6027\u4ee3\u6570\u5185\u5bb9", "selectionWidth": 3.6, "smooth": {"roundness": 0.3, "type": "curvedCW"}, "title": "\u7279\u5f81\u503c\u548c\u7279\u5f81\u5411\u91cf\uff1aAv = \u03bbv\u3002", "to": "\u7279\u5f81\u5411\u91cf", "weight": 0.8, "width": 3.4000000000000004}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "font": {"size": 0}, "from": "\u77e9\u9635\u4e58\u6cd5", "hoverWidth": 3.3, "id": "edge-90dec42b582918358a62", "label": "\u77e9\u9635\u4e58\u6cd5\u4e0d\u6ee1\u8db3\u4ea4\u6362\u5f8b", "selectionWidth": 3.8, "smooth": {"roundness": 0.3, "type": "curvedCW"}, "title": "\u77e9\u9635\u4e58\u6cd5\u4e0d\u6ee1\u8db3\u4ea4\u6362\u5f8b\uff1aA\u00d7B \u2260 B\u00d7A\u3002", "to": "\u4ea4\u6362\u5f8b", "weight": 0.9, "width": 3.7}, {"arrows": "to", "color": {"color": "rgba(160,160,160,0.3)", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.3}, "font": {"size": 0}, "from": "\u7279\u5f81\u503c", "hoverWidth": 3.3, "id": "edge-9bb244cb218efd842f24", "label": "\u7279\u5f81\u503c\u548c\u7279\u5f81\u5411\u91cf\uff1aAv = \u03bbv", "selectionWidth": 3.8, "smooth": {"roundness": 0.3, "type": "curvedCW"}, "title": "\u7279\u5f81\u503c\u548c\u7279\u5f81\u5411\u91cf\uff1aAv = \u03bbv\u3002", "to": "\u7279\u5f81\u5411\u91cf", "weight": 0.9, "width": 3.7}]);
+
+                  nodeColors = {};
+                  allNodes = nodes.get({ returnType: "Object" });
+                  for (nodeId in allNodes) {
+                    nodeColors[nodeId] = allNodes[nodeId].color;
+                  }
+                  allEdges = edges.get({ returnType: "Object" });
+                  // adding nodes and edges to the graph
+                  data = {nodes: nodes, edges: edges};
+
+                  var options = {"nodes": {"shape": "dot", "scaling": {"min": 10, "max": 40, "label": {"enabled": true, "min": 14, "max": 24}}, "font": {"size": 14, "face": "MicrosoftYaHei,SimHei,sans-serif", "color": "#1a1a1a"}, "borderWidth": 2, "borderWidthSelected": 4, "shadow": {"enabled": true, "size": 10, "x": 3, "y": 3}}, "edges": {"width": 1, "color": {"color": "#a0a0a0", "highlight": "#ff6b35", "hover": "#ff6b35", "opacity": 0.6}, "smooth": {"type": "continuous", "roundness": 0.5}, "selectionWidth": 3, "hoverWidth": 2, "arrows": {"to": {"enabled": true, "scaleFactor": 0.5}}, "font": {"size": 0, "face": "MicrosoftYaHei", "color": "#666666", "align": "middle", "background": "rgba(255,255,255,0.9)"}}, "interaction": {"hover": true, "tooltipDelay": 100, "hideEdgesOnDrag": true, "hideNodesOnDrag": false, "dragNodes": true, "dragView": true, "zoomView": true, "multiselect": true, "navigationButtons": false, "keyboard": true}, "layout": {"improvedLayout": true}, "physics": {"forceAtlas2Based": {"gravitationalConstant": -80, "centralGravity": 0.005, "springLength": 200, "springConstant": 0.08, "damping": 0.4, "avoidOverlap": 1.0}, "solver": "forceAtlas2Based", "stabilization": {"enabled": true, "iterations": 120, "updateInterval": 25, "fit": true}}};
+
+
+
+
+
+
+                  network = new vis.Network(container, data, options);
+
+
+
+
+
+
+
+
+
+
+                  return network;
+
+              }
+              drawGraph();
+        </script>
+
+<style>
+  div.vis-configuration-wrapper,
+  div.vis-network div.vis-manipulation,
+  div.vis-network div.vis-edit-mode-btn,
+  div.vis-network div.vis-close-btn { display: none !important; }
+
+  .graph-floating-panel {
+    position: absolute; z-index: 2000; box-sizing: border-box;
+    border: 1px solid #e5e7eb; border-radius: 10px;
+    background: rgba(255,255,255,.96); box-shadow: 0 5px 20px rgba(15,23,42,.12);
+    color: #334155; backdrop-filter: blur(10px); overflow: hidden;
+  }
+  .graph-panel-header {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    min-height: 34px; padding: 0 8px 0 10px; font-size: 12px; font-weight: 700;
+    border-bottom: 1px solid #eef2f7; cursor: default;
+  }
+  .graph-panel-collapse {
+    width: 24px; height: 24px; padding: 0; border: 0; border-radius: 5px;
+    background: transparent; color: #64748b; cursor: pointer; font-size: 16px;
+  }
+  .graph-panel-collapse:hover { background: #f1f5f9; color: #2563eb; }
+  .graph-panel-body { padding: 8px; }
+  .graph-floating-panel.is-collapsed { width: auto !important; min-width: 112px; }
+  .graph-floating-panel.is-collapsed .graph-panel-body { display: none; }
+  .graph-floating-panel.is-collapsed .graph-panel-header { border-bottom: 0; }
+
+  .search-panel { top: 8px; left: 8px; width: 268px; }
+  .control-panel { top: 8px; right: 8px; width: 250px; }
+  .filter-panel { bottom: 8px; left: 8px; width: 268px; }
+  .community-directory { right: 8px; bottom: 8px; width: 310px; max-height: min(58vh, 440px); }
+  .community-directory .graph-panel-body { overflow: hidden; }
+
+  .graph-text-input, .graph-select {
+    box-sizing: border-box; width: 100%; height: 30px; margin-bottom: 6px;
+    padding: 4px 8px; border: 1px solid #dbe2ea; border-radius: 6px;
+    outline: none; background: #fff; color: #334155; font-size: 11px;
+  }
+  .graph-text-input:focus, .graph-select:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px #dbeafe; }
+  .search-results {
+    display: block; max-height: min(38vh, 270px); overflow-y: auto;
+    border: 1px solid #eef2f7; border-radius: 6px; background: #fff;
+  }
+  .search-result-item {
+    display: flex; align-items: center; gap: 6px; padding: 6px 7px;
+    border-bottom: 1px solid #f1f5f9; cursor: pointer; font-size: 10px;
+  }
+  .search-result-item:last-child { border-bottom: 0; }
+  .search-result-item:hover { background: #eff6ff; color: #1d4ed8; }
+  .result-main { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .result-meta { color: #94a3b8; flex: none; }
+  .type-badge {
+    max-width: 84px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    padding: 2px 5px; border-radius: 10px; background: #dbeafe; color: #1d4ed8; font-size: 9px;
+  }
+  .type-badge.edge { background: #f3e8ff; color: #7e22ce; }
+  .graph-empty-state { padding: 12px 8px; color: #94a3b8; text-align: center; font-size: 11px; }
+  .status-bar { margin-top: 6px; color: #94a3b8; font-size: 10px; }
+  .status-bar strong { color: #2563eb; }
+
+  .control-actions { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+  .control-btn, .small-action-btn {
+    min-height: 28px; padding: 4px 6px; border: 1px solid #dbe2ea; border-radius: 6px;
+    background: #f8fafc; color: #475569; cursor: pointer; font-size: 10px;
+  }
+  .control-btn:hover, .small-action-btn:hover { border-color: #3b82f6; color: #2563eb; }
+  .control-btn.active { border-color: #2563eb; background: #2563eb; color: #fff; }
+
+  .filter-label { display: flex; justify-content: space-between; margin: 2px 0 4px; color: #64748b; font-size: 10px; }
+  .filter-slider { width: 100%; accent-color: #2563eb; }
+  .filter-section + .filter-section { margin-top: 9px; padding-top: 8px; border-top: 1px solid #eef2f7; }
+  .entity-type-actions { display: flex; gap: 5px; margin-bottom: 5px; }
+  .entity-type-options { max-height: 142px; overflow-y: auto; border: 1px solid #eef2f7; border-radius: 6px; }
+  .entity-type-option {
+    display: flex; align-items: center; gap: 6px; padding: 5px 7px;
+    border-bottom: 1px solid #f5f7fa; cursor: pointer; color: #475569; font-size: 10px;
+  }
+  .entity-type-option:last-child { border-bottom: 0; }
+  .entity-type-option:hover { background: #f8fafc; }
+  .entity-type-option input { accent-color: #2563eb; }
+  .entity-type-count { margin-left: auto; color: #94a3b8; }
+
+  .community-list { max-height: min(39vh, 300px); overflow-y: auto; }
+  .community-list-item {
+    display: block; padding: 8px; border: 1px solid #eef2f7; border-radius: 7px;
+    margin-bottom: 6px; color: #334155;
+  }
+  .community-list-item:hover { border-color: #93c5fd; background: #eff6ff; }
+  .community-item-link { display: block; color: #334155; text-decoration: none; }
+  .community-item-name { display: block; font-size: 11px; font-weight: 700; }
+  .community-item-meta {
+    display: block; overflow: hidden; margin-top: 3px; color: #64748b;
+    font-size: 9px; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .community-source-link {
+    margin-top: 6px; padding: 3px 6px; border: 1px solid #bfdbfe; border-radius: 5px;
+    background: #eff6ff; color: #2563eb; cursor: pointer; font-size: 9px;
+  }
+  .community-source-link:hover { background: #dbeafe; border-color: #60a5fa; }
+  .community-back-bar {
+    position: fixed; z-index: 1900; right: 10px; bottom: 10px; display: flex; gap: 10px;
+    padding: 7px 10px; border: 1px solid #e5e7eb; border-radius: 18px;
+    background: rgba(255,255,255,.94); box-shadow: 0 3px 12px rgba(15,23,42,.12);
+    color: #64748b; font-size: 10px;
+  }
+  .community-back-bar a { color: #2563eb; text-decoration: none; }
+
+  .immersive-toggle {
+    position: absolute; z-index: 2100; top: 8px; left: 50%; transform: translateX(-50%);
+    height: 30px; padding: 0 11px; border: 1px solid #dbe2ea; border-radius: 16px;
+    background: rgba(255,255,255,.92); color: #475569; cursor: pointer; font-size: 10px;
+    box-shadow: 0 2px 8px rgba(15,23,42,.08);
+  }
+  .immersive-toggle:hover { border-color: #3b82f6; color: #2563eb; }
+  #edge-tooltip, #node-tooltip {
+    position: fixed; z-index: 10000; display: none; max-width: 310px;
+    padding: 8px 10px; border: 1px solid #e2e8f0; border-radius: 7px;
+    background: rgba(255,255,255,.98); color: #334155; font-size: 10px;
+    box-shadow: 0 5px 18px rgba(15,23,42,.16);
+  }
+  #edge-tooltip { pointer-events: none; }
+  #node-tooltip { max-height: 260px; overflow-y: auto; pointer-events: auto; }
+  #node-tooltip .edge-item { padding: 4px 0; border-bottom: 1px dashed #e5e7eb; }
+  #node-tooltip .edge-label { color: #2563eb; font-weight: 600; }
+  #node-tooltip .edge-meta { color: #94a3b8; font-size: 9px; }
+  .graph-context-menu {
+    position: fixed; z-index: 12000; display: none; min-width: 150px;
+    padding: 4px; border: 1px solid #dbe2ea; border-radius: 8px;
+    background: rgba(255,255,255,.98); box-shadow: 0 8px 24px rgba(15,23,42,.18);
+  }
+  .graph-context-menu button {
+    display: block; width: 100%; padding: 7px 9px; border: 0; border-radius: 5px;
+    background: transparent; color: #334155; text-align: left; cursor: pointer; font-size: 11px;
+  }
+  .graph-context-menu button:hover { background: #eff6ff; color: #1d4ed8; }
+  .graph-context-menu button.danger:hover { background: #fef2f2; color: #dc2626; }
+  .graph-editor-dialog-mask {
+    position: fixed; z-index: 13000; inset: 0; display: flex; align-items: center; justify-content: center;
+    padding: 16px; background: rgba(15,23,42,.42);
+  }
+  .graph-editor-dialog {
+    width: min(560px, calc(100vw - 32px)); max-height: min(88vh, 720px); overflow-y: auto;
+    box-sizing: border-box; padding: 16px; border-radius: 10px; background: #fff;
+    color: #334155; box-shadow: 0 18px 50px rgba(15,23,42,.3); font-size: 12px;
+  }
+  .graph-editor-dialog h3 { margin: 0 0 14px; font-size: 15px; color: #0f172a; }
+  .graph-editor-field { margin-bottom: 10px; }
+  .graph-editor-field label { display: block; margin-bottom: 4px; color: #64748b; font-weight: 600; }
+  .graph-editor-field input, .graph-editor-field textarea {
+    box-sizing: border-box; width: 100%; padding: 7px 8px; border: 1px solid #dbe2ea;
+    border-radius: 6px; outline: none; color: #334155; background: #fff; font: inherit;
+  }
+  .graph-editor-field textarea { min-height: 96px; resize: vertical; }
+  .graph-editor-field input:focus, .graph-editor-field textarea:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px #dbeafe; }
+  .graph-editor-field input[readonly], .graph-editor-field textarea[readonly] { background: #f8fafc; }
+  .graph-editor-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+  .graph-editor-actions button { padding: 7px 13px; border: 1px solid #dbe2ea; border-radius: 6px; background: #f8fafc; color: #475569; cursor: pointer; }
+  .graph-editor-actions button.primary { border-color: #2563eb; background: #2563eb; color: #fff; }
+  .graph-editor-actions button:hover { filter: brightness(.97); }
+
+  @media (max-width: 720px) {
+    .search-panel, .filter-panel { width: 230px; }
+    .control-panel { width: 220px; }
+    .community-directory { width: min(280px, calc(100vw - 16px)); }
+  }
+</style>
+<script>
+(function () {
+  const GRAPH_EDITOR_VERSION = 3;
+  const NODE_COUNT = 22;
+  const EDGE_COUNT = 19;
+  const GRAPH_NAME = "计算机科学";
+  const GRAPH_STATIC_LAYOUT_VERSION = 2;
+  let searchTimer = null;
+  let minimumWeight = 0.5;
+  let focusKeepNodes = null;
+  let hubsCollapsed = false;
+  let immersive = false;
+  const activeEntityTypes = new Set();
+  const collapsedEdgeIds = new Set();
+  const edgeStates = {};
+  const edgeOriginalWidths = {};
+  const nodeDegrees = {};
+  const hubNodes = new Set();
+  let editorRevision = 0;
+  let contextTarget = { type: 'canvas', id: null };
+  let contextMenu = null;
+  const edgeApiIds = new Map();
+  const edgeDetails = new Map();
+  const nodeDetails = new Map();
+  let editorMetadataReady = Promise.resolve();
+
+  function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>'"]/g, char => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+    })[char]);
+  }
+
+  function entityTypeOf(node) {
+    return String(node.entityType || node.group || '未分类');
+  }
+
+  function initializeGraphMetadata() {
+    network.body.data.nodes.get().forEach(node => {
+      nodeDegrees[node.id] = network.getConnectedNodes(node.id).length;
+    });
+    const degrees = Object.values(nodeDegrees).sort((a, b) => b - a);
+    const threshold = degrees[Math.floor(degrees.length * 0.2)] || 0;
+    Object.entries(nodeDegrees).forEach(([id, degree]) => {
+      if (degree >= threshold && degree > 3) hubNodes.add(id);
+    });
+    network.body.data.edges.get().forEach(edge => {
+      edgeStates[edge.id] = { clicked: false, labelVisible: false };
+      edgeOriginalWidths[edge.id] = edge.width || 1;
+    });
+  }
+
+  function moveLegacyIsolatedNodesOutside() {
+    const nodes = network.body.data.nodes.get();
+    const isolated = nodes.filter(node => network.getConnectedNodes(node.id).length === 0);
+    const connected = nodes.filter(node => network.getConnectedNodes(node.id).length > 0);
+    if (!isolated.length) return;
+    // A graph can consist entirely of isolated nodes. Use all current
+    // positions only to choose a stable center, then place every node on rings.
+    const referenceNodes = connected.length ? connected : nodes;
+    const connectedPositions = network.getPositions(referenceNodes.map(node => node.id));
+    const values = Object.values(connectedPositions).filter(position =>
+      Number.isFinite(position?.x) && Number.isFinite(position?.y)
+    );
+    const centerX = values.length
+      ? values.reduce((sum, position) => sum + position.x, 0) / values.length
+      : 0;
+    const centerY = values.length
+      ? values.reduce((sum, position) => sum + position.y, 0) / values.length
+      : 0;
+    const connectedRadius = connected.length && values.length
+      ? Math.max(...values.map(position =>
+        Math.hypot(position.x - centerX, position.y - centerY)
+      ))
+      : 0;
+    const ringSpacing = 180;
+    const radius = Math.max(connectedRadius + 260, 360);
+    const updates = [];
+    let offset = 0;
+    let ringIndex = 0;
+    while (offset < isolated.length) {
+      const ringRadius = radius + ringIndex * ringSpacing;
+      const capacity = Math.max(8, Math.floor(2 * Math.PI * ringRadius / ringSpacing));
+      const ringNodes = isolated.slice(offset, offset + capacity);
+      ringNodes.forEach((node, index) => {
+        const angle = 2 * Math.PI * index / ringNodes.length - Math.PI / 2;
+        updates.push({
+          id: node.id,
+          x: centerX + ringRadius * Math.cos(angle),
+          y: centerY + ringRadius * Math.sin(angle)
+        });
+      });
+      offset += ringNodes.length;
+      ringIndex += 1;
+    }
+    network.body.data.nodes.update(updates);
+  }
+
+  function prepareLegacyStaticForceLayout(nodeCount) {
+    const graphContainer = document.getElementById('mynetwork');
+    if (!graphContainer) return false;
+    // Keep degree-zero nodes out of the hidden ForceAtlas2 run. They are
+    // positioned after the related graph has stabilized, on the outer rings.
+    const isolatedNodes = network.body.data.nodes.get().filter(node =>
+      network.getConnectedNodes(node.id).length === 0
+    );
+    if (isolatedNodes.length) {
+      network.body.data.nodes.update(isolatedNodes.map(node => ({
+        id: node.id,
+        physics: false
+      })));
+    }
+    graphContainer.style.visibility = 'hidden';
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      moveLegacyIsolatedNodesOutside();
+      network.setOptions({ physics: { enabled: false } });
+      graphContainer.style.visibility = 'visible';
+      updateVisibleStatus(nodeCount, network.body.data.edges.get().length);
+      network.fit({ animation: false });
+    };
+    network.once('stabilized', finish);
+    network.setOptions({
+      physics: {
+        enabled: true,
+        solver: 'forceAtlas2Based',
+        forceAtlas2Based: {
+          gravitationalConstant: -80,
+          centralGravity: 0.01,
+          springLength: 200,
+          springConstant: 0.08,
+          damping: 0.4,
+          avoidOverlap: 1.0
+        },
+        stabilization: {
+          enabled: true,
+          iterations: nodeCount > 500 ? 50 : 80,
+          updateInterval: 25,
+          fit: true
+        }
+      },
+      layout: { improvedLayout: true }
+    });
+    network.stabilize(nodeCount > 500 ? 50 : 80);
+    window.setTimeout(finish, 5000);
+    return true;
+  }
+
+  function applyLargeGraphPerformance() {
+    const nodes = network.body?.data?.nodes?.get?.() || [];
+    const edges = network.body?.data?.edges?.get?.() || [];
+    const hasIsolatedNodes = nodes.some(node => network.getConnectedNodes(node.id).length === 0);
+    if (nodes.length <= 50 && !hasIsolatedNodes) return false;
+
+    // Newly generated pages already contain server-side ForceAtlas2 coordinates.
+    // Legacy pages are stabilized while hidden, then physics is disabled before
+    // they are shown, so users do not see the original continuous bouncing.
+    network.setOptions({
+      physics: { enabled: false, stabilization: { enabled: false } },
+      layout: { improvedLayout: false },
+      interaction: {
+        dragNodes: true, dragView: true, zoomView: true,
+        hideEdgesOnDrag: true
+      }
+    });
+    const hasCoordinates = nodes.length > 0 && nodes.every(node =>
+      Number.isFinite(Number(node.x)) && Number.isFinite(Number(node.y))
+    );
+    if (GRAPH_STATIC_LAYOUT_VERSION < 2 || !hasCoordinates) {
+      prepareLegacyStaticForceLayout(nodes.length);
+    }
+    updateVisibleStatus(nodes.length, edges.length);
+    network.fit({ animation: false });
+    return true;
+  }
+
+  function nodePassesFilters(node) {
+    if (activeEntityTypes.size && !activeEntityTypes.has(entityTypeOf(node))) return false;
+    if (focusKeepNodes && !focusKeepNodes.has(node.id)) return false;
+    return true;
+  }
+
+  function applyVisibilityFilters(fitGraph = false) {
+    const visibleNodeIds = new Set();
+    const nodeUpdates = network.body.data.nodes.get().map(node => {
+      const visible = nodePassesFilters(node);
+      if (visible) visibleNodeIds.add(node.id);
+      return { ...node, hidden: !visible };
+    });
+    network.body.data.nodes.update(nodeUpdates);
+
+    const edgeUpdates = network.body.data.edges.get().map(edge => ({
+      ...edge,
+      hidden: !visibleNodeIds.has(edge.from)
+        || !visibleNodeIds.has(edge.to)
+        || Number(edge.weight || 0.5) < minimumWeight
+        || collapsedEdgeIds.has(edge.id)
+    }));
+    network.body.data.edges.update(edgeUpdates);
+    updateVisibleStatus(visibleNodeIds.size, edgeUpdates.filter(edge => !edge.hidden).length);
+    if (fitGraph && visibleNodeIds.size) network.fit({ animation: { duration: 350 } });
+  }
+
+  function updateVisibleStatus(nodes, edges) {
+    const status = document.getElementById('visibleGraphStatus');
+    if (status) status.innerHTML = `<strong>${nodes}</strong> 节点 · <strong>${edges}</strong> 关系`;
+  }
+
+  function createPanel(className, title, bodyHtml) {
+    const panel = document.createElement('section');
+    panel.className = `graph-floating-panel ${className}`;
+    panel.innerHTML = `
+      <div class="graph-panel-header">
+        <span>${title}</span>
+        <button class="graph-panel-collapse" type="button" aria-label="收起面板">−</button>
+      </div>
+      <div class="graph-panel-body">${bodyHtml}</div>`;
+    return panel;
+  }
+
+  function bindPanelCollapse(panel) {
+    const button = panel.querySelector('.graph-panel-collapse');
+    if (!button) return;
+    button.addEventListener('click', () => {
+      const collapsed = panel.classList.toggle('is-collapsed');
+      button.textContent = collapsed ? '+' : '−';
+      button.setAttribute('aria-label', collapsed ? '展开面板' : '收起面板');
+    });
+  }
+
+  function renderEntityTypeOptions(container) {
+    const counts = new Map();
+    network.body.data.nodes.get().forEach(node => {
+      const type = entityTypeOf(node);
+      counts.set(type, (counts.get(type) || 0) + 1);
+    });
+    container.innerHTML = [...counts.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0], 'zh-CN'))
+      .map(([type, count]) => `
+        <label class="entity-type-option">
+          <input type="checkbox" value="${escapeHtml(type)}">
+          <span title="${escapeHtml(type)}">${escapeHtml(type)}</span>
+          <span class="entity-type-count">${count}</span>
+        </label>`).join('');
+    container.querySelectorAll('input[type="checkbox"]').forEach(input => {
+      input.addEventListener('change', () => {
+        if (input.checked) activeEntityTypes.add(input.value);
+        else activeEntityTypes.delete(input.value);
+        focusKeepNodes = null;
+        document.getElementById('focusModeBtn')?.classList.remove('active');
+        applyVisibilityFilters(true);
+        renderSearchResults();
+      });
+    });
+  }
+
+  function renderSearchResults() {
+    const input = document.getElementById('searchInput');
+    const container = document.getElementById('searchResults');
+    if (!input || !container) return;
+    const term = input.value.toLowerCase().trim();
+    const nodes = network.body.data.nodes.get()
+      .filter(node => !node.hidden)
+      .filter(node => !term || String(node.label || node.id).toLowerCase().includes(term))
+      .map(node => ({
+        kind: 'node', id: node.id, label: node.label || node.id,
+        type: entityTypeOf(node), extra: `${nodeDegrees[node.id] || 0} 连接`
+      }));
+    const edges = term ? network.body.data.edges.get()
+      .filter(edge => !edge.hidden && String(edge.label || '').toLowerCase().includes(term))
+      .map(edge => ({
+        kind: 'edge', id: edge.id, label: edge.label || '未命名关系',
+        type: '关系', extra: Number(edge.weight || .5).toFixed(2)
+      })) : [];
+    const results = [...nodes, ...edges].slice(0, 80);
+    container.innerHTML = results.length ? results.map(result => `
+      <div class="search-result-item" data-kind="${result.kind}" data-id="${escapeHtml(result.id)}">
+        <span class="type-badge ${result.kind === 'edge' ? 'edge' : ''}" title="${escapeHtml(result.type)}">${escapeHtml(result.type)}</span>
+        <span class="result-main" title="${escapeHtml(result.label)}">${escapeHtml(result.label)}</span>
+        <span class="result-meta">${escapeHtml(result.extra)}</span>
+      </div>`).join('') : '<div class="graph-empty-state">没有匹配的实体或关系</div>';
+    container.querySelectorAll('.search-result-item').forEach(item => {
+      item.addEventListener('click', () => {
+        const id = item.dataset.id;
+        if (item.dataset.kind === 'node') {
+          const node = network.body.data.nodes.get(id)
+            || network.body.data.nodes.get().find(candidate => String(candidate.id) === id);
+          if (!node) return;
+          network.selectNodes([node.id]);
+          network.focus(node.id, { scale: 1.45, animation: { duration: 350 } });
+          requestEvidence('node', node.id);
+        } else {
+          const edge = network.body.data.edges.get(id)
+            || network.body.data.edges.get().find(candidate => String(candidate.id) === id);
+          if (!edge) return;
+          network.selectEdges([edge.id]);
+          network.fit({ nodes: [edge.from, edge.to], animation: { duration: 350 } });
+          requestEvidence('edge', edge.id);
+        }
+      });
+    });
+  }
+
+  function bindCommunitySourceButton(button) {
+    if (!button || button.dataset.bound === '1') return;
+    button.dataset.bound = '1';
+    button.addEventListener('click', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      let sourceBlocks = [];
+      try {
+        sourceBlocks = JSON.parse(button.dataset.sourceBlocks || '[]');
+      } catch (error) {
+        console.warn('社区主节点出处文本块格式无效:', error);
+      }
+      window.parent?.postMessage({
+        type: 'knowledge-graph-evidence',
+        graphName: GRAPH_NAME,
+        kind: 'node',
+        id: button.dataset.nodeId || '',
+        sourceBlocks,
+        entityTerms: [button.dataset.nodeId || ''].filter(Boolean),
+        relationTerms: []
+      }, '*');
+    });
+  }
+
+  function refreshCommunityMetadata() {
+    const directory = document.getElementById('communityDirectory');
+    if (!directory || !nodeDetails.size) return;
+    const findNodeDetail = label => nodeDetails.get(String(label))
+      || [...nodeDetails.values()].find(node => String(node.name || node.id) === String(label));
+    const types = new Set();
+    directory.querySelectorAll('.community-list-item').forEach(item => {
+      const representative = item.dataset.name || '';
+      const detail = findNodeDetail(representative);
+      if (!detail) return;
+      const type = String(detail.entityType || '未分类');
+      types.add(type);
+      item.dataset.types = type;
+      const meta = item.querySelector('.community-item-meta');
+      if (meta) {
+        const count = (meta.textContent.match(/\d+/) || [''])[0];
+        meta.textContent = `${count ? `${count} 个节点 · ` : ''}主节点类型：${type}`;
+      }
+      let sourceButton = item.querySelector('.community-source-link');
+      if (!sourceButton) {
+        sourceButton = document.createElement('button');
+        sourceButton.type = 'button';
+        sourceButton.className = 'community-source-link';
+        sourceButton.textContent = '查看原文文本块';
+        item.appendChild(sourceButton);
+      }
+      sourceButton.dataset.nodeId = String(detail.id);
+      sourceButton.dataset.sourceBlocks = JSON.stringify(detail.source_blocks || []);
+      bindCommunitySourceButton(sourceButton);
+    });
+    const typeFilter = document.getElementById('communityTypeFilter');
+    if (typeFilter && types.size) {
+      typeFilter.innerHTML = '<option value="">全部实体类型</option>'
+        + [...types].sort((a, b) => a.localeCompare(b, 'zh-CN'))
+          .map(type => `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`).join('');
+    }
+    const communityNodes = network.body.data.nodes.get().map(node => {
+      const detail = findNodeDetail(node.label || node.id);
+      return detail ? {
+        ...node,
+        entityType: detail.entityType || '未分类',
+        group: detail.entityType || '未分类',
+        source_blocks: detail.source_blocks || []
+      } : node;
+    });
+    network.body.data.nodes.update(communityNodes);
+    const typeOptions = document.getElementById('entityTypeOptions');
+    if (typeOptions) renderEntityTypeOptions(typeOptions);
+    applyVisibilityFilters();
+    renderSearchResults();
+  }
+
+  function setupCommunityDirectory() {
+    const directory = document.getElementById('communityDirectory');
+    if (!directory) return;
+    directory.querySelector('.graph-panel-collapse')?.addEventListener('click', event => {
+      const collapsed = directory.classList.toggle('is-collapsed');
+      event.currentTarget.textContent = collapsed ? '+' : '−';
+    });
+    const search = document.getElementById('communitySearchInput');
+    const typeFilter = document.getElementById('communityTypeFilter');
+    const items = [...directory.querySelectorAll('.community-list-item')];
+    const empty = document.getElementById('communityEmptyState');
+    directory.querySelectorAll('.community-source-link').forEach(bindCommunitySourceButton);
+    editorMetadataReady.then(refreshCommunityMetadata);
+    const apply = () => {
+      const term = (search?.value || '').toLowerCase().trim();
+      const type = typeFilter?.value || '';
+      let visible = 0;
+      items.forEach(item => {
+        const matchesName = !term || (item.dataset.name || '').toLowerCase().includes(term);
+        const types = (item.dataset.types || '').split('|');
+        const matchesType = !type || types.includes(type);
+        item.hidden = !(matchesName && matchesType);
+        if (!item.hidden) visible += 1;
+      });
+      if (empty) empty.hidden = visible > 0;
+    };
+    search?.addEventListener('input', apply);
+    typeFilter?.addEventListener('change', apply);
+  }
+
+  function editorApi(path, options = {}) {
+    return fetch(`/api${path}`, {
+      ...options,
+      headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }
+    }).then(async response => {
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || payload.error || '图谱操作失败');
+      return payload;
+    });
+  }
+
+  function edgeSignature(edge) {
+    return [edge.from, edge.to, edge.label || '', edge.title || ''].join('|');
+  }
+
+  function syncEditorRevision() {
+    if (!GRAPH_NAME) return Promise.resolve();
+    return editorApi(`/graph-data/${encodeURIComponent(GRAPH_NAME)}`)
+      .then(payload => {
+        editorRevision = Number(payload.revision || 0);
+        nodeDetails.clear();
+        edgeApiIds.clear();
+        (payload.nodes || []).forEach(node => nodeDetails.set(String(node.id), node));
+        edgeDetails.clear();
+        (payload.links || []).forEach(link => edgeDetails.set(String(link.id), link));
+        const apiBySignature = new Map(
+          (payload.links || []).map(link => [
+            [link.source, link.target, link.relation || '', link.context || ''].join('|'),
+            link.id
+          ])
+        );
+        network.body.data.edges.get().forEach(edge => {
+          const apiId = apiBySignature.get(edgeSignature(edge));
+          if (apiId) edgeApiIds.set(String(edge.id), apiId);
+        });
+      })
+      .catch(error => console.warn('图谱编辑接口暂不可用:', error.message));
+  }
+
+  function requestEvidence(kind, id) {
+    const requestedId = String(id ?? '');
+    if (!requestedId) return;
+    editorMetadataReady.then(() => {
+      let sourceBlocks = [];
+      let entityTerms = [];
+      let relationTerms = [];
+      if (kind === 'node') {
+        const node = nodeDetails.get(requestedId) || network.body.data.nodes.get(id);
+        sourceBlocks = node?.source_blocks || [];
+        entityTerms = [node?.label || node?.id || requestedId];
+      } else if (kind === 'edge') {
+        const edge = network.body.data.edges.get(id)
+          || network.body.data.edges.get().find(candidate => String(candidate.id) === requestedId);
+        const apiId = edgeApiIds.get(requestedId) || requestedId;
+        const detail = edgeDetails.get(String(apiId)) || {};
+        sourceBlocks = detail.evidence_blocks || [];
+        if (!sourceBlocks.length && detail.source_block) sourceBlocks = [detail.source_block];
+        if (edge && !sourceBlocks.length) {
+          const fallback = edgeDetails.get(String(edge.id));
+          sourceBlocks = fallback?.evidence_blocks || [];
+        }
+        entityTerms = [edge?.from, edge?.to].filter(Boolean);
+        entityTerms.push(detail.source, detail.target, detail.relation);
+        relationTerms = [edge?.label, detail.relation];
+      }
+      window.parent?.postMessage({
+        type: 'knowledge-graph-evidence',
+        graphName: GRAPH_NAME,
+        kind,
+        id: requestedId,
+        sourceBlocks,
+        entityTerms: [...new Set(entityTerms.map(value => String(value || '').trim()).filter(Boolean))],
+        relationTerms: [...new Set(relationTerms.map(value => String(value || '').trim()).filter(Boolean))]
+      }, '*');
+    });
+  }
+
+  function showNodeDialog(target) {
+    const node = network.body.data.nodes.get(target.id);
+    if (!node) return;
+    const detail = nodeDetails.get(String(node.id)) || {};
+    const sourceBlocks = Array.isArray(detail.source_blocks) ? detail.source_blocks : [];
+    const mask = document.createElement('div');
+    mask.className = 'graph-editor-dialog-mask';
+    mask.innerHTML = `
+      <section class="graph-editor-dialog" role="dialog" aria-modal="true">
+        <h3>节点详情</h3>
+        <div class="graph-editor-field"><label>节点名称</label><input value="${escapeHtml(node.label || node.id)}" readonly></div>
+        <div class="graph-editor-field"><label>节点类型</label><input value="${escapeHtml(entityTypeOf(node))}" readonly></div>
+        <div class="graph-editor-field"><label>连接数</label><input value="${escapeHtml(network.getConnectedNodes(node.id).length)}" readonly></div>
+        <div class="graph-editor-field"><label>出处文本块（只读）</label><textarea readonly>${escapeHtml(sourceBlocks.length ? sourceBlocks.join('\n') : '无可定位出处')}</textarea></div>
+        <div class="graph-editor-actions">
+          <button type="button" data-dialog-close>关闭</button>
+          <button type="button" class="primary" data-dialog-locate>原文查找</button>
+        </div>
+      </section>`;
+    document.body.appendChild(mask);
+    const close = () => mask.remove();
+    mask.addEventListener('click', event => {
+      if (event.target === mask || event.target.closest('[data-dialog-close]')) close();
+    });
+    mask.querySelector('[data-dialog-locate]').addEventListener('click', () => {
+      requestEvidence('node', target.id);
+      close();
+    });
+  }
+
+  function highlightGraphTarget(kind, id) {
+    const requestedId = String(id ?? '');
+    if (!requestedId) return;
+    editorMetadataReady.then(() => {
+      if (kind === 'node') {
+        const node = network.body.data.nodes.get(requestedId)
+          || network.body.data.nodes.get().find(item => String(item.id) === requestedId);
+        if (!node) return;
+        network.selectNodes([node.id]);
+        network.focus(node.id, { scale: 1.45, animation: { duration: 350 } });
+        requestEvidence('node', node.id);
+        return;
+      }
+      const edge = network.body.data.edges.get(requestedId)
+        || network.body.data.edges.get().find(item =>
+          String(item.id) === requestedId || String(edgeApiIds.get(String(item.id))) === requestedId
+        );
+      if (!edge) return;
+      network.selectEdges([edge.id]);
+      network.fit({ nodes: [edge.from, edge.to], animation: { duration: 350 } });
+      requestEvidence('edge', edge.id);
+    });
+  }
+
+  function showContextMenu(event, target) {
+    contextTarget = target;
+    if (!contextMenu) {
+      contextMenu = document.createElement('div');
+      contextMenu.className = 'graph-context-menu';
+      document.body.appendChild(contextMenu);
+      contextMenu.addEventListener('click', event => {
+        const action = event.target.closest('button')?.dataset.action;
+        if (!action) return;
+        hideContextMenu();
+        runGraphAction(action, contextTarget);
+      });
+    }
+    const nodeActions = `
+      <button data-action="view-node">查看节点</button>
+      <button data-action="edit-node">编辑节点</button>
+      <button data-action="add-edge">从此节点新增关系</button>
+      <button class="danger" data-action="delete-node">删除节点</button>`;
+    const edgeActions = `
+      <button data-action="view-edge">查看关系</button>
+      <button data-action="edit-edge">编辑关系</button>
+      <button class="danger" data-action="delete-edge">删除关系</button>`;
+    const canvasActions = '<button data-action="add-node">新增节点</button>';
+    contextMenu.innerHTML = `${target.type === 'node' ? nodeActions : target.type === 'edge' ? edgeActions : canvasActions}
+      <button data-action="history">历史记录与还原</button>`;
+    contextMenu.style.display = 'block';
+    contextMenu.style.left = `${Math.min(event.clientX, window.innerWidth - 170)}px`;
+    contextMenu.style.top = `${Math.min(event.clientY, window.innerHeight - 180)}px`;
+  }
+
+  function hideContextMenu() {
+    if (contextMenu) contextMenu.style.display = 'none';
+  }
+
+  function askText(label, value = '') {
+    const result = window.prompt(label, value);
+    return result === null ? null : result.trim();
+  }
+
+  function mutation(operation, payload = {}) {
+    if (!GRAPH_NAME) return Promise.reject(new Error('当前图谱页面缺少文件标识'));
+    return editorApi(`/graph-mutation/${encodeURIComponent(GRAPH_NAME)}`, {
+      method: 'POST',
+      body: JSON.stringify({ operation, revision: editorRevision, ...payload })
+    }).then(() => window.location.reload());
+  }
+
+  function selectedNode(target) {
+    return network.body.data.nodes.get(target.id);
+  }
+
+  function selectedEdge(target) {
+    return network.body.data.edges.get(target.id);
+  }
+
+  function editNode(target) {
+    const node = selectedNode(target);
+    if (!node) return;
+    const name = askText('节点名称：', node.label || node.id);
+    if (!name) return;
+    const entityType = askText('节点类型：', entityTypeOf(node));
+    if (!entityType) return;
+    mutation('update_node', { node_id: String(node.id), name, entity_type: entityType })
+      .catch(error => window.alert(error.message));
+  }
+
+  function addNode() {
+    const name = askText('新节点名称：');
+    if (!name) return;
+    const entityType = askText('节点类型：', '未知标签');
+    if (!entityType) return;
+    mutation('add_node', { name, entity_type: entityType })
+      .catch(error => window.alert(error.message));
+  }
+
+  function addEdge(target) {
+    const source = String(target.id);
+    const nodeNames = network.body.data.nodes.get().map(node => node.label || node.id).join('、');
+    const targetName = askText(`关系终点节点（已有节点：${nodeNames}）：`);
+    if (!targetName) return;
+    const relation = askText('关系名称：');
+    if (!relation) return;
+    const context = askText('关系说明：', relation) || relation;
+    mutation('add_edge', { source, target: targetName, relation, context, weight: 0.5 })
+      .catch(error => window.alert(error.message));
+  }
+
+  function edgeRecord(target) {
+    const edge = selectedEdge(target);
+    if (!edge) return null;
+    const edgeId = edgeApiIds.get(String(edge.id)) || edge.id;
+    const detail = edgeDetails.get(String(edgeId)) || {};
+    return {
+      ...edge,
+      ...detail,
+      editId: edgeId,
+      source: detail.source || edge.from,
+      target: detail.target || edge.to,
+      relation: detail.relation || edge.label || '',
+      evidence: detail.evidence || detail.context || edge.title || '',
+      sourceBlock: detail.source_block || '无',
+      evidenceBlocks: Array.isArray(detail.evidence_blocks) ? detail.evidence_blocks : [],
+      score: detail.score ?? detail.weight ?? edge.weight ?? 0.5,
+      origin: detail.origin === 'manual' ? '用户新增' : 'AI抽取'
+    };
+  }
+
+  function showEdgeDialog(target, readonly = false) {
+    const edge = edgeRecord(target);
+    if (!edge) return;
+    const mask = document.createElement('div');
+    mask.className = 'graph-editor-dialog-mask';
+    const disabled = readonly ? ' readonly' : '';
+    mask.innerHTML = `
+      <section class="graph-editor-dialog" role="dialog" aria-modal="true">
+        <h3>${readonly ? '关系详情' : '编辑关系'}</h3>
+        <div class="graph-editor-field"><label>起点节点</label><input id="edgeEditorSource" value="${escapeHtml(edge.source)}"${disabled}></div>
+        <div class="graph-editor-field"><label>终点节点</label><input id="edgeEditorTarget" value="${escapeHtml(edge.target)}"${disabled}></div>
+        <div class="graph-editor-field"><label>关系名称</label><input id="edgeEditorRelation" value="${escapeHtml(edge.relation)}"${disabled}></div>
+        <div class="graph-editor-field"><label>出处依据 / 关系说明</label><textarea id="edgeEditorEvidence"${disabled}>${escapeHtml(edge.evidence)}</textarea></div>
+        <div class="graph-editor-field"><label>出处文本块（只读）</label><textarea readonly>${escapeHtml(edge.evidenceBlocks.length
+          ? edge.evidenceBlocks.map(item => item.source_block || item).filter(Boolean).join('\n')
+          : edge.sourceBlock)}</textarea></div>
+        <div class="graph-editor-field"><label>得分 / 权重（0-1）</label><input id="edgeEditorScore" type="number" min="0" max="1" step="0.01" value="${escapeHtml(edge.score)}"${disabled}></div>
+        <div class="graph-editor-field"><label>关系来源</label><input value="${escapeHtml(edge.origin)}" readonly></div>
+        <div class="graph-editor-field"><label>关系 ID</label><input value="${escapeHtml(edge.editId)}" readonly></div>
+        <div class="graph-editor-actions">
+          <button type="button" data-dialog-close>关闭</button>
+          <button type="button" data-dialog-locate>原文查找</button>
+          ${readonly ? '' : '<button type="button" class="primary" data-dialog-save>保存修改</button>'}
+        </div>
+      </section>`;
+    document.body.appendChild(mask);
+    const close = () => mask.remove();
+    mask.addEventListener('click', event => {
+      if (event.target === mask || event.target.closest('[data-dialog-close]')) close();
+    });
+    mask.querySelector('[data-dialog-locate]').addEventListener('click', () => {
+      requestEvidence('edge', target.id);
+      close();
+    });
+    if (!readonly) {
+      mask.querySelector('[data-dialog-save]').addEventListener('click', () => {
+        const score = Number(mask.querySelector('#edgeEditorScore').value);
+        if (!Number.isFinite(score) || score < 0 || score > 1) return window.alert('得分必须在0到1之间');
+        mutation('update_edge', {
+          edge_id: edge.editId,
+          source: mask.querySelector('#edgeEditorSource').value.trim(),
+          target: mask.querySelector('#edgeEditorTarget').value.trim(),
+          relation: mask.querySelector('#edgeEditorRelation').value.trim(),
+          context: mask.querySelector('#edgeEditorEvidence').value.trim(),
+          weight: score
+        }).catch(error => window.alert(error.message));
+      });
+    }
+  }
+
+  function editEdge(target) {
+    showEdgeDialog(target, false);
+  }
+
+  function deleteTarget(target) {
+    const isNode = target.type === 'node';
+    const item = isNode ? selectedNode(target) : selectedEdge(target);
+    if (!item || !window.confirm(isNode ? '删除节点会同时删除相连关系，是否继续？' : '是否删除这条关系？')) return;
+    const id = isNode ? item.id : (edgeApiIds.get(String(item.id)) || item.id);
+    mutation(isNode ? 'delete_node' : 'delete_edge', isNode ? { node_id: String(id) } : { edge_id: id })
+      .catch(error => window.alert(error.message));
+  }
+
+  function viewTarget(target) {
+    const item = target.type === 'node' ? selectedNode(target) : selectedEdge(target);
+    if (!item) return;
+    if (target.type === 'node') {
+      showNodeDialog(target);
+    } else {
+      showEdgeDialog(target, true);
+    }
+  }
+
+  function showHistory() {
+    editorApi(`/graph-history/${encodeURIComponent(GRAPH_NAME)}`).then(payload => {
+      const versions = payload.versions || [];
+      if (!versions.length) return window.alert('暂无图谱修改历史');
+      const description = versions.map(version =>
+        `${version.revision}: ${version.description || version.operation || '图谱修改'} (${version.created_at})`).join('\n');
+      const revision = askText(`历史版本（输入版本号还原）：\n${description}`);
+      if (!revision) return;
+      const number = Number(revision);
+      if (!Number.isInteger(number)) return window.alert('版本号必须是整数');
+      if (!window.confirm(`确认还原到版本 ${number}？还原会创建新的历史版本。`)) return;
+      editorApi(`/graph-restore/${encodeURIComponent(GRAPH_NAME)}/${number}`, {
+        method: 'POST',
+        body: JSON.stringify({ operation: 'restore', revision: editorRevision })
+      }).then(() => {
+        window.parent?.postMessage({ type: 'knowledge-graph-restored', filename: GRAPH_NAME }, '*');
+        window.location.reload();
+      }).catch(error => window.alert(error.message));
+    }).catch(error => window.alert(error.message));
+  }
+
+  function runGraphAction(action, target) {
+    if (action === 'add-node') return addNode();
+    if (action === 'edit-node') return editNode(target);
+    if (action === 'delete-node') return deleteTarget(target);
+    if (action === 'add-edge') return addEdge(target);
+    if (action === 'edit-edge') return editEdge(target);
+    if (action === 'delete-edge') return deleteTarget(target);
+    if (action === 'view-node' || action === 'view-edge') return viewTarget(target);
+    if (action === 'history') return showHistory();
+  }
+
+  document.addEventListener('DOMContentLoaded', function () {
+    const graphContainer = document.getElementById('mynetwork');
+    if (!graphContainer || typeof network === 'undefined') return;
+    const host = graphContainer.parentNode;
+    applyLargeGraphPerformance();
+    let readyNotified = false;
+    const notifyGraphReady = () => {
+      if (readyNotified) return;
+      readyNotified = true;
+      window.parent?.postMessage({ type: 'knowledge-graph-ready' }, '*');
+    };
+    network.once('afterDrawing', notifyGraphReady);
+    network.once('stabilized', () => {
+      network.setOptions({ physics: { enabled: false } });
+      notifyGraphReady();
+    });
+    window.setTimeout(notifyGraphReady, 2500);
+    initializeGraphMetadata();
+    editorMetadataReady = syncEditorRevision();
+    window.addEventListener('message', event => {
+      if (event.source !== window.parent || event.data?.type !== 'knowledge-graph-highlight') return;
+      if (event.data.graphName && event.data.graphName !== GRAPH_NAME) return;
+      highlightGraphTarget(event.data.kind, event.data.id);
+    });
+    document.addEventListener('click', hideContextMenu);
+    // vis-network's `oncontext` is not emitted consistently across its
+    // versions, especially when the canvas is inside a sandboxed iframe.
+    // Bind the native DOM event as the authoritative browser-menu blocker.
+    graphContainer.addEventListener('contextmenu', event => {
+      event.preventDefault();
+      event.stopPropagation();
+      const rect = graphContainer.getBoundingClientRect();
+      const pointer = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+      const nodeId = network.getNodeAt(pointer);
+      const hasNode = nodeId !== undefined && nodeId !== null;
+      const edgeId = hasNode ? undefined : network.getEdgeAt(pointer);
+      const hasEdge = edgeId !== undefined && edgeId !== null;
+      showContextMenu(event, hasNode
+        ? { type: 'node', id: nodeId }
+        : hasEdge
+          ? { type: 'edge', id: edgeId }
+          : { type: 'canvas', id: null });
+    }, true);
+    network.on('oncontext', params => {
+      params.event?.srcEvent?.preventDefault?.();
+      const nodeId = params.nodes?.[0];
+      const edgeId = params.edges?.[0];
+      const sourceEvent = params.event?.srcEvent;
+      if (!sourceEvent) return;
+      showContextMenu(sourceEvent, nodeId !== undefined
+        ? { type: 'node', id: nodeId }
+        : edgeId !== undefined
+          ? { type: 'edge', id: edgeId }
+          : { type: 'canvas', id: null });
+    });
+
+    const runtimeNodeCount = network.body.data.nodes.get().length;
+    const runtimeEdgeCount = network.body.data.edges.get().length;
+    const searchPanel = createPanel('search-panel', '🔍 实体与关系', `
+      <input type="search" id="searchInput" class="graph-text-input" placeholder="搜索实体或关系...">
+      <div class="search-results" id="searchResults"></div>
+      <div class="status-bar" id="visibleGraphStatus"><strong>${Math.max(NODE_COUNT, runtimeNodeCount)}</strong> 节点 · <strong>${Math.max(EDGE_COUNT, runtimeEdgeCount)}</strong> 关系</div>`);
+    host.insertBefore(searchPanel, graphContainer);
+
+    const controlPanel = createPanel('control-panel', '⚙️ 图谱控制', `
+      <div class="control-actions">
+        <button id="showAllBtn" class="control-btn">显示标签</button>
+        <button id="hideAllBtn" class="control-btn active">隐藏标签</button>
+        <button id="toggleHubsBtn" class="control-btn">折叠 Hub</button>
+        <button id="focusModeBtn" class="control-btn">节点聚焦</button>
+        <button id="fitBtn" class="control-btn">适应画布</button>
+        <button id="resetBtn" class="control-btn">重置</button>
+      </div>
+      <div class="status-bar">右键节点、关系或空白处，可进行增删改查</div>
+      <div class="status-bar">已标记关系：<strong id="counter">0</strong></div>`);
+    host.insertBefore(controlPanel, graphContainer);
+
+    const filterPanel = createPanel('filter-panel', '🔧 筛选与类型聚焦', `
+      <div class="filter-section">
+        <div class="filter-label"><span>最小关系权重</span><strong id="weightValue">0.5</strong></div>
+        <input type="range" id="weightFilter" class="filter-slider" min="0.5" max="1" step="0.1" value="0.5">
+      </div>
+      <div class="filter-section">
+        <div class="filter-label"><span>Hub 关系透明度</span><strong id="hubOpacityValue">0.3</strong></div>
+        <input type="range" id="hubOpacity" class="filter-slider" min="0" max="1" step="0.1" value="0.3">
+      </div>
+      <div class="filter-section">
+        <div class="filter-label"><span>实体类型（可多选）</span><strong id="selectedTypeCount">0</strong></div>
+        <div class="entity-type-actions">
+          <button type="button" id="selectAllTypesBtn" class="small-action-btn">全选</button>
+          <button type="button" id="clearTypesBtn" class="small-action-btn">清除</button>
+        </div>
+        <div class="entity-type-options" id="entityTypeOptions"></div>
+      </div>`);
+    host.insertBefore(filterPanel, graphContainer);
+
+    [searchPanel, controlPanel, filterPanel].forEach(bindPanelCollapse);
+
+    const immersiveButton = document.createElement('button');
+    immersiveButton.className = 'immersive-toggle';
+    immersiveButton.type = 'button';
+    immersiveButton.textContent = '⛶ 沉浸模式';
+    immersiveButton.addEventListener('click', () => {
+      immersive = !immersive;
+      document.querySelectorAll('.graph-floating-panel').forEach(panel => {
+        panel.classList.toggle('is-collapsed', immersive);
+        const button = panel.querySelector('.graph-panel-collapse');
+        if (button) button.textContent = immersive ? '+' : '−';
+      });
+      immersiveButton.textContent = immersive ? '退出沉浸' : '⛶ 沉浸模式';
+    });
+    host.insertBefore(immersiveButton, graphContainer);
+
+    const typeOptions = document.getElementById('entityTypeOptions');
+    renderEntityTypeOptions(typeOptions);
+    const updateSelectedTypeCount = () => {
+      document.getElementById('selectedTypeCount').textContent = activeEntityTypes.size;
+    };
+    typeOptions.addEventListener('change', updateSelectedTypeCount);
+    document.getElementById('selectAllTypesBtn').addEventListener('click', () => {
+      typeOptions.querySelectorAll('input').forEach(input => { input.checked = true; activeEntityTypes.add(input.value); });
+      updateSelectedTypeCount(); applyVisibilityFilters(true); renderSearchResults();
+    });
+    document.getElementById('clearTypesBtn').addEventListener('click', () => {
+      typeOptions.querySelectorAll('input').forEach(input => { input.checked = false; });
+      activeEntityTypes.clear(); updateSelectedTypeCount(); applyVisibilityFilters(true); renderSearchResults();
+    });
+
+    document.getElementById('searchInput').addEventListener('input', () => {
+      clearTimeout(searchTimer); searchTimer = setTimeout(renderSearchResults, 120);
+    });
+    document.getElementById('weightFilter').addEventListener('input', event => {
+      minimumWeight = Number(event.target.value);
+      document.getElementById('weightValue').textContent = minimumWeight.toFixed(1);
+      applyVisibilityFilters(); renderSearchResults();
+    });
+    document.getElementById('hubOpacity').addEventListener('input', event => {
+      const opacity = Number(event.target.value);
+      document.getElementById('hubOpacityValue').textContent = opacity.toFixed(1);
+      const updates = network.body.data.edges.get()
+        .filter(edge => hubNodes.has(String(edge.from)) || hubNodes.has(String(edge.to)))
+        .map(edge => ({ ...edge, color: { ...edge.color, opacity } }));
+      network.body.data.edges.update(updates);
+    });
+
+    const updateCounter = () => {
+      document.getElementById('counter').textContent = Object.values(edgeStates).filter(state => state.clicked).length;
+    };
+    document.getElementById('showAllBtn').addEventListener('click', event => {
+      network.body.data.edges.get().forEach(edge => {
+        edge.font = { size: 10, color: '#64748b' }; edgeStates[edge.id].labelVisible = true;
+        network.body.data.edges.update(edge);
+      });
+      document.getElementById('hideAllBtn').classList.remove('active'); event.currentTarget.classList.add('active');
+    });
+    document.getElementById('hideAllBtn').addEventListener('click', event => {
+      network.body.data.edges.get().forEach(edge => {
+        if (!edgeStates[edge.id].clicked) edge.font = { size: 0 };
+        edgeStates[edge.id].labelVisible = false; network.body.data.edges.update(edge);
+      });
+      document.getElementById('showAllBtn').classList.remove('active'); event.currentTarget.classList.add('active');
+    });
+    document.getElementById('toggleHubsBtn').addEventListener('click', event => {
+      hubsCollapsed = !hubsCollapsed; collapsedEdgeIds.clear();
+      if (hubsCollapsed) hubNodes.forEach(hubId => {
+        network.body.data.edges.get().filter(edge => String(edge.from) === hubId || String(edge.to) === hubId)
+          .sort((a, b) => Number(b.weight || 0) - Number(a.weight || 0)).slice(3)
+          .forEach(edge => collapsedEdgeIds.add(edge.id));
+      });
+      event.currentTarget.classList.toggle('active', hubsCollapsed); applyVisibilityFilters();
+    });
+    document.getElementById('focusModeBtn').addEventListener('click', event => {
+      if (focusKeepNodes) {
+        focusKeepNodes = null; event.currentTarget.classList.remove('active'); applyVisibilityFilters(true); return;
+      }
+      const selected = network.getSelectedNodes();
+      if (!selected.length) { alert('请先选中一个或多个节点'); return; }
+      focusKeepNodes = new Set(selected);
+      selected.forEach(id => network.getConnectedNodes(id).forEach(neighbor => focusKeepNodes.add(neighbor)));
+      event.currentTarget.classList.add('active'); applyVisibilityFilters(true);
+    });
+    document.getElementById('fitBtn').addEventListener('click', () => network.fit({ animation: { duration: 350 } }));
+    document.getElementById('resetBtn').addEventListener('click', () => {
+      activeEntityTypes.clear(); collapsedEdgeIds.clear(); focusKeepNodes = null; hubsCollapsed = false; minimumWeight = .5;
+      typeOptions.querySelectorAll('input').forEach(input => { input.checked = false; });
+      document.getElementById('weightFilter').value = .5; document.getElementById('weightValue').textContent = '0.5';
+      document.getElementById('searchInput').value = ''; document.getElementById('focusModeBtn').classList.remove('active');
+      document.getElementById('toggleHubsBtn').classList.remove('active'); updateSelectedTypeCount();
+      network.body.data.edges.get().forEach(edge => {
+        edge.font = { size: 0 }; edge.width = edgeOriginalWidths[edge.id]; edgeStates[edge.id] = { clicked: false, labelVisible: false };
+        network.body.data.edges.update(edge);
+      });
+      applyVisibilityFilters(true); renderSearchResults(); updateCounter();
+    });
+
+    network.on('selectEdge', params => {
+      if (!params.edges.length) return;
+      const edge = network.body.data.edges.get(params.edges[0]);
+      edgeStates[edge.id].clicked = true; edge.font = { size: 10, color: '#2563eb' };
+      network.body.data.edges.update(edge); updateCounter();
+    });
+    network.on('hoverEdge', params => {
+      const edge = network.body.data.edges.get(params.edge);
+      let tooltip = document.getElementById('edge-tooltip');
+      if (!tooltip) { tooltip = document.createElement('div'); tooltip.id = 'edge-tooltip'; document.body.appendChild(tooltip); }
+      tooltip.innerHTML = `<strong>${escapeHtml(edge.label || '未命名关系')}</strong><div>${escapeHtml(edge.title || '无描述')}</div>`;
+      tooltip.style.left = `${(params.event?.clientX || 80) + 12}px`; tooltip.style.top = `${(params.event?.clientY || 80) + 12}px`; tooltip.style.display = 'block';
+    });
+    network.on('blurEdge', () => { const tip = document.getElementById('edge-tooltip'); if (tip) tip.style.display = 'none'; });
+    network.on('hoverNode', params => {
+      let tooltip = document.getElementById('node-tooltip');
+      if (!tooltip) { tooltip = document.createElement('div'); tooltip.id = 'node-tooltip'; document.body.appendChild(tooltip); }
+      const edges = network.getConnectedEdges(params.node).slice(0, 30).map(id => network.body.data.edges.get(id));
+      tooltip.innerHTML = `<strong>${escapeHtml(network.body.data.nodes.get(params.node)?.label || params.node)}</strong>`
+        + edges.map(edge => `<div class="edge-item"><div class="edge-label">${escapeHtml(edge.label || '关系')}</div><div class="edge-meta">${escapeHtml(edge.from)} → ${escapeHtml(edge.to)}</div></div>`).join('');
+      tooltip.style.left = `${(params.event?.clientX || 80) + 12}px`; tooltip.style.top = `${(params.event?.clientY || 80) + 12}px`; tooltip.style.display = 'block';
+    });
+    network.on('blurNode', () => { const tip = document.getElementById('node-tooltip'); if (tip) tip.style.display = 'none'; });
+
+    setupCommunityDirectory();
+    applyVisibilityFilters(); renderSearchResults(); updateCounter();
+  });
+})();
+</script>
+</body>
+</html>

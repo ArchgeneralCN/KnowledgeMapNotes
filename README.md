@@ -69,6 +69,18 @@ https://github.com/user-attachments/assets/5e9e6ffd-4e18-4915-b3a4-85198eb8bb0f
 | Content rendering | Markdown-It, DOMPurify |
 | Deployment | FastAPI static hosting, Docker Compose, Nginx |
 
+## Documentation Site
+
+An independent VitePress documentation site is available in `docs-site/`. It covers setup, core workflows, deployment, security, environment variables, HTTP APIs, and troubleshooting, with local search, dark mode, and responsive navigation.
+
+```bash
+cd docs-site
+npm install
+npm run dev
+```
+
+Open http://localhost:5173. Run `npm run build` for a production build; static output is written to `docs-site/docs/.vitepress/dist`.
+
 ## Quick Start
 
 ### Requirements
@@ -480,4 +492,24 @@ Environment variables are loaded when the backend starts. Restart the backend af
 
 ## License
 
-MIT
+This project is open source under the GNU AGPL-3.0 in a dual-license model.
+
+| Use case | Fee | Requirement |
+| --- | --- | --- |
+| Personal learning, research, and non-commercial use | Free | Comply with AGPL-3.0, publish modifications, and retain copyright notices |
+| Derivative work in an open-source project | Free | The derivative work must be released under AGPL-3.0 |
+| Internal enterprise tool without distribution | Free | Comply with AGPL-3.0 |
+| Closed-source commercial use or packaged sales | Commercial license required | AGPL-3.0 does not permit closed-source distribution |
+| SaaS or network service without source disclosure | Commercial license required | AGPL-3.0 requires source availability for network users |
+| Integration into proprietary software for redistribution | Commercial license required | Incompatible with AGPL-3.0 copyleft requirements |
+
+In short: personal and open-source use is free. For closed-source sales or SaaS operation without source disclosure, purchase a commercial license.
+
+### Commercial licensing
+
+To obtain a commercial license that is not subject to AGPL-3.0 requirements, contact:
+
+- QQ: `1615242125`
+- WeChat: `XKJ1615242125`
+
+See [LICENSE](LICENSE) for the full AGPL-3.0 text and [COMMERCIAL-LICENSE.md](COMMERCIAL-LICENSE.md) for the dual-license notice.

@@ -1,7 +1,7 @@
 import base64
 import camelot
 import re
-import fitz
+import pymupdf
 import os
 from typing import Union, List, Dict, Optional
 
@@ -149,7 +149,7 @@ class PDFProcessor:
             tables = []  # 使用空列表表示无法提取表格
 
         try:
-            doc = fitz.open(pdf_path)
+            doc = pymupdf.open(pdf_path)
         except Exception as e:
             tqdm.write(f"无法打开PDF文件: {str(e)}")
             return [f"无法处理文件 {os.path.basename(pdf_path)}: {str(e)}"]

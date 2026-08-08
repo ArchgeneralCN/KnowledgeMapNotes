@@ -5,7 +5,7 @@
 
 #### 下载包
 ```bash  
-  pip install tqdm camelot-py[cv] fitz PyMuPDF
+  pip install tqdm camelot-py[cv] PyMuPDF
 ```
 
 ## PDFProcessor工具使用
@@ -104,4 +104,3 @@ windows可能出现一下问题，但不影响使用；Linux不会出现。
 ```text
 PermissionError: [WinError 32] 另一个程序正在使用此文件，进程无法访问。: 'C:\\Users\\xxx\\AppData\\Local\\Temp\\xxx\\page-2.pdf'
 ```
-

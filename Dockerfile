@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1
 
+ARG BASE_REGISTRY=docker.m.daocloud.io/library
+
 # Build the Vue frontend.
-FROM node:18-alpine AS frontend-build
+FROM ${BASE_REGISTRY}/node:18-alpine AS frontend-build
 
 WORKDIR /build/frontend
 
@@ -13,7 +15,10 @@ RUN npm run build
 
 
 # Build a single production image in which FastAPI also serves the frontend.
-FROM python:3.12-slim AS production
+FROM ${BASE_REGISTRY}/python:3.12-slim AS production
+
+ARG PYPI_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG TORCH_FIND_LINKS=https://mirrors.aliyun.com/pytorch-wheels/cpu/
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -43,10 +48,15 @@ COPY backend/requirements.txt ./requirements.txt
 # Cache the Python dependencies and local models in layers that are not
 # invalidated when only application source files change.
 RUN python -m pip install --upgrade pip \
-    && python -m pip install modelscope -i https://pypi.tuna.tsinghua.edu.cn/simple \
-    && python -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple \
-    && modelscope download --model BAAI/bge-base-zh --local_dir /app/models/bge-base-zh \
-    && modelscope download --model BAAI/bge-reranker-base --local_dir /app/models/bge-reranker-base
+    && python -m pip install modelscope --index-url "${PYPI_INDEX}" \
+    && python -m pip install 'torch==2.6.0+cpu' --find-links "${TORCH_FIND_LINKS}" \
+    && python -m pip install -r requirements.txt --index-url "${PYPI_INDEX}" \
+    && modelscope download BAAI/bge-base-zh \
+        --local_dir /app/models/bge-base-zh \
+        --exclude '*.bin' '*.onnx' \
+    && modelscope download BAAI/bge-reranker-base \
+        --local_dir /app/models/bge-reranker-base \
+        --exclude '*.bin' '*.onnx'
 
 COPY backend/ ./
 COPY --from=frontend-build /build/frontend/dist /app/frontend/dist

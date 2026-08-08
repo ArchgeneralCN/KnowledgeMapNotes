@@ -1,25 +1,41 @@
-version: '3.8'
-
 services:
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      args:
+        BASE_REGISTRY: ${BASE_REGISTRY:-docker.m.daocloud.io/library}
+    env_file:
+      - ./backend/.env.docker
     ports:
       - "8000:8000"
     volumes:
       - ./backend:/app
       - model_cache:/app/models
     environment:
-      - ENVIRONMENT=production
+      ENVIRONMENT: production
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=5)
+      interval: 15s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        BASE_REGISTRY: ${BASE_REGISTRY:-docker.m.daocloud.io/library}
     ports:
       - "8080:8080"
     depends_on:
-      - backend
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
+      backend:
+        condition: service_healthy
 
 volumes:
   model_cache:

@@ -64,6 +64,7 @@ export default defineConfig({
           items: [
             { text: '本地部署', link: '/deployment/local' },
             { text: 'Docker 部署', link: '/deployment/docker' },
+            { text: '文档站安装与 Docker 部署', link: '/deployment/documentation-site' },
             { text: '生产环境与安全', link: '/deployment/production' }
           ]
         }

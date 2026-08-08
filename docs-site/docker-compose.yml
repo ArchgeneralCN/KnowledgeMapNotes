@@ -1,0 +1,15 @@
+services:
+  docs-site:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: knowledgemapnotes-docs:latest
+    ports:
+      - "${DOCS_PORT:-4173}:80"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

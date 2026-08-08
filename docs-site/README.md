@@ -71,6 +71,21 @@ npm run preview
 
 构建产物位于 `docs/.vitepress/dist`，可以部署到任意静态站点服务。
 
+## Docker 部署
+
+文档站提供独立的 `Dockerfile`、`docker-compose.yml` 和 Nginx 配置。完整安装、更新和验证步骤见 [文档站安装与 Docker 部署](docs/deployment/documentation-site.md)。
+
+```bash
+docker compose up -d --build
+```
+
+默认端口为 `4173`，可通过 `DOCS_PORT=8088` 修改。
+在仓库根目录也可以直接执行：
+
+```bash
+docker compose -f docs-site/docker-compose.yml up -d --build
+```
+
 部署时应发布整个 `docs/.vitepress/dist/` 目录，不能只上传首页文件，否则图谱、社区视图和本地 vis-network 资源会缺失。若部署在子路径下，请同步设置 VitePress 的 `base`，并确认首页、封面、四个图谱入口和社区详情页都能访问。
 
 ## 提交前检查

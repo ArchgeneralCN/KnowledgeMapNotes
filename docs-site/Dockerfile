@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1
 
-FROM node:20-alpine AS build
+# Use glibc for the build stage so Vite/Rollup native packages resolve
+# consistently across Docker builders and host architectures.
+FROM node:20-bookworm-slim AS build
 
 WORKDIR /site
 

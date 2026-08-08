@@ -160,6 +160,7 @@ STATUS_FOLDER = Path(os.getenv("STATUS_FOLDER", "processing_states"))
 GRAPH_HISTORY_FOLDER = Path(os.getenv("GRAPH_HISTORY_FOLDER", "graph_history"))
 MAX_TRANSFER_PACKAGE_SIZE = 100 * 1024 * 1024
 DEFAULT_EXAMPLE_FOLDER = Path(__file__).resolve().parent / "default_examples"
+DEFAULT_EXAMPLE_PACKAGE = DEFAULT_EXAMPLE_FOLDER / f"本软件使用说明{PACKAGE_SUFFIX}"
 try:
     CHECKPOINT_INTERVAL = max(1, int(os.getenv("CHECKPOINT_INTERVAL", "10")))
 except (TypeError, ValueError):
@@ -1557,24 +1558,24 @@ def default_example_exists(base_name: str) -> bool:
 
 
 def install_default_examples() -> None:
-    """Install bundled completed examples once, without invoking an AI model."""
+    """Install the bundled user guide once, without invoking an AI model."""
     if not parse_boolean(os.getenv("DEFAULT_EXAMPLES_ENABLED"), default=True):
         logger.info("已通过 DEFAULT_EXAMPLES_ENABLED 关闭默认示例")
         return
-    if not DEFAULT_EXAMPLE_FOLDER.is_dir():
+    if not DEFAULT_EXAMPLE_PACKAGE.is_file():
+        logger.warning("默认使用说明迁移包不存在: %s", DEFAULT_EXAMPLE_PACKAGE)
         return
 
-    for package_path in sorted(DEFAULT_EXAMPLE_FOLDER.glob(f"*{PACKAGE_SUFFIX}")):
-        base_name = package_path.name[:-len(PACKAGE_SUFFIX)]
-        try:
-            if default_example_exists(base_name):
-                logger.info("默认示例已存在，跳过导入: %s", base_name)
-                continue
-            result = import_file_transfer_package(package_path.read_bytes())
-            logger.info("默认示例安装完成: %s", result["filename"])
-        except Exception:
-            # A damaged optional example must not make the whole service unavailable.
-            logger.exception("默认示例安装失败: %s", package_path)
+    base_name = DEFAULT_EXAMPLE_PACKAGE.name[:-len(PACKAGE_SUFFIX)]
+    try:
+        if default_example_exists(base_name):
+            logger.info("默认使用说明已存在，跳过导入: %s", base_name)
+            return
+        result = import_file_transfer_package(DEFAULT_EXAMPLE_PACKAGE.read_bytes())
+        logger.info("默认使用说明安装完成: %s", result["filename"])
+    except Exception:
+        # A damaged optional guide must not make the whole service unavailable.
+        logger.exception("默认使用说明安装失败: %s", DEFAULT_EXAMPLE_PACKAGE)
 
 
 install_default_examples()

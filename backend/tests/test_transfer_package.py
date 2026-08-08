@@ -81,23 +81,34 @@ class TransferPackageTests(unittest.TestCase):
         self.assertEqual(manifest["files"]["graph_pages"], ["graph/三国.html"])
         self.assertIn("edges", manifest["state"]["current_G"])
 
-    def test_bundled_three_kingdoms_example_is_complete(self):
+    def test_bundled_user_guide_is_complete(self):
         package_path = (
             Path(__file__).resolve().parents[1]
             / "default_examples"
-            / "三国志.kmn.zip"
+            / "本软件使用说明.kmn.zip"
         )
         self.assertTrue(package_path.is_file())
 
         imported = read_transfer_package(package_path.read_bytes())
-        self.assertEqual(imported.base_name, "三国志")
-        self.assertEqual(imported.original_filename, "三国志.txt")
+        self.assertEqual(imported.base_name, "本软件使用说明")
+        self.assertEqual(imported.original_filename, "本软件使用说明.txt")
         self.assertEqual(imported.processing_status.get("status"), "completed")
         self.assertGreater(len(imported.state["Bolts"]), 0)
-        self.assertIn("三国志.html", imported.graph_pages)
+        self.assertIn("本软件使用说明.html", imported.graph_pages)
         graph = graph_from_node_link_data(imported.state["current_G"])
         self.assertGreater(graph.number_of_nodes(), 0)
         self.assertGreater(graph.number_of_edges(), 0)
+
+    def test_optional_packages_are_complete(self):
+        package_folder = Path(__file__).resolve().parents[1] / "kmnzips"
+        for package_name in ("三国志.kmn.zip", "改命记实录(道之光).kmn.zip"):
+            with self.subTest(package_name=package_name):
+                package_path = package_folder / package_name
+                self.assertTrue(package_path.is_file())
+                imported = read_transfer_package(package_path.read_bytes())
+                self.assertEqual(imported.processing_status.get("status"), "completed")
+                self.assertGreater(len(imported.state["Bolts"]), 0)
+                self.assertIn(f"{imported.base_name}.html", imported.graph_pages)
 
 
 if __name__ == "__main__":

@@ -101,7 +101,7 @@ def build_example(base_name: str, output_path: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("base_name", nargs="?", default="三国志")
+    parser.add_argument("base_name", nargs="?", default="本软件使用说明")
     parser.add_argument(
         "--output",
         type=Path,

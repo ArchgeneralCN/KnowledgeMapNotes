@@ -278,6 +278,10 @@ const documentContentRef = ref(null);
 let evidenceRequestId = 0;
 let documentLoadRequestId = 0;
 const contentViewMode = ref('preview');
+const previewZoom = ref(1);
+const PREVIEW_ZOOM_MIN = 0.7;
+const PREVIEW_ZOOM_MAX = 2;
+const PREVIEW_ZOOM_STEP = 0.1;
 const contentViewOptions = [
   { label: '预览', value: 'preview' },
   { label: '编辑', value: 'edit' },
@@ -318,6 +322,25 @@ const makeSourceHighlight = (result) => {
   if (!result || result.start < 0 || result.end <= result.start) return '';
   const content = fileContent.value;
   const blockText = content.slice(result.start, result.end);
+  const candidates = getEvidenceHighlightCandidates(result);
+  const highlightRanges = getTextHighlightRanges(blockText, candidates);
+  let highlightCursor = 0;
+  const highlightedBlock = highlightRanges.map(range => {
+    const html = escapeDocumentHtml(blockText.slice(highlightCursor, range.start))
+      + `<mark class="${range.className}">${escapeDocumentHtml(blockText.slice(range.start, range.end))}</mark>`;
+    highlightCursor = range.end;
+    return html;
+  }).join('') + escapeDocumentHtml(blockText.slice(highlightCursor));
+  const html = `${escapeDocumentHtml(content.slice(0, result.start))}`
+    + `<mark class="source-highlight">${highlightedBlock}</mark>`
+    + `${escapeDocumentHtml(content.slice(result.end))}`;
+  return DOMPurify.sanitize(html, {
+    ALLOWED_TAGS: ['mark'],
+    ALLOWED_ATTR: ['class']
+  });
+};
+
+const getEvidenceHighlightCandidates = (result) => {
   const highlightTerms = result.highlightTerms || {
     entityTerms: result.entityTerms || [],
     relationTerms: result.relationTerms || [],
@@ -349,6 +372,10 @@ const makeSourceHighlight = (result) => {
     .filter((candidate, index, all) => all.findIndex(item =>
       item.term === candidate.term && item.className === candidate.className
     ) === index);
+  return candidates;
+};
+
+const getTextHighlightRanges = (text, candidates) => {
   const highlightRanges = [];
   const addUncoveredRanges = (start, end, className) => {
     let uncovered = [[start, end]];
@@ -367,8 +394,8 @@ const makeSourceHighlight = (result) => {
   };
   candidates.forEach(({ term, className }) => {
     let offset = 0;
-    while (offset < blockText.length) {
-      const start = blockText.indexOf(term, offset);
+    while (offset < text.length) {
+      const start = text.indexOf(term, offset);
       if (start < 0) break;
       const end = start + term.length;
       addUncoveredRanges(start, end, className);
@@ -376,20 +403,111 @@ const makeSourceHighlight = (result) => {
     }
   });
   highlightRanges.sort((left, right) => left.start - right.start);
-  let highlightCursor = 0;
-  const highlightedBlock = highlightRanges.map(range => {
-    const html = escapeDocumentHtml(blockText.slice(highlightCursor, range.start))
-      + `<mark class="${range.className}">${escapeDocumentHtml(blockText.slice(range.start, range.end))}</mark>`;
-    highlightCursor = range.end;
-    return html;
-  }).join('') + escapeDocumentHtml(blockText.slice(highlightCursor));
-  const html = `${escapeDocumentHtml(content.slice(0, result.start))}`
-    + `<mark class="source-highlight">${highlightedBlock}</mark>`
-    + `${escapeDocumentHtml(content.slice(result.end))}`;
-  return DOMPurify.sanitize(html, {
-    ALLOWED_TAGS: ['mark'],
-    ALLOWED_ATTR: ['class']
+  return highlightRanges;
+};
+
+const compactTextWithOffsets = (value) => {
+  const characters = [];
+  const offsets = [];
+  const ends = [];
+  let offset = 0;
+  Array.from(String(value || '')).forEach(character => {
+    const characterOffset = offset;
+    offset += character.length;
+    if (/\s/u.test(character)) return;
+    characters.push(character.toLocaleLowerCase('zh-CN'));
+    offsets.push(characterOffset);
+    ends.push(offset);
   });
+  return { text: characters.join(''), offsets, ends };
+};
+
+const appendHighlightedPreviewText = (parent, text, candidates) => {
+  const ranges = getTextHighlightRanges(text, candidates);
+  let cursor = 0;
+  ranges.forEach(range => {
+    if (range.start > cursor) parent.appendChild(document.createTextNode(text.slice(cursor, range.start)));
+    const mark = document.createElement('mark');
+    mark.className = range.className;
+    mark.textContent = text.slice(range.start, range.end);
+    parent.appendChild(mark);
+    cursor = range.end;
+  });
+  if (cursor < text.length) parent.appendChild(document.createTextNode(text.slice(cursor)));
+};
+
+const makePreviewHighlight = (result) => {
+  if (!result?.text || typeof document === 'undefined') return renderedFileContent.value;
+  const container = document.createElement('div');
+  container.innerHTML = renderedFileContent.value;
+  const blockContainer = document.createElement('div');
+  blockContainer.innerHTML = DOMPurify.sanitize(markdownRenderer.render(result.text));
+  const fullText = container.textContent || '';
+  const blockText = blockContainer.textContent || '';
+  const compactFull = compactTextWithOffsets(fullText);
+  const compactBlock = compactTextWithOffsets(blockText).text;
+  const candidates = getEvidenceHighlightCandidates(result);
+  let compactStart = compactBlock ? compactFull.text.indexOf(compactBlock) : -1;
+  let compactLength = compactBlock.length;
+  if (compactStart < 0) {
+    const fallbackTerm = candidates
+      .map(candidate => compactTextWithOffsets(candidate.term).text)
+      .filter(Boolean)
+      .sort((left, right) => right.length - left.length)
+      .find(term => compactFull.text.includes(term));
+    compactStart = fallbackTerm ? compactFull.text.indexOf(fallbackTerm) : -1;
+    compactLength = fallbackTerm?.length || 0;
+  }
+  if (compactStart < 0 || !compactLength) return renderedFileContent.value;
+  const sourceStart = compactFull.offsets[compactStart];
+  const sourceEnd = compactFull.ends[compactStart + compactLength - 1];
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  const textNodes = [];
+  let textOffset = 0;
+  let node;
+  while ((node = walker.nextNode())) {
+    const start = textOffset;
+    const end = start + node.nodeValue.length;
+    if (end > sourceStart && start < sourceEnd) textNodes.push({ node, start, end });
+    textOffset = end;
+  }
+  textNodes.forEach(({ node: textNode, start, end }) => {
+    const localStart = Math.max(0, sourceStart - start);
+    const localEnd = Math.min(textNode.nodeValue.length, sourceEnd - start);
+    const fragment = document.createDocumentFragment();
+    if (localStart > 0) fragment.appendChild(document.createTextNode(textNode.nodeValue.slice(0, localStart)));
+    const sourceMark = document.createElement('mark');
+    sourceMark.className = 'source-highlight';
+    appendHighlightedPreviewText(
+      sourceMark,
+      textNode.nodeValue.slice(localStart, localEnd),
+      candidates
+    );
+    fragment.appendChild(sourceMark);
+    if (localEnd < textNode.nodeValue.length) {
+      fragment.appendChild(document.createTextNode(textNode.nodeValue.slice(localEnd)));
+    }
+    textNode.parentNode?.replaceChild(fragment, textNode);
+  });
+  return DOMPurify.sanitize(container.innerHTML, {
+    ADD_TAGS: ['mark'],
+    ADD_ATTR: ['class']
+  });
+};
+
+const renderedPreviewContent = computed(() =>
+  activeEvidence.value ? makePreviewHighlight(activeEvidence.value) : renderedFileContent.value
+);
+
+const handlePreviewWheel = (event) => {
+  if (contentViewMode.value !== 'preview' || (!event.ctrlKey && !event.metaKey)) return;
+  event.preventDefault();
+  const direction = event.deltaY < 0 ? 1 : -1;
+  const nextZoom = previewZoom.value + direction * PREVIEW_ZOOM_STEP;
+  previewZoom.value = Math.min(
+    PREVIEW_ZOOM_MAX,
+    Math.max(PREVIEW_ZOOM_MIN, Number(nextZoom.toFixed(1)))
+  );
 };
 
 const updateEvidenceHighlightMode = (enabled) => {
@@ -404,7 +522,7 @@ const jumpToEvidence = (index) => {
   if (!evidenceResults.value.length) return;
   const normalizedIndex = (index + evidenceResults.value.length) % evidenceResults.value.length;
   activeEvidenceIndex.value = normalizedIndex;
-  contentViewMode.value = 'source';
+  contentViewMode.value = 'preview';
   sourceHighlightHtml.value = makeSourceHighlight(evidenceResults.value[normalizedIndex]);
   nextTick(() => {
     const highlight = documentContentRef.value?.querySelector('.source-highlight');
@@ -567,7 +685,7 @@ const handleKnowledgeGraphEvidence = async (event) => {
     sourceHighlightHtml.value = '';
     panelVisible.original = true;
     activeTab.value = 'original';
-    contentViewMode.value = 'source';
+    contentViewMode.value = 'preview';
     nextTick(() => {
       if (results.length) jumpToEvidence(0);
       else ElMessage.info('该节点或关系暂无可定位的出处文本块');
@@ -930,7 +1048,7 @@ const handleRagReferenceClick = (event) => {
   activeEvidenceIndex.value = 0;
   panelVisible.original = true;
   activeTab.value = 'original';
-  contentViewMode.value = 'source';
+  contentViewMode.value = 'preview';
   nextTick(() => {
     if (results.length) jumpToEvidence(0);
     else ElMessage.info('该引用暂无可定位的原文文本块');
@@ -1951,6 +2069,7 @@ const viewFileResult = async (file) => {
       evidenceResults.value = [];
       sourceHighlightHtml.value = '';
       activeEvidenceIndex.value = 0;
+      previewZoom.value = 1;
       if (window.innerWidth <= 820) {
         fileListExpand.value = false;
       }
@@ -2920,24 +3039,28 @@ onUnmounted(() => {
                   </div>
                   <div class="document-tools">
                     <div class="document-view-tools">
-                      <el-segmented
-                          v-model="contentViewMode"
-                          :options="contentViewOptions"
-                          size="small"
-                      />
-                      <el-tooltip
-                          :content="showAllEvidenceHighlights ? '显示文本块中的全部实体、关系和依据高亮' : '只显示当前查询对象，其他内容不特殊高亮'"
-                          placement="bottom"
-                      >
-                        <el-switch
-                            v-model="showAllEvidenceHighlights"
-                            inline-prompt
-                            active-text="全部"
-                            inactive-text="当前"
+                      <div class="document-mode-tools">
+                        <el-segmented
+                            v-model="contentViewMode"
+                            :options="contentViewOptions"
                             size="small"
-                            @change="updateEvidenceHighlightMode"
                         />
-                      </el-tooltip>
+                      </div>
+                      <div class="document-highlight-tools">
+                        <el-tooltip
+                            :content="showAllEvidenceHighlights ? '显示文本块中的全部实体、关系和依据高亮' : '只显示当前查询对象，其他内容不特殊高亮'"
+                            placement="bottom"
+                        >
+                          <el-switch
+                              v-model="showAllEvidenceHighlights"
+                              inline-prompt
+                              active-text="全部"
+                              inactive-text="当前"
+                              size="small"
+                              @change="updateEvidenceHighlightMode"
+                          />
+                        </el-tooltip>
+                      </div>
                     </div>
                     <div class="document-action-tools">
                       <el-tooltip content="复制内容" placement="bottom">
@@ -3014,8 +3137,11 @@ onUnmounted(() => {
                   <div v-else-if="fileContent" class="document-content">
                     <article
                         v-if="contentViewMode === 'preview'"
-                        class="markdown-body"
-                        v-html="renderedFileContent"
+                        ref="documentContentRef"
+                        class="markdown-body preview-markdown"
+                        :style="{ zoom: previewZoom }"
+                        v-html="renderedPreviewContent"
+                        @wheel="handlePreviewWheel"
                     ></article>
                     <div v-else-if="contentViewMode === 'edit'" class="rich-editor-shell">
                       <div class="rich-editor-toolbar" role="toolbar" aria-label="富文本编辑工具">
@@ -4093,9 +4219,27 @@ onUnmounted(() => {
                 }
 
                 .document-view-tools {
-                  flex: 0 1 286px;
-                  min-width: 286px;
-                  gap: 10px;
+                  flex: 0 1 310px;
+                  min-width: 310px;
+                  gap: 0;
+                }
+
+                .document-mode-tools,
+                .document-highlight-tools {
+                  display: flex;
+                  align-items: center;
+                  min-height: 28px;
+                }
+
+                .document-mode-tools {
+                  flex: 0 0 auto;
+                }
+
+                .document-highlight-tools {
+                  flex: 0 0 auto;
+                  margin-left: 14px;
+                  padding-left: 14px;
+                  border-left: 1px solid var(--el-border-color-lighter);
                 }
 
                 .document-action-tools {
@@ -4320,6 +4464,56 @@ onUnmounted(() => {
                     background: var(--km-highlight-block);
                     color: inherit;
 
+                  }
+
+                  :deep(.source-highlight .entity-highlight),
+                  :deep(.source-highlight .relation-highlight) {
+                    padding: 1px 3px;
+                    border-radius: 3px;
+                    background: var(--km-highlight-entity);
+                    color: var(--km-highlight-text);
+                    font-weight: 700;
+                    box-shadow: 0 0 0 1px color-mix(in srgb, var(--km-highlight-border) 60%, transparent);
+                  }
+
+                  :deep(.source-highlight .selected-entity-highlight),
+                  :deep(.source-highlight .selected-relation-highlight) {
+                    padding: 1px 3px;
+                    border-radius: 3px;
+                    background: var(--km-highlight-selected);
+                    color: var(--km-highlight-text);
+                    font-weight: 700;
+                    box-shadow: 0 0 0 1px color-mix(in srgb, var(--km-highlight-border) 75%, transparent);
+                  }
+
+                  :deep(.source-highlight .selected-evidence-highlight) {
+                    padding: 1px 2px;
+                    border-radius: 2px;
+                    background: color-mix(in srgb, var(--km-highlight-evidence) 82%, var(--km-highlight-selected));
+                    color: var(--km-highlight-text);
+                    font-weight: 700;
+                    box-shadow: 0 0 0 1px color-mix(in srgb, var(--km-highlight-border) 70%, transparent);
+                  }
+
+                  :deep(.source-highlight .evidence-highlight) {
+                    padding: 1px 2px;
+                    border-radius: 2px;
+                    background: var(--km-highlight-evidence);
+                    color: var(--km-highlight-text);
+                    box-shadow: 0 0 0 1px color-mix(in srgb, var(--km-highlight-border) 55%, transparent);
+                  }
+                }
+
+                .preview-markdown {
+                  transform-origin: top left;
+
+                  :deep(.source-highlight) {
+                    padding: 1px 2px;
+                    border-radius: 2px;
+                    background: var(--km-highlight-block);
+                    color: inherit;
+                    box-decoration-break: clone;
+                    -webkit-box-decoration-break: clone;
                   }
 
                   :deep(.source-highlight .entity-highlight),
@@ -5498,8 +5692,13 @@ onUnmounted(() => {
                 }
 
                 :deep(.document-view-tools .el-segmented) {
-                  width: min(216px, calc(100% - 56px));
+                  width: min(216px, calc(100% - 80px));
                   min-width: 0;
+                }
+
+                .document-highlight-tools {
+                  margin-left: 10px;
+                  padding-left: 10px;
                 }
 
                 :deep(.document-view-tools .el-segmented__item) {

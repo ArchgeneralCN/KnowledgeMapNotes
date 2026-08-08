@@ -1,11 +1,15 @@
 # 默认示例
 
-此目录中的 `.kmn.zip` 是已完成处理的知识图谱迁移包。后端首次启动时会自动导入这些文件，但检测到任何同名用户数据后会跳过，不执行覆盖。
+后端首次启动时只会自动导入本目录中的 `本软件使用说明.kmn.zip`。这是一个已完成处理的知识图谱迁移包，用户无需先配置 AI，即可通过它了解文档预览、图谱浏览、社区详情、原文定位和 RAG 界面。
 
-`三国志.kmn.zip` 由本地已完成的“三国志”生成，不包含个人 RAG 对话。更新本地处理结果后，可在项目根目录重新构建：
+检测到任何同名用户数据时，后端会跳过导入，不执行覆盖。即使本目录误放了其他 `.kmn.zip` 文件，后端也不会自动导入。
+
+更新本地已完成处理的“本软件使用说明”后，可在项目根目录重新构建：
 
 ```bash
-python backend/scripts/build_default_example.py 三国志
+python backend/scripts/build_default_example.py 本软件使用说明
 ```
 
-部署者可在 `backend/.env` 中设置 `DEFAULT_EXAMPLES_ENABLED=False`，关闭默认示例导入。
+“三国志”和“改命记实录(道之光)”等可选已完成文件位于 `backend/kmnzips`，由用户在上传页自行导入，不会随服务启动自动安装。
+
+部署者可在 `backend/.env` 中设置 `DEFAULT_EXAMPLES_ENABLED=False`，关闭默认使用说明导入。

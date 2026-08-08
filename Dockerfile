@@ -61,6 +61,10 @@ RUN python -m pip install --upgrade pip \
 COPY backend/ ./
 COPY --from=frontend-build /build/frontend/dist /app/frontend/dist
 
+# Catch a truncated archive, text/LFS pointer, or invalid manifest before
+# publishing the image.
+RUN python -c "from pathlib import Path; from transfer_package import read_transfer_package; p=Path('default_examples/本软件使用说明.kmn.zip'); assert p.is_file(), f'Missing bundled default example: {p}'; read_transfer_package(p.read_bytes())"
+
 RUN mkdir -p \
     /app/backend/chroma_data \
     /app/backend/uploads \

@@ -28,6 +28,10 @@ RUN modelscope download BAAI/bge-reranker-base \
 # 复制应用代码
 COPY . .
 
+# Catch a truncated archive, text/LFS pointer, or invalid manifest before
+# publishing the image.
+RUN python -c "from pathlib import Path; from transfer_package import read_transfer_package; p=Path('default_examples/本软件使用说明.kmn.zip'); assert p.is_file(), f'Missing bundled default example: {p}'; read_transfer_package(p.read_bytes())"
+
 RUN mkdir -p /app/chroma_data /app/uploads /app/txt_files /app/results /app/processing_states /app/graph_history
 
 # 暴露端口

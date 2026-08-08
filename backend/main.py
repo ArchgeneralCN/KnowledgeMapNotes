@@ -5,6 +5,7 @@ import os
 import shutil
 import time
 import uuid
+import zipfile
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -1566,6 +1567,29 @@ def install_default_examples() -> None:
         logger.warning("默认使用说明迁移包不存在: %s", DEFAULT_EXAMPLE_PACKAGE)
         return
 
+    # Deployment tooling can accidentally leave a Git/LFS pointer or a
+    # truncated artifact in place of the bundled ZIP. Keep startup available
+    # and make that packaging problem obvious in the log.
+    try:
+        package_size = DEFAULT_EXAMPLE_PACKAGE.stat().st_size
+        if not zipfile.is_zipfile(DEFAULT_EXAMPLE_PACKAGE):
+            with DEFAULT_EXAMPLE_PACKAGE.open("rb") as package_file:
+                header = package_file.read(32)
+            logger.warning(
+                "默认使用说明迁移包不是有效 ZIP，已跳过导入: %s (大小=%d 字节, 文件头=%r)",
+                DEFAULT_EXAMPLE_PACKAGE,
+                package_size,
+                header,
+            )
+            return
+    except OSError:
+        logger.warning(
+            "无法读取默认使用说明迁移包，已跳过导入: %s",
+            DEFAULT_EXAMPLE_PACKAGE,
+            exc_info=True,
+        )
+        return
+
     base_name = DEFAULT_EXAMPLE_PACKAGE.name[:-len(PACKAGE_SUFFIX)]
     try:
         if default_example_exists(base_name):
@@ -1573,6 +1597,12 @@ def install_default_examples() -> None:
             return
         result = import_file_transfer_package(DEFAULT_EXAMPLE_PACKAGE.read_bytes())
         logger.info("默认使用说明安装完成: %s", result["filename"])
+    except ValueError as exc:
+        logger.warning(
+            "默认使用说明迁移包内容无效，已跳过导入: %s (%s)",
+            DEFAULT_EXAMPLE_PACKAGE,
+            exc,
+        )
     except Exception:
         # A damaged optional guide must not make the whole service unavailable.
         logger.exception("默认使用说明安装失败: %s", DEFAULT_EXAMPLE_PACKAGE)

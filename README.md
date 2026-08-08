@@ -71,6 +71,8 @@ https://github.com/user-attachments/assets/5e9e6ffd-4e18-4915-b3a4-85198eb8bb0f
 
 ## Documentation Site
 
+Read the documentation online at [archgeneralcn.github.io/KMN_docs_site](https://archgeneralcn.github.io/KMN_docs_site/).
+
 An independent VitePress documentation site is available in `docs-site/`. It covers setup, core workflows, deployment, security, environment variables, HTTP APIs, and troubleshooting, with local search, dark mode, and responsive navigation.
 
 ```bash

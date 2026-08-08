@@ -69,6 +69,8 @@ https://github.com/user-attachments/assets/5e9e6ffd-4e18-4915-b3a4-85198eb8bb0f
 
 ## ドキュメントサイト
 
+オンラインドキュメントは [archgeneralcn.github.io/KMN_docs_site](https://archgeneralcn.github.io/KMN_docs_site/) でご覧いただけます。
+
 `docs-site/` には独立した VitePress ドキュメントサイトがあります。クイックスタート、主要機能、デプロイ、安全性、環境変数、HTTP API、FAQ を収録し、ローカル検索、ダークモード、モバイルナビゲーションにも対応しています。
 
 ```bash

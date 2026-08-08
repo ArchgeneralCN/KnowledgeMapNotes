@@ -89,6 +89,8 @@ https://github.com/user-attachments/assets/5e9e6ffd-4e18-4915-b3a4-85198eb8bb0f
 
 ## 文档站
 
+在线文档请访问 [archgeneralcn.github.io/KMN_docs_site](https://archgeneralcn.github.io/KMN_docs_site/)。
+
 仓库在 `docs-site/` 中提供独立的 VitePress 应用文档站，包含快速开始、功能说明、部署、安全、环境变量、HTTP API 和常见问题，并支持本地搜索、深色模式及移动端导航。
 
 ```bash

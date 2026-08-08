@@ -69,6 +69,8 @@ https://github.com/user-attachments/assets/5e9e6ffd-4e18-4915-b3a4-85198eb8bb0f
 
 ## 문서 사이트
 
+온라인 문서는 [archgeneralcn.github.io/KMN_docs_site](https://archgeneralcn.github.io/KMN_docs_site/)에서 확인할 수 있습니다.
+
 `docs-site/`에는 독립적인 VitePress 애플리케이션 문서 사이트가 있습니다. 빠른 시작, 핵심 기능, 배포, 보안, 환경 변수, HTTP API 및 FAQ를 제공하며 로컬 검색, 다크 모드와 모바일 탐색을 지원합니다.
 
 ```bash

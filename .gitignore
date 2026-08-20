@@ -10,6 +10,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 pyproject.toml
+models/
 
 # Local secrets and logs
 .env
@@ -18,11 +19,14 @@ backend/.env
 
 # Backend runtime data
 backend/chroma_data/
+backend/graph_history/
+backend/images/
 backend/results/
 backend/txt_files/
 backend/uploads/
 backend/processing_states/
 backend/validation/result*.html
+backend/validation/*.csv
 
 # Frontend dependencies and build output
 frontend/node_modules/

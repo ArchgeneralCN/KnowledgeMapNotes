@@ -7,14 +7,36 @@ from unittest.mock import patch
 
 import networkx as nx
 
-from KnowledgeGraphManager.KGManager import KgManager
+from KnowledgeGraphManager.KGManager import KgManager, calculate_community_min_size
 from KnowledgeGraphManager.graph_interactions import (
+    GRAPH_EDITOR_VERSION,
     build_graph_interaction_html,
+    finalize_generated_graph_html,
     prepare_legacy_graph_html,
 )
 
 
 class GraphInteractionTests(unittest.TestCase):
+    def test_automatic_community_min_size_uses_nodes_edges_and_percentage(self):
+        self.assertEqual(
+            calculate_community_min_size(100, 200, "auto", 20, 5),
+            6,
+        )
+        self.assertEqual(
+            calculate_community_min_size(100, 4950, "auto", 20, 5),
+            10,
+        )
+        self.assertEqual(
+            calculate_community_min_size(100, 4950, "auto", 20, 100),
+            100,
+        )
+
+    def test_custom_community_min_size_ignores_graph_density(self):
+        self.assertEqual(
+            calculate_community_min_size(100, 4950, "custom", 1, 5),
+            1,
+        )
+
     def test_legacy_graph_resources_are_inlined_for_delivery(self):
         legacy = """
         <html><head>
@@ -57,18 +79,77 @@ class GraphInteractionTests(unittest.TestCase):
         self.assertIn("network.on('oncontext'", html)
         self.assertIn("graphContainer.addEventListener('contextmenu'", html)
         self.assertIn("右键节点、关系或空白处", html)
-        self.assertIn("const GRAPH_EDITOR_VERSION = 3;", html)
+        self.assertIn(f"const GRAPH_EDITOR_VERSION = {GRAPH_EDITOR_VERSION};", html)
+        self.assertIn("let immersive = true;", html)
+        self.assertIn("function applyDefaultImmersivePanels", html)
+        self.assertIn("panel.classList.contains('community-directory')", html)
+        self.assertIn("panel.dataset.immersiveCollapsed = '1'", html)
+        self.assertIn("applyDefaultImmersivePanels();", html)
+        self.assertIn("immersive ? '退出沉浸'", html)
+        self.assertIn("function setupResponsivePanels", html)
+        self.assertIn("const compactWidth = 720;", html)
+        self.assertIn("panel.dataset.autoCollapsed = '1'", html)
+        self.assertIn("const apply = (forceExpand = false)", html)
+        self.assertIn("panel.dataset.immersiveCollapsed === '1'", html)
+        self.assertIn("applyResponsivePanels(leavingImmersive)", html)
+        self.assertIn("knowledge-graph-exit-immersive", html)
         self.assertIn("knowledge-graph-evidence", html)
         self.assertIn("出处文本块（只读）", html)
         self.assertIn("function showNodeDialog", html)
         self.assertIn("原文查找", html)
         self.assertIn("knowledge-graph-highlight", html)
+        self.assertIn("knowledge-graph-highlighted", html)
+        self.assertIn("event.data.locateSource !== false", html)
+        self.assertIn("edgeHint.source", html)
+        self.assertIn("String(item.label || '') === relation", html)
+
+    def test_generated_graph_is_finalized_before_delivery(self):
+        generated = """
+        <html><head>
+          <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.2/dist/vis-network.min.css">
+          <script src="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.2/dist/vis-network.min.js"></script>
+          <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0/dist/css/bootstrap.min.css" rel="stylesheet">
+        </head><body></body></html>
+        """
+
+        finalized = finalize_generated_graph_html(generated)
+
+        self.assertIn('/api/graph-assets/vis-network.css', finalized)
+        self.assertIn('/api/graph-assets/vis-network.min.js', finalized)
+        self.assertNotIn("cdnjs.cloudflare.com", finalized)
+        self.assertNotIn("cdn.jsdelivr.net/npm/bootstrap", finalized)
+
+        exported = prepare_legacy_graph_html(finalized)
+        self.assertNotIn('/api/graph-assets/', exported)
+        self.assertIn('<script>', exported)
+        self.assertIn('<style>', exported)
 
     def test_old_graph_page_receives_editor_on_delivery(self):
         legacy = "<html><body><div id=\"mynetwork\"></div><script>var network = {};</script></body></html>"
         prepared = prepare_legacy_graph_html(legacy, graph_name="旧图谱")
         self.assertIn('const GRAPH_NAME = "旧图谱";', prepared)
         self.assertIn("graph-context-menu", prepared)
+
+    def test_older_editor_is_upgraded_for_current_interactions(self):
+        old_editor = build_graph_interaction_html(3, 2, "旧图谱").replace(
+            f"const GRAPH_EDITOR_VERSION = {GRAPH_EDITOR_VERSION};",
+            "const GRAPH_EDITOR_VERSION = 3;",
+        )
+        legacy = (
+            '<html><body><div id="mynetwork"></div>'
+            '<script>var network = {};</script>'
+            f'{old_editor}</body></html>'
+        )
+
+        prepared = prepare_legacy_graph_html(legacy, graph_name="旧图谱")
+
+        self.assertNotIn("const GRAPH_EDITOR_VERSION = 3;", prepared)
+        self.assertEqual(
+            prepared.count(f"const GRAPH_EDITOR_VERSION = {GRAPH_EDITOR_VERSION};"),
+            1,
+        )
+        self.assertIn("let immersive = true;", prepared)
+        self.assertEqual(prepared.count("function setupResponsivePanels"), 1)
 
     def test_rendered_graph_exposes_entity_type_metadata(self):
         manager = KgManager(agent=None, splitter=None, embedding_model=None, store=None)
@@ -80,9 +161,8 @@ class GraphInteractionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as output_dir:
             manager.绘制知识图谱("三国", 聚类算法=None, 输出目录=output_dir)
             result = Path(output_dir, "三国", "三国.html").read_text(encoding="utf-8")
-            delivered_result = prepare_legacy_graph_html(
-                result,
-                asset_base_url="/api/graph-assets",
+            highlight_index = json.loads(
+                Path(output_dir, "三国", "三国.highlights.json").read_text(encoding="utf-8")
             )
 
         match = re.search(r"nodes = new vis\.DataSet\((\[.*?\])\);", result)
@@ -92,10 +172,110 @@ class GraphInteractionTests(unittest.TestCase):
         self.assertEqual(rendered_types, {"人物", "政权"})
         self.assertIn("id=\"entityTypeOptions\"", result)
         self.assertIn('const GRAPH_NAME = "三国";', result)
-        self.assertIn("/api/graph-assets/vis-network.min.js", delivered_result)
-        self.assertNotIn("cdnjs.cloudflare.com", delivered_result)
-        self.assertNotIn("cdn.jsdelivr.net/npm/bootstrap", delivered_result)
+        self.assertIn("/api/graph-assets/vis-network.min.js", result)
+        self.assertNotIn("cdnjs.cloudflare.com", result)
+        self.assertNotIn("cdn.jsdelivr.net/npm/bootstrap", result)
         self.assertIn('"iterations": 120', result)
+        self.assertEqual(highlight_index["schema"], 2)
+
+    def test_static_highlight_index_reuses_only_unchanged_blocks(self):
+        manager = KgManager(agent=None, splitter=None, embedding_model=None, store=None)
+        manager.Bolts = [
+            ("block-1", "刘备建立了蜀汉。"),
+            ("block-2", "诸葛亮辅佐刘备。"),
+        ]
+        manager.kg_triplet = [
+            {"bid": "block-1", "entities": [
+                {"name": "刘备", "type": "人物"},
+                {"name": "蜀汉", "type": "政权"},
+                {"name": "诸葛亮", "type": "人物"},
+            ], "relation": [{
+                "source": "刘备", "target": "蜀汉", "relation": "建立",
+                "context": "刘备建立了蜀汉", "weight": 0.9,
+            }]},
+            {"bid": "block-2", "relation": [{
+                "source": "诸葛亮", "target": "刘备", "relation": "辅佐",
+                "context": "诸葛亮辅佐刘备", "weight": 0.8,
+            }]},
+        ]
+        manager.三元组转有向图nx(manager.kg_triplet)
+
+        with tempfile.TemporaryDirectory() as output_dir:
+            manager.绘制知识图谱("增量高亮", 聚类算法=None, 输出目录=output_dir)
+            index_path = Path(output_dir, "增量高亮", "增量高亮.highlights.json")
+            first = json.loads(index_path.read_text(encoding="utf-8"))
+
+            manager.kg_triplet[1]["relation"][0]["relation"] = "共同辅佐"
+            manager.绘制知识图谱(
+                "增量高亮",
+                聚类算法=None,
+                输出目录=output_dir,
+                高亮索引缓存=first,
+            )
+            second = json.loads(index_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(first["stats"], {
+            "total_blocks": 2, "reused_blocks": 0, "rebuilt_blocks": 2,
+        })
+        self.assertEqual(second["stats"], {
+            "total_blocks": 2, "reused_blocks": 1, "rebuilt_blocks": 1,
+        })
+        self.assertEqual(
+            second["blocks"][0]["highlight_terms"]["entityTerms"],
+            ["刘备", "蜀汉"],
+        )
+        self.assertNotEqual(first["blocks"][1]["signature"], second["blocks"][1]["signature"])
+
+    def test_static_highlight_index_includes_entities_without_relations(self):
+        manager = KgManager(agent=None, splitter=None, embedding_model=None, store=None)
+        manager.Bolts = [("block-1", "我看到刘备建立了蜀汉，诸葛亮在场。")]
+        manager.kg_triplet = [{
+            "bid": "block-1",
+            "entities": [
+                {"name": "刘备", "type": "人物"},
+                {"name": "蜀汉", "type": "政权"},
+                {"name": "诸葛亮", "type": "人物"},
+                {"name": "我", "type": "人物"},
+            ],
+            "relation": [{
+                "source": "刘备", "target": "蜀汉", "relation": "建立",
+                "context": "刘备建立了蜀汉", "weight": 0.9,
+            }],
+        }]
+
+        with tempfile.TemporaryDirectory() as output_dir:
+            index_path = Path(output_dir, "standalone.highlights.json")
+            payload = manager._写入静态高亮索引(index_path)
+
+        self.assertEqual(
+            payload["blocks"][0]["highlight_terms"]["entityTerms"],
+            ["刘备", "蜀汉", "诸葛亮"],
+        )
+
+    def test_static_highlight_index_migrates_legacy_entities_from_global_mapping(self):
+        manager = KgManager(agent=None, splitter=None, embedding_model=None, store=None)
+        manager.Bolts = [("block-1", "刘备建立了蜀汉，诸葛亮在场。")]
+        manager.kg_triplet = [{
+            "bid": "block-1",
+            "relation": [{
+                "source": "刘备", "target": "蜀汉", "relation": "建立",
+                "context": "刘备建立了蜀汉", "weight": 0.9,
+            }],
+        }]
+        manager.bidirectional_mapping = manager._build_bidirectional_mapping([
+            ("刘备", "人物"), ("蜀汉", "政权"), ("诸葛亮", "人物"),
+        ])
+
+        with tempfile.TemporaryDirectory() as output_dir:
+            payload = manager._写入静态高亮索引(
+                Path(output_dir, "legacy.highlights.json")
+            )
+
+        self.assertEqual(payload["schema"], 2)
+        self.assertEqual(
+            payload["blocks"][0]["highlight_terms"]["entityTerms"],
+            ["刘备", "蜀汉", "诸葛亮"],
+        )
 
     def test_paginated_overview_contains_searchable_community_directory(self):
         manager = KgManager(agent=None, splitter=None, embedding_model=None, store=None)
@@ -108,13 +288,19 @@ class GraphInteractionTests(unittest.TestCase):
                 for target in nodes:
                     if source != target:
                         graph.add_edge(source, target, label="关联", title="测试", weight=0.8)
+        graph.add_node("不足分页阈值的孤立社区", group="概念", title="概念")
         manager.current_G = graph
 
         with tempfile.TemporaryDirectory() as output_dir:
-            manager.绘制知识图谱("社区测试", 输出目录=output_dir)
+            manager.绘制知识图谱(
+                "社区测试",
+                输出目录=output_dir,
+                社区最小规模=20,
+            )
             graph_dir = Path(output_dir, "社区测试")
             overview = Path(graph_dir, "社区测试.html").read_text(encoding="utf-8")
             community_pages = list(graph_dir.glob("社区测试_community_*.html"))
+            community = community_pages[0].read_text(encoding="utf-8")
 
         self.assertIn('id="communitySearchInput"', overview)
         self.assertIn('id="communityTypeFilter"', overview)
@@ -122,8 +308,18 @@ class GraphInteractionTests(unittest.TestCase):
         self.assertIn('class="community-source-link"', overview)
         self.assertIn('data-community-name="社区', overview)
         self.assertIn('data-member-names="', overview)
+        self.assertRegex(overview, r'class="community-item-name">社区\d+ · ')
+        self.assertIn('/api/graph-assets/vis-network.min.js', overview)
+        self.assertIn(f"const GRAPH_EDITOR_VERSION = {GRAPH_EDITOR_VERSION};", overview)
+        self.assertNotIn("cdnjs.cloudflare.com", overview)
         self.assertNotIn('"entityType": "社区"', overview)
+        match = re.search(r"nodes = new vis\.DataSet\((\[.*?\])\);", overview)
+        self.assertIsNotNone(match)
+        self.assertEqual(len(json.loads(match.group(1))), 2)
+        self.assertNotIn("不足分页阈值的孤立社区", overview)
         self.assertGreaterEqual(len(community_pages), 2)
+        self.assertIn('/api/graph-assets/vis-network.min.js', community)
+        self.assertIn("function setupResponsivePanels", community)
 
     def test_community_min_size_one_exposes_small_communities(self):
         manager = KgManager(agent=None, splitter=None, embedding_model=None, store=None)
@@ -140,6 +336,61 @@ class GraphInteractionTests(unittest.TestCase):
             community_pages = list(graph_dir.glob("小社区_community_*.html"))
 
         self.assertEqual(len(community_pages), 3)
+
+    def test_sigma_only_render_writes_every_sigma_page(self):
+        manager = KgManager(agent=None, splitter=None, embedding_model=None, store=None)
+        manager.current_G = nx.DiGraph()
+        manager.current_G.add_edges_from([
+            ("甲一", "甲二"),
+            ("乙一", "乙二"),
+            ("甲二", "乙二"),
+        ])
+        for node in manager.current_G.nodes:
+            manager.current_G.nodes[node].update(group="概念", title="概念")
+        partition = {"甲一": 10, "甲二": 10, "乙一": 20, "乙二": 20}
+
+        with tempfile.TemporaryDirectory() as output_dir, patch(
+            "community.best_partition", return_value=partition
+        ):
+            manager.绘制知识图谱(
+                "Sigma重绘",
+                输出目录=output_dir,
+                社区最小规模=1,
+                绘图引擎="sigma",
+            )
+            graph_dir = Path(output_dir, "Sigma重绘")
+            pages = {path.name for path in graph_dir.glob("*.html")}
+
+        self.assertEqual(pages, {
+            "Sigma重绘.sigma.html",
+            "Sigma重绘.sigma-communities.html",
+            "Sigma重绘.sigma-community-10.html",
+            "Sigma重绘.sigma-community-20.html",
+        })
+
+    def test_pyvis_only_render_does_not_write_sigma_pages(self):
+        manager = KgManager(agent=None, splitter=None, embedding_model=None, store=None)
+        manager.current_G = nx.DiGraph()
+        manager.current_G.add_edge("甲", "乙", label="关联")
+
+        with tempfile.TemporaryDirectory() as output_dir:
+            manager.绘制知识图谱(
+                "PyVis重绘",
+                聚类算法=None,
+                输出目录=output_dir,
+                绘图引擎="pyvis",
+            )
+            graph_dir = Path(output_dir, "PyVis重绘")
+            pages = {path.name for path in graph_dir.glob("*.html")}
+
+        self.assertEqual(pages, {"PyVis重绘.html"})
+
+    def test_render_rejects_unknown_engine(self):
+        manager = KgManager(agent=None, splitter=None, embedding_model=None, store=None)
+        manager.current_G = nx.DiGraph()
+
+        with self.assertRaisesRegex(ValueError, "不支持的图谱绘制引擎"):
+            manager.绘制知识图谱("非法引擎", 绘图引擎="canvas")
 
     def test_community_overview_uses_representative_entities_for_nodes_edges_and_sources(self):
         manager = KgManager(agent=None, splitter=None, embedding_model=None, store=None)

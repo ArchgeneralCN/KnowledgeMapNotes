@@ -1,0 +1,14 @@
+.git
+.venv
+models
+frontend/node_modules
+frontend/dist
+backend/.env
+backend/__pycache__
+backend/chroma_data
+backend/graph_history
+backend/images
+backend/results
+backend/txt_files
+backend/uploads
+backend/processing_states

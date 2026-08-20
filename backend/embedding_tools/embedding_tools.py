@@ -3,6 +3,7 @@ from sentence_transformers import SentenceTransformer
 from chromadb import Documents, EmbeddingFunction, Embeddings
 import numpy as np
 import logging
+import os
 
 # 配置日志记录
 logger = logging.getLogger(__name__)
@@ -32,7 +33,10 @@ class BgeZhEmbeddingFunction(EmbeddingFunction):
         """初始化模型并配置编码参数"""
         try:
             # 模型初始化
-            self.model = SentenceTransformer(model_path, **kwargs)
+            local_model = os.path.isdir(os.path.expanduser(model_path))
+            if local_model:
+                kwargs.setdefault("local_files_only", True)
+            self.model = SentenceTransformer(os.path.expanduser(model_path), **kwargs)
 
             # 设备自动检测
             self.device = "cuda" if self.model.device.type == "cuda" else "cpu"
@@ -96,5 +100,4 @@ class BgeZhEmbeddingFunction(EmbeddingFunction):
         except Exception as e:
             logger.error(f"编码过程中发生错误: {str(e)}")
             raise RuntimeError("嵌入生成失败") from e
-
 

@@ -154,6 +154,81 @@ class OpenaiAgentJsonParsingTests(unittest.TestCase):
 
         self.assertEqual(completions.kwargs["max_tokens"], 6000)
 
+    def test_structured_request_can_consume_streaming_json(self):
+        class Completions:
+            def create(self, **kwargs):
+                self.kwargs = kwargs
+                return iter([
+                    SimpleNamespace(choices=[SimpleNamespace(
+                        delta=SimpleNamespace(content='{"entities": ['),
+                        finish_reason=None,
+                    )]),
+                    SimpleNamespace(choices=[SimpleNamespace(
+                        delta=SimpleNamespace(content='] }'),
+                        finish_reason="stop",
+                    )]),
+                ])
+
+        completions = Completions()
+        client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
+        agent = OpenaiAgent(client, model_name="stream-model", stream=True)
+        agent.temp_sleep = lambda *_args: None
+
+        parsed = agent.agent_safe_generate_response(
+            "prompt", "input", repeat=1, expected_key="entities"
+        )
+
+        self.assertEqual(parsed, {"entities": []})
+        self.assertTrue(completions.kwargs["stream"])
+
+    def test_streaming_request_preserves_truncation_detection(self):
+        class Completions:
+            def create(self, **_kwargs):
+                return iter([
+                    'data: {"choices":[{"delta":{"content":"{\\"relations\\":["},"finish_reason":null}]}',
+                    'data: {"choices":[{"delta":{"content":"{"},"finish_reason":"length"}]}',
+                ])
+
+        client = SimpleNamespace(chat=SimpleNamespace(completions=Completions()))
+        agent = OpenaiAgent(client, model_name="stream-model", stream=True)
+        agent.temp_sleep = lambda *_args: None
+
+        with self.assertRaises(AIResponseTruncatedError):
+            agent.agent_request("prompt", "input")
+
+    def test_fallback_has_independent_stream_setting(self):
+        class PrimaryCompletions:
+            def create(self, **_kwargs):
+                raise ConnectionError("primary unavailable")
+
+        class FallbackCompletions:
+            def create(self, **kwargs):
+                self.kwargs = kwargs
+                return iter([
+                    SimpleNamespace(choices=[SimpleNamespace(
+                        delta=SimpleNamespace(content='{"entities": []}'),
+                        finish_reason="stop",
+                    )]),
+                ])
+
+        fallback_completions = FallbackCompletions()
+        primary = SimpleNamespace(chat=SimpleNamespace(completions=PrimaryCompletions()))
+        fallback = SimpleNamespace(chat=SimpleNamespace(completions=fallback_completions))
+        agent = OpenaiAgent(
+            primary,
+            model_name="primary",
+            stream=False,
+            fallback_client=fallback,
+            fallback_model_name="fallback",
+            fallback_stream=True,
+        )
+        agent.temp_sleep = lambda *_args: None
+
+        parsed = agent.agent_safe_generate_response("prompt", "input", repeat=1)
+
+        self.assertEqual(parsed, {"entities": []})
+        self.assertTrue(fallback_completions.kwargs["stream"])
+
     def test_safe_generate_can_propagate_invalid_json(self):
         agent = object.__new__(OpenaiAgent)
         agent.agent_request = lambda _prompt, _input: '{"relations": [{"source":'

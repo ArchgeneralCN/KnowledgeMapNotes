@@ -14,9 +14,8 @@ from concurrent.futures import ThreadPoolExecutor
 import json
 from dotenv import load_dotenv
 import os
-os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
-
 load_dotenv(dotenv_path="../.env")
+os.environ.setdefault('HF_ENDPOINT', 'https://huggingface.co')
 
 # 配置日志
 logging.basicConfig(

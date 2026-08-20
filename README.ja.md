@@ -11,7 +11,7 @@
 
 KnowledgeMapNotes は、知識グラフを基盤とするノートシステムです。TXT、Markdown、PDF 文書を知識グラフへ変換し、ベクトル検索、エンティティ間の関係、グラフコミュニティ情報を組み合わせた HybridRAG 質疑応答を提供します。
 
-Vue 3 の Web インターフェースと FastAPI バックエンドで構成され、文書の差分更新、チャンク単位の処理進捗、大規模グラフのコミュニティページ分割、ストリーミング応答、実行時の AI 設定に対応しています。
+React の Web インターフェースと FastAPI バックエンドで構成され、文書の差分更新、三段階の処理進捗、大規模グラフのコミュニティページ分割、ストリーミング応答、実行時の AI 設定に対応しています。
 
 ## デモ
 
@@ -63,7 +63,7 @@ https://github.com/user-attachments/assets/5e9e6ffd-4e18-4915-b3a4-85198eb8bb0f
 | --- | --- |
 | バックエンド | FastAPI、OpenAI Python SDK、ChromaDB、SentenceTransformers |
 | グラフ | NetworkX、PyVis、Louvain Community Detection |
-| フロントエンド | Vue 3、Vite、Element Plus、Axios |
+| フロントエンド | React 19、Vite、React Router、Lucide、Axios |
 | コンテンツ描画 | Markdown-It、DOMPurify |
 | デプロイ | FastAPI 静的配信、Docker Compose、Nginx |
 
@@ -71,15 +71,7 @@ https://github.com/user-attachments/assets/5e9e6ffd-4e18-4915-b3a4-85198eb8bb0f
 
 オンラインドキュメントは [archgeneralcn.github.io/KMN_docs_site](https://archgeneralcn.github.io/KMN_docs_site/) でご覧いただけます。
 
-`docs-site/` には独立した VitePress ドキュメントサイトがあります。クイックスタート、主要機能、デプロイ、安全性、環境変数、HTTP API、FAQ を収録し、ローカル検索、ダークモード、モバイルナビゲーションにも対応しています。
-
-```bash
-cd docs-site
-npm install
-npm run dev
-```
-
-既定の URL は http://localhost:5173 です。本番用ビルドは `npm run build` を使用し、静的ファイルは `docs-site/docs/.vitepress/dist` に出力されます。
+このリポジトリの保守ドキュメントはルートの各言語 README と `docs/` にあります。オンラインドキュメントサイトは別途公開されており、そのソースはこのリポジトリには含まれません。
 
 ## クイックスタート
 
@@ -396,7 +388,7 @@ KnowledgeMapNotes/
 │   ├── results/<document>/        # グラフページ
 │   └── chroma_data/               # ChromaDB 永続データ
 └── frontend/
-    ├── src/                       # Vue 3 ソース
+    ├── src/                       # React ソース
     ├── dist/                      # npm run build の出力
     ├── vite.config.js             # 開発サーバーと API プロキシ
     └── nginx.conf                 # Docker 用 Nginx 設定

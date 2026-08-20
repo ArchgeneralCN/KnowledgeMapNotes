@@ -26,6 +26,7 @@ class CheckpointKgManager(KgManager):
         )
         self.fail_relation_for = fail_relation_for
         self.relation_inputs = []
+        self.processing_workers = 1
 
     def 实体提取(self, input_parameter):
         return [(f"实体-{input_parameter}", "测试")]
@@ -65,6 +66,9 @@ class KnowledgeGraphCheckpointTests(unittest.TestCase):
 
         self.assertEqual([item[0] for item in manager.Bolts], ["block-1"])
         self.assertEqual([item["bid"] for item in manager.kg_triplet], ["block-1"])
+        self.assertEqual(manager.kg_triplet[0]["entities"], [
+            {"name": "实体-第一块", "type": "测试"},
+        ])
         self.assertEqual([(item[0], item[1]) for item in checkpoints], [(1, 3)])
 
     def test_resume_processes_only_remaining_blocks(self):
@@ -94,6 +98,26 @@ class KnowledgeGraphCheckpointTests(unittest.TestCase):
             "block-1", "block-2", "block-3"
         ])
         self.assertEqual(progress, [(2, 3), (3, 3)])
+
+    def test_stage_progress_runs_entity_pass_before_relationship_pass(self):
+        manager = CheckpointKgManager(self.blocks)
+        stages = []
+
+        manager.知识图谱的构建(
+            self.blocks,
+            stage_progress_callback=lambda stage, completed, total, _seconds: stages.append(
+                (stage, completed, total)
+            ),
+        )
+
+        self.assertEqual(stages, [
+            ("entity_extraction", 1, 3),
+            ("entity_extraction", 2, 3),
+            ("entity_extraction", 3, 3),
+            ("relationship_extraction", 1, 3),
+            ("relationship_extraction", 2, 3),
+            ("relationship_extraction", 3, 3),
+        ])
 
     def test_pause_stops_after_current_checkpoint(self):
         manager = CheckpointKgManager(self.blocks)

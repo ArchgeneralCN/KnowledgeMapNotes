@@ -11,7 +11,7 @@
 
 KnowledgeMapNotes 是一个基于知识图谱的笔记系统。它可以将 TXT、Markdown 和 PDF 文档转换为知识图谱，并结合向量检索、实体关系和图谱社区信息完成 HybridRAG 问答。
 
-项目提供 Vue 3 Web 界面和 FastAPI 后端，支持文档增量更新、分块处理进度、大规模图谱社区分页、流式问答及运行时 AI 配置。
+项目提供 React Web 界面和 FastAPI 后端，支持文档增量更新、三阶段处理进度、大规模图谱社区分页、流式问答及运行时 AI 配置。
 
 ## 项目展示
 
@@ -23,12 +23,13 @@ https://github.com/user-attachments/assets/5e9e6ffd-4e18-4915-b3a4-85198eb8bb0f
 - **知识图谱构建**：自动完成实体抽取、关系抽取、关系权重计算和知识融合。
 - **可控处理提示词**：提供通用、故事和自定义笔记类型；自定义类型可分别编辑实体抽取、关系抽取和知识融合提示词。
 - **可靠的文件更新**：已完成的同名文件可增量更新；上次处理失败的同名文件会清理残留数据并重新完整处理。
-- **处理进度跟踪**：展示上传、处理、增量更新、完成和失败状态，以及分块数、百分比、单块耗时和预计剩余时间。
+- **处理进度跟踪**：分别展示实体抽取、关系抽取和知识融合的完成量、阶段速度与预计剩余时间，并汇总总进度和总预计时间。
 - **HybridRAG 问答**：结合向量召回、实体识别和图谱社区信息，支持普通响应、SSE 流式响应、停止生成和历史上下文。
-- **图谱可视化**：支持节点与关系检索、高亮、边权重展示，以及大图谱的 Louvain 社区总览和详情页。
+- **图谱可视化**：支持节点与关系检索、高亮和边权重展示；Sigma.js 保留全量图并提供 Louvain 社区总览与详情页，PyVis 提供可编辑的社区分页视图。
 - **清晰图谱布局**：知识图谱和重新绘制均使用静态 ForceAtlas2；孤立节点排除力导向计算并放置在关系图外围，关系节点使用坐标放大与碰撞消解避免重叠。
 - **知识库管理**：支持文件搜索与筛选、原文预览与下载、主要实体查看、删除文件和单独清理 RAG 历史。
 - **原文证据定位**：点击节点或关系可跳转到出处文本块；文本块、当前查询实体/关系、其他实体/关系及关系说明使用分层高亮，并支持“全部 / 当前”高亮范围设置。
+- **超长文档窗口渲染**：超长原文按块懒加载，首次只绘制少量内容；全篇荧光笔只处理可见区域附近的滑动窗口，滚动到底等待下一块时显示加载状态。
 - **文档工作流**：文档默认预览，支持源码查看和富文本编辑；编辑草稿、文档历史、文档还原、文件列表增量更新和图谱自动重绘形成完整闭环。
 - **联合历史回溯**：图谱历史同时保存文档快照，图谱还原会同步还原文档；文档操作、增量更新和图谱操作均可同步回溯。
 - **主题与可读性**：默认、暗色、蓝色和护眼四种主题使用统一柔和色阶，文本、面板、代码块、草稿提示和证据高亮会随主题协调变化。
@@ -42,6 +43,11 @@ https://github.com/user-attachments/assets/5e9e6ffd-4e18-4915-b3a4-85198eb8bb0f
 
 ## 最近更新
 
+- 后端入口按 AI 运行时、文档版本、处理进度和 RAG 会话拆分为独立服务模块，API 路径保持兼容。
+- 文件设置支持自定义最大/最小分块 Token；任务会保存本次参数，暂停、刷新或重启后的恢复处理继续沿用。
+- 文件处理进度改为实体抽取、关系抽取、知识融合三个阶段，并根据真实单项耗时估算阶段与总体速度和剩余时间。
+- AI 主模型与备用模型均可独立启用流式 API；社区详情阈值支持固定节点数或按图规模百分比自动计算。
+- 超长原文使用滚动懒加载与可见区域高亮窗口，拖动面板时暂停昂贵渲染并显示交互遮罩。
 - 后端允许在未配置文本模型时启动，模型相关操作会提示先在前端完成设置。
 - AI 设置新增连通性测试，测试请求不会保存配置，并返回请求延迟。
 - 新增自定义笔记类型和三阶段处理提示词编辑器，默认载入通用提示词。
@@ -61,7 +67,6 @@ https://github.com/user-attachments/assets/5e9e6ffd-4e18-4915-b3a4-85198eb8bb0f
 ## 待更新计划
 
 - 新增跨笔记宏观联系图，用于寻找公共知识和主题关联。
-- 完善文档内容懒加载、预加载骨架和超长文档分段渲染。
 - 自动获取模型名
 - 软件系统用户使用数据保留,类似学习时间等指标和图表表现
 - 增加网络搜索文档再送入系统进行处理(类似豆包)
@@ -71,10 +76,7 @@ https://github.com/user-attachments/assets/5e9e6ffd-4e18-4915-b3a4-85198eb8bb0f
 - 完成文件图谱市场,帮助用户们相互寻找发布文档图谱导入包
 - 问答ai需新增skill等llm常用的工具
 - 当本地知识图谱无法回答时，按需联网补充相关知识。
-- 优化文本分块和向量/三元组融合策略。
-- 增加笔记事实检查、复习试卷和讲解视频生成能力。
 - 完善隐私数据脱敏与还原流程。
-- 多端应用
 - 完善多模态模型使用
 
 ## 技术栈
@@ -83,7 +85,7 @@ https://github.com/user-attachments/assets/5e9e6ffd-4e18-4915-b3a4-85198eb8bb0f
 | --- | --- |
 | 后端 | FastAPI、OpenAI Python SDK、ChromaDB、SentenceTransformers |
 | 图谱 | NetworkX、PyVis、Louvain Community Detection |
-| 前端 | Vue 3、Vite、Element Plus、Axios |
+| 前端 | React 19、Vite、React Router、Lucide、Axios |
 | 内容渲染 | Markdown-It、DOMPurify |
 | 部署 | FastAPI 静态托管、Docker Compose、Nginx |
 
@@ -91,15 +93,7 @@ https://github.com/user-attachments/assets/5e9e6ffd-4e18-4915-b3a4-85198eb8bb0f
 
 在线文档请访问 [archgeneralcn.github.io/KMN_docs_site](https://archgeneralcn.github.io/KMN_docs_site/)。
 
-仓库在 `docs-site/` 中提供独立的 VitePress 应用文档站，包含快速开始、功能说明、部署、安全、环境变量、HTTP API 和常见问题，并支持本地搜索、深色模式及移动端导航。
-
-```bash
-cd docs-site
-npm install
-npm run dev
-```
-
-默认访问 http://localhost:5173。生产构建使用 `npm run build`，静态产物位于 `docs-site/docs/.vitepress/dist`。
+本仓库内的维护文档位于根目录多语言 README 和 `docs/`。在线文档站单独发布，其源码不包含在当前仓库中。
 
 ## 快速开始
 
@@ -110,7 +104,7 @@ npm run dev
 - 文本模型 API，使用图谱构建和 RAG 功能时需要，后端启动时可暂不配置
 - CUDA GPU，可选；CPU 环境请使用 `DEVICE=cpu`
 
-首次启动会加载嵌入和重排模型，需要一定的磁盘空间。在线加载 Hugging Face 模型时还需要网络连接。
+首次启动会通过 ModelScope 下载嵌入和重排模型，需要网络连接和一定的磁盘空间。后续启动直接使用项目 `models/` 目录中的本地模型。
 
 首次部署只会自动导入 `backend/default_examples/本软件使用说明.kmn.zip`，不会调用文本 AI，也不会覆盖任何同名数据。用户可在上传页自行导入 `backend/kmnzips` 中的“三国志”或“改命记实录(道之光)”已完成迁移包；这些可选文件不会自动导入。需要空白实例时，可在 `backend/.env` 中设置 `DEFAULT_EXAMPLES_ENABLED=False`。
 
@@ -121,7 +115,33 @@ git clone https://github.com/Xikcn/KnowledgeMapNotes.git
 cd KnowledgeMapNotes
 ```
 
-### 2. 创建后端配置
+### 2. 一键启动（推荐）
+
+Windows 双击 `start.bat`，或在终端执行：
+
+```bat
+start.bat
+```
+
+Linux 和 macOS 执行：
+
+```bash
+./start.sh
+```
+
+也可在三个平台上统一使用：
+
+```bash
+python start.py
+```
+
+启动器会自动创建 `.venv`、安装后端依赖、通过 ModelScope 将模型下载到 `models/`、将模型的本地绝对路径写入 `backend/.env`，然后构建前端并启动完整应用。它不会覆盖 `.env` 中的 API Key 或其他配置。
+
+首次启动完成后，以终端中的 `[start] KnowledgeMapNotes is starting at ...` 为准访问。默认地址是 http://127.0.0.1:8000；如果 `8000` 已被占用，启动器会自动尝试 `8001`、`8002` 等后续端口，并打印最终地址。
+
+以后每次仍通过同一脚本启动；未变更的依赖、模型和前端构建会自动跳过。按 `Ctrl+C` 停止服务。更完整的首次部署、端口配置、目录说明和故障排查见 [本地一键部署指南](docs/本地部署.md)。
+
+### 3. 创建后端配置（可选）
 
 ```bash
 cp backend/.env.example backend/.env
@@ -131,7 +151,7 @@ cp backend/.env.example backend/.env
 
 文本模型配置可以暂时留空，后端仍能启动。启动后进入 Web 界面的“设置 -> AI 模型设置”，填写 Base URL、API Key 和模型名称，然后先执行“测试连接”，成功后再保存。
 
-一个适合 CPU 和在线模型加载的配置示例：
+一个适合 CPU 和本地模型加载的配置示例：
 
 ```dotenv
 # 提示词版本：v1 较快；v2 效果更好但处理时间更长
@@ -143,6 +163,7 @@ API_KEY=
 MODEL_NAME=
 TEMPERATURE=0
 ENABLE_THINKING=False
+AI_STREAM=False
 AI_MAX_OUTPUT_TOKENS=8192
 AI_MAX_OUTPUT_PARAMETER=max_tokens
 RELATION_TEXT_BATCH_CHARS=2000
@@ -152,6 +173,7 @@ FALLBACK_ENABLED=False
 FALLBACK_BASE_URL=
 FALLBACK_API_KEY=
 FALLBACK_MODEL_NAME=
+FALLBACK_STREAM=False
 DEFAULT_EXAMPLES_ENABLED=True
 
 # PDF 图片内容识别，可选
@@ -160,16 +182,23 @@ VL_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 VL_MODEL=qwen-vl-max-latest
 
 # 嵌入与重排模型
-IS_USE_LOCAL=False
+IS_USE_LOCAL=True
 EMBEDDINGS=BAAI/bge-base-zh
-EMBEDDINGS_PATH=/absolute/path/to/bge-base-zh
-RERANK_MODEL=BAAI/bge-reranker-base
+EMBEDDINGS_PATH=../models/bge-base-zh
+RERANK_MODEL=../models/bge-reranker-base
 DEVICE=cpu
 
 # 文本分割器
 SIMPLE=[txt,pdf]
 SEMANTIC=[]
 CHARACTER=[md]
+KG_CHUNK_MAX_TOKENS=1024
+KG_CHUNK_MIN_TOKENS=384
+
+# 社区详情页阈值
+GRAPH_COMMUNITY_MIN_SIZE_MODE=custom
+GRAPH_COMMUNITY_MIN_SIZE=20
+GRAPH_COMMUNITY_AUTO_PERCENT=5
 
 # 运行数据目录，相对于 backend/
 CHROMADB_PATH=./chroma_data
@@ -178,7 +207,9 @@ TXT_FOLDER=txt_files
 RESULT_FOLDER=results
 ```
 
-`SIMPLE`、`SEMANTIC` 和 `CHARACTER` 接收逗号分隔的扩展名，可以写成 `[txt,pdf]` 或 `txt,pdf`。同一个扩展名应只配置在一种分割器中；未匹配到的扩展名会回退到默认分割器。
+`SIMPLE`、`SEMANTIC` 和 `CHARACTER` 接收逗号分隔的扩展名，可以写成 `[txt,pdf]` 或 `txt,pdf`。同一个扩展名应只配置在一种分割器中；未匹配到的扩展名会回退到默认分割器。`KG_CHUNK_MAX_TOKENS` 和 `KG_CHUNK_MIN_TOKENS` 是默认值，也可在 Web 设置中为下一次上传单独指定。较小分块通常能减少长文本实体漏抽，但会增加 API 请求次数。
+
+`AI_STREAM` 和 `FALLBACK_STREAM` 分别控制主模型、备用模型在实体抽取、关系抽取和知识融合中的流式响应，可在 Web 设置中运行时覆盖。`GRAPH_COMMUNITY_MIN_SIZE_MODE=auto` 时，详情页最小社区规模按图的节点数、平均度数和 `GRAPH_COMMUNITY_AUTO_PERCENT` 计算。
 
 使用本地嵌入模型时，将 `IS_USE_LOCAL=True`，并让 `EMBEDDINGS_PATH` 指向模型目录。当前 PDF 处理器使用 `qwen-vl-max-latest`；`VL_MODEL` 暂时作为预留配置，修改它不会切换视觉模型。
 
@@ -186,13 +217,13 @@ RESULT_FOLDER=results
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `HOST` | `0.0.0.0` | 后端监听地址 |
-| `PORT` | `8000` | 后端监听端口 |
+| `HOST` | `127.0.0.1` | 本地启动器的监听地址；局域网访问可设为 `0.0.0.0` |
+| `PORT` | `8000` | 首选端口；一键启动时如被占用会自动递增 |
 | `FRONTEND_DIST` | `<项目目录>/frontend/dist` | 前端构建产物目录，建议使用绝对路径覆盖 |
 | `RAG_WORKER_COUNT` | `4` | RAG 线程池大小 |
 | `CORS_ALLOW_ORIGINS` | `*` | 允许的来源，多个来源用逗号分隔 |
 
-### 3. 安装后端依赖
+### 4. 手动安装后端依赖
 
 使用标准 `venv`：
 
@@ -216,7 +247,16 @@ Windows PowerShell 激活命令为：
 .venv\Scripts\Activate.ps1
 ```
 
-### 4. 选择运行方式
+手动部署时，在项目根目录下载与自动启动器相同的模型：
+
+```bash
+modelscope download BAAI/bge-base-zh --local_dir models/bge-base-zh --exclude "*.bin" "*.onnx"
+modelscope download BAAI/bge-reranker-base --local_dir models/bge-reranker-base --exclude "*.bin" "*.onnx"
+```
+
+`backend/.env.example` 已默认指向这两个本地目录。
+
+### 5. 手动选择运行方式
 
 #### 方式一：后端托管打包前端
 
@@ -407,6 +447,11 @@ RERANK_MODEL=/app/models/bge-reranker-base
 | `entityPrompt` | 自定义类型时可选 | 实体抽取提示词，留空时使用通用模板 |
 | `relationshipPrompt` | 自定义类型时可选 | 关系抽取提示词，留空时使用通用模板 |
 | `fusionPrompt` | 自定义类型时可选 | 知识融合提示词，留空时使用通用模板 |
+| `chunkMaxTokens` | 否 | 本次处理每块最大 Token，范围 128-32768 |
+| `chunkMinTokens` | 否 | 本次处理最小断句 Token，必须小于最大值 |
+| `communityMinSizeMode` | 否 | `custom` 固定值或 `auto` 自动计算 |
+| `communityMinSize` | 否 | 固定模式下社区详情最小节点数 |
+| `communityAutoPercent` | 否 | 自动模式使用的比例，范围 1-100 |
 
 HybridRAG 请求示例：
 
@@ -429,6 +474,7 @@ HybridRAG 请求示例：
 KnowledgeMapNotes/
 ├── backend/
 │   ├── main.py                    # FastAPI 应用入口
+│   ├── services/                  # AI、文档、进度与 RAG 服务边界
 │   ├── KnowledgeGraphManager/     # 图谱构建、融合与可视化
 │   ├── LLM/                       # 大模型调用与 RAG 输出处理
 │   ├── OmniStore/                 # ChromaDB 和知识库存储
@@ -439,15 +485,19 @@ KnowledgeMapNotes/
 │   ├── uploads/                   # 上传的原始文件
 │   ├── txt_files/                 # 转换后的文本文件
 │   ├── results/<文档名>/          # 图谱主页和社区详情页
+│   ├── processing_states/         # 处理状态、阶段进度与恢复元数据
+│   ├── graph_history/             # 图谱和文档联合版本历史
 │   └── chroma_data/               # ChromaDB 持久化数据
 └── frontend/
-    ├── src/                       # Vue 3 应用源码
+    ├── src/                       # React 应用源码
     ├── dist/                      # npm run build 生成的前端产物
     ├── vite.config.js             # 开发服务器与 API 代理
     └── nginx.conf                 # Docker 前端反向代理
 ```
 
-`uploads`、`txt_files`、`results` 和 `chroma_data` 是一组关联的运行时数据。迁移、恢复或备份知识库时，应保持这些目录一致。
+`uploads`、`txt_files`、`results`、`processing_states`、`graph_history` 和 `chroma_data` 是一组关联的运行时数据。刷新网页不会删除后端任务或已持久化进度；重新打开页面后会从状态接口恢复显示。后端进程中断时，任务会在下次启动后标记为可恢复。迁移、恢复或备份知识库时，应保持这些目录一致，不能把它们当作构建缓存清理。
+
+后端模块职责和维护约定见 [`docs/backend-architecture.md`](docs/backend-architecture.md)。
 
 ## 抖音聊天 JSON 转 TXT
 
@@ -513,9 +563,9 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 
 ### 为什么大图谱会打开多个页面？
 
-当 Louvain 发现多个社区，且至少一个社区达到分页阈值时，系统会生成跨社区总览页和较大社区的详情页。这是大规模图谱的默认渲染策略。默认只为节点数不少于 20 的社区生成详情页；更小的社区仍然存在于总览图中，但不会出现在详情列表。
+当 Louvain 发现多个社区，且至少一个社区达到分页阈值时，系统会生成跨社区总览页和较大社区的详情页。Sigma.js 的入口仍保留包含全部节点的全量图，并可在图内切换到社区总览和社区详情；PyVis 继续使用社区总览作为分页入口。默认只为节点数不少于 20 的社区生成详情页；更小的社区仍然存在于总览图中，但不会出现在详情列表。
 
-如需查看所有社区，在 `backend/.env` 中设置 `GRAPH_COMMUNITY_MIN_SIZE=1`，然后重新生成该文件的图谱。设置为更大的数值可以减少页面数量。
+社区详情页阈值可在“设置 → 图谱构建”中选择“自定义”或“自动计算”。自定义值设为 `1` 会生成并列出所有社区；自动模式按 `ceil((总节点数 + 平均度数) × 比例)` 计算最小节点数，并限制在 `1` 到总节点数之间。修改后重新绘制图谱即可应用。
 
 ### 修改 `.env` 后没有生效
 

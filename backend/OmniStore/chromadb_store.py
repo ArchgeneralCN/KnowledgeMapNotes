@@ -36,10 +36,19 @@ class StoreTool:
 
 
         model_name = os.getenv("RERANK_MODEL")
-        rerank_model = AutoModelForSequenceClassification.from_pretrained(model_name)
+        if not model_name:
+            raise RuntimeError("RERANK_MODEL is required to load the reranker")
+        model_path = os.path.expanduser(model_name)
+        local_model = os.path.isdir(model_path)
+        rerank_kwargs = {"local_files_only": True} if local_model else {}
+        rerank_model = AutoModelForSequenceClassification.from_pretrained(
+            model_path, **rerank_kwargs
+        )
         rerank_model.to(device)
         rerank_model.eval()
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_path, **rerank_kwargs
+        )
         self.rerank_model = rerank_model
 
 
@@ -101,7 +110,10 @@ class StoreTool:
             }),
             "current_G": json.dumps(graph_data),
             "Bolts": json.dumps(kg_manager.Bolts),
-            "original_file_type": kg_manager.original_file_type  # 存储原始文件名
+            "original_file_type": kg_manager.original_file_type,  # 存储原始文件名
+            "community_min_size_mode": getattr(kg_manager, "community_min_size_mode", "custom"),
+            "community_min_size": int(getattr(kg_manager, "community_min_size", 20)),
+            "community_auto_percent": float(getattr(kg_manager, "community_auto_percent", 5)),
         }
 
         # 使用文件名作为ID，存入集合
@@ -132,7 +144,10 @@ class StoreTool:
             },
             "current_G": graph_from_node_link_data(json.loads(metadata["current_G"])),
             "Bolts": json.loads(metadata["Bolts"]),
-            "original_file_type": metadata.get("original_file_type", filename)  # 使用原始文件名
+            "original_file_type": metadata.get("original_file_type", filename),  # 使用原始文件名
+            "community_min_size_mode": metadata.get("community_min_size_mode"),
+            "community_min_size": metadata.get("community_min_size"),
+            "community_auto_percent": metadata.get("community_auto_percent"),
         }
 
     def delete_states(self, filenames: list):

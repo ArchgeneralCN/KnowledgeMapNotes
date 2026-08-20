@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 import re
 import itertools
@@ -13,7 +14,11 @@ import networkx as nx
 import concurrent.futures
 import logging
 from urllib.parse import quote
-from KnowledgeGraphManager.graph_interactions import build_graph_interaction_html
+from KnowledgeGraphManager.graph_interactions import (
+    build_graph_interaction_html,
+    finalize_generated_graph_html,
+)
+from KnowledgeGraphManager.sigma_static import write_sigma_graph_pages
 from LLM.Openai_Agent import AIResponseFormatError, AIResponseTruncatedError
 
 load_dotenv(dotenv_path="./.env")
@@ -28,10 +33,62 @@ def _positive_int_env(name, default):
         return default
     return value if value > 0 else default
 
+
+def _positive_float_env(name, default):
+    try:
+        value = float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def normalize_community_pagination_settings(mode=None, min_size=None, auto_percent=None):
+    """Validate custom or graph-size-based community pagination settings."""
+    resolved_mode = str(
+        mode or os.getenv("GRAPH_COMMUNITY_MIN_SIZE_MODE", "custom")
+    ).strip().lower()
+    if resolved_mode not in {"custom", "auto"}:
+        raise ValueError("社区最小规模模式必须是 custom 或 auto")
+    if min_size is None:
+        resolved_min_size = _positive_int_env("GRAPH_COMMUNITY_MIN_SIZE", 20)
+    else:
+        resolved_min_size = int(min_size)
+    if not 1 <= resolved_min_size <= 1_000_000:
+        raise ValueError("社区最小节点数必须在 1 到 1000000 之间")
+    if auto_percent is None:
+        resolved_percent = _positive_float_env("GRAPH_COMMUNITY_AUTO_PERCENT", 5)
+    else:
+        resolved_percent = float(auto_percent)
+    if not 0.1 <= resolved_percent <= 100:
+        raise ValueError("社区自动计算比例必须在 0.1% 到 100% 之间")
+    return resolved_mode, resolved_min_size, resolved_percent
+
+
+def calculate_community_min_size(node_count, edge_count, mode, min_size, auto_percent):
+    """Resolve a node threshold, gently increasing it for denser graphs."""
+    mode, min_size, auto_percent = normalize_community_pagination_settings(
+        mode,
+        min_size,
+        auto_percent,
+    )
+    nodes = max(0, int(node_count or 0))
+    edges = max(0, int(edge_count or 0))
+    if mode == "custom" or nodes == 0:
+        return min_size
+    average_degree = (2.0 * edges) / nodes
+    graph_scale = nodes + average_degree
+    return max(1, min(nodes, math.ceil(graph_scale * auto_percent / 100.0)))
+
 PROCESSING_PROMPT_FILES = {
     "entity_extraction": "entity_extraction2.txt",
     "relationship_extraction": "relationship_extraction2.txt",
     "knowledge_fusion": "knowledge_fusion.txt",
+}
+
+HIGHLIGHT_ENTITY_STOP_TERMS = {
+    "我", "你", "您", "他", "她", "它", "我们", "你们", "您们",
+    "他们", "她们", "它们", "自己", "大家", "有人", "某人", "对方",
+    "i", "you", "he", "she", "it", "we", "they",
 }
 
 
@@ -86,6 +143,29 @@ class KgManager:
         self.knowledge_fusion_enabled = os.getenv(
             "KG_FUSION_ENABLED", "True"
         ).strip().lower() in {"true", "1", "yes", "on", "enabled"}
+        (
+            self.community_min_size_mode,
+            self.community_min_size,
+            self.community_auto_percent,
+        ) = normalize_community_pagination_settings()
+
+    def configure_community_pagination(self, mode=None, min_size=None, auto_percent=None):
+        settings = normalize_community_pagination_settings(mode, min_size, auto_percent)
+        (
+            self.community_min_size_mode,
+            self.community_min_size,
+            self.community_auto_percent,
+        ) = settings
+        return settings
+
+    def resolve_community_min_size(self, node_count=None, edge_count=None):
+        return calculate_community_min_size(
+            self.current_G.number_of_nodes() if node_count is None else node_count,
+            self.current_G.number_of_edges() if edge_count is None else edge_count,
+            self.community_min_size_mode,
+            self.community_min_size,
+            self.community_auto_percent,
+        )
 
     def configure_processing_prompts(self, note_type="general", custom_prompts=None):
         """Use per-file custom prompts while falling back to the general templates."""
@@ -112,6 +192,11 @@ class KgManager:
             self.current_G = default_data['current_G']
             self.Bolts = default_data['Bolts']
             self.original_file_type = default_data.get('original_file_type', '.txt')
+            self.configure_community_pagination(
+                default_data.get("community_min_size_mode"),
+                default_data.get("community_min_size"),
+                default_data.get("community_auto_percent"),
+            )
         else:
             return None
 
@@ -174,7 +259,10 @@ class KgManager:
         names = []
         seen = set()
         for entity in entities or []:
-            name = entity[0] if isinstance(entity, (list, tuple)) and entity else entity
+            if isinstance(entity, dict):
+                name = entity.get("name") or entity.get("entity")
+            else:
+                name = entity[0] if isinstance(entity, (list, tuple)) and entity else entity
             if not isinstance(name, str):
                 continue
             name = name.strip()
@@ -182,6 +270,29 @@ class KgManager:
                 names.append(name)
                 seen.add(name)
         return names
+
+    @staticmethod
+    def _serialise_block_entities(entities):
+        """Persist the complete per-block extraction in a stable JSON shape."""
+        records = []
+        seen = set()
+        for entity in entities or []:
+            if isinstance(entity, dict):
+                name = entity.get("name") or entity.get("entity")
+                entity_type = entity.get("type") or entity.get("label") or "未知标签"
+            elif isinstance(entity, (list, tuple)) and entity:
+                name = entity[0]
+                entity_type = entity[1] if len(entity) > 1 else "未知标签"
+            else:
+                name = entity
+                entity_type = "未知标签"
+            name = str(name or "").strip()
+            entity_type = str(entity_type or "未知标签").strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            records.append({"name": name, "type": entity_type})
+        return records
 
     @staticmethod
     def _split_long_relation_segment(segment, max_chars):
@@ -397,9 +508,11 @@ class KgManager:
         return self._deduplicate_relations(all_relations)
 
 
-    def 知识融合(self,relations):
+    def 知识融合(self, relations, progress_callback=None, pause_callback=None):
         if not self.knowledge_fusion_enabled:
             logger.info("已通过 KG_FUSION_ENABLED 关闭关系融合")
+            if progress_callback:
+                progress_callback(0, 0, 0)
             return relations
         # 创建一个字典来存储实体对及其关系
         entity_pairs = defaultdict(list)
@@ -418,7 +531,17 @@ class KgManager:
 
         # 处理需要融合的关系
         merged_relations = []
-        for entity_pair, rel_list in entity_pairs.items():
+        fusion_items = list(entity_pairs.items())
+        if not fusion_items:
+            if progress_callback:
+                progress_callback(0, 0, 0)
+            return []
+        if progress_callback:
+            progress_callback(0, len(fusion_items), 0)
+        for fusion_index, (entity_pair, rel_list) in enumerate(fusion_items, start=1):
+            if pause_callback and pause_callback():
+                raise ProcessingPaused("用户已暂停文件处理")
+            item_started_at = time.monotonic()
             if len(rel_list) > 1:  # 只处理有多个关系的实体对
                 logger.debug("关系融合实体对: %s, 关系数: %d", entity_pair, len(rel_list))
                 # 构建输入文本
@@ -472,6 +595,14 @@ class KgManager:
                     'bid': rel_list[0]['bid'],
                     'relation': [rel_list[0]['relation']]  # 保持列表格式一致
                 })
+            if progress_callback:
+                progress_callback(
+                    fusion_index,
+                    len(fusion_items),
+                    time.monotonic() - item_started_at,
+                )
+            if pause_callback and pause_callback():
+                raise ProcessingPaused("用户已暂停文件处理")
 
         # 确保返回的关系格式正确
         formatted_relations = []
@@ -509,6 +640,7 @@ class KgManager:
         self,
         text=None,
         progress_callback=None,
+        stage_progress_callback=None,
         checkpoint_callback=None,
         append=False,
         completed_offset=0,
@@ -545,14 +677,13 @@ class KgManager:
             self.kg_triplet = kg_triplet
             return kg_triplet
 
-        def process_block(block):
-            entity_label = self.实体提取(block[1])
-            entity = [item[0] for item in entity_label]
-            return entity_label, self.关系提取(block[1], entity)
-
-        def commit_block(index, entity_label, relation, block_started_at):
+        def commit_block(index, entity_label, relation, item_seconds):
             entity_labels.extend(entity_label)
-            result = {"bid": blocks_to_process[index][0], "relation": relation}
+            result = {
+                "bid": blocks_to_process[index][0],
+                "entities": self._serialise_block_entities(entity_label),
+                "relation": relation,
+            }
             self.Bolts.append(blocks_to_process[index])
             self.kg_triplet.append(result)
             self.bidirectional_mapping = self._build_bidirectional_mapping(entity_labels)
@@ -560,7 +691,7 @@ class KgManager:
             if checkpoint_callback:
                 checkpoint_callback(self, completed, overall_total)
             if progress_callback:
-                progress_callback(completed, overall_total, time.monotonic() - block_started_at)
+                progress_callback(completed, overall_total, item_seconds)
 
         if self.processing_workers == 1:
             executor_context = None
@@ -570,24 +701,101 @@ class KgManager:
             )
 
         try:
-            # Concurrent batches preserve commit order and pause checkpoints.
+            entity_results = [None] * num_blocks
+
+            def timed_entity_extraction(index):
+                item_started_at = time.monotonic()
+                result = self.实体提取(blocks_to_process[index][1])
+                return result, time.monotonic() - item_started_at
+
+            # Pass 1: extract entities for every pending block.
             for batch_start in range(0, num_blocks, self.processing_workers):
                 if pause_callback and pause_callback():
                     raise ProcessingPaused("用户已暂停文件处理")
                 batch_end = min(batch_start + self.processing_workers, num_blocks)
-                batch_started_at = time.monotonic()
+                batch_size = batch_end - batch_start
                 if executor_context is None:
-                    results = [process_block(blocks_to_process[batch_start])]
+                    results = [timed_entity_extraction(batch_start)]
                 else:
                     futures = [
-                        executor_context.submit(process_block, blocks_to_process[index])
+                        executor_context.submit(
+                            timed_entity_extraction,
+                            index,
+                        )
                         for index in range(batch_start, batch_end)
                     ]
                     results = [future.result() for future in futures]
-
-                for offset, (entity_label, relation) in enumerate(results):
+                for offset, (entity_label, request_seconds) in enumerate(results):
                     index = batch_start + offset
-                    commit_block(index, entity_label, relation, batch_started_at)
+                    entity_results[index] = entity_label
+                    if stage_progress_callback:
+                        stage_progress_callback(
+                            "entity_extraction",
+                            completed_offset + index + 1,
+                            overall_total,
+                            request_seconds / max(batch_size, 1),
+                        )
+                    if pause_callback and pause_callback():
+                        raise ProcessingPaused("用户已暂停文件处理")
+
+            # Pass 2: extract relationships and commit only complete blocks.
+            for batch_start in range(0, num_blocks, self.processing_workers):
+                if pause_callback and pause_callback():
+                    raise ProcessingPaused("用户已暂停文件处理")
+                batch_end = min(batch_start + self.processing_workers, num_blocks)
+                batch_size = batch_end - batch_start
+
+                def extract_relation(index):
+                    item_started_at = time.monotonic()
+                    entity_label = entity_results[index] or []
+                    entities = [item[0] for item in entity_label]
+                    relation = self.关系提取(blocks_to_process[index][1], entities)
+                    return relation, time.monotonic() - item_started_at
+
+                if executor_context is None:
+                    relation_results = [extract_relation(batch_start)]
+                else:
+                    futures = [
+                        executor_context.submit(extract_relation, index)
+                        for index in range(batch_start, batch_end)
+                    ]
+                    relation_results = []
+                    for offset, future in enumerate(futures):
+                        relation, request_seconds = future.result()
+                        index = batch_start + offset
+                        effective_seconds = request_seconds / max(batch_size, 1)
+                        commit_block(
+                            index,
+                            entity_results[index] or [],
+                            relation,
+                            effective_seconds,
+                        )
+                        if stage_progress_callback:
+                            stage_progress_callback(
+                                "relationship_extraction",
+                                completed_offset + index + 1,
+                                overall_total,
+                                effective_seconds,
+                            )
+                        if pause_callback and pause_callback():
+                            raise ProcessingPaused("用户已暂停文件处理")
+                    continue
+                for offset, (relation, request_seconds) in enumerate(relation_results):
+                    index = batch_start + offset
+                    effective_seconds = request_seconds / max(batch_size, 1)
+                    commit_block(
+                        index,
+                        entity_results[index] or [],
+                        relation,
+                        effective_seconds,
+                    )
+                    if stage_progress_callback:
+                        stage_progress_callback(
+                            "relationship_extraction",
+                            completed_offset + index + 1,
+                            overall_total,
+                            effective_seconds,
+                        )
                     if pause_callback and pause_callback():
                         raise ProcessingPaused("用户已暂停文件处理")
         finally:
@@ -705,6 +913,7 @@ class KgManager:
         self,
         new_text: str,
         progress_callback=None,
+        stage_progress_callback=None,
         checkpoint_callback=None,
         pause_callback=None,
     ):
@@ -742,6 +951,7 @@ class KgManager:
         new_kg_triplet = self.知识图谱的构建(
             add_data,
             progress_callback=progress_callback,
+            stage_progress_callback=stage_progress_callback,
             checkpoint_callback=checkpoint_callback,
             append=True,
             completed_offset=len(retained_blocks),
@@ -759,6 +969,8 @@ class KgManager:
         输出目录="results",
         页面路由前缀=None,
         社区最小规模=None,
+        高亮索引缓存=None,
+        绘图引擎="all",
     ):
         """
         优化版知识图谱可视化（支持社区分页渲染）
@@ -770,9 +982,13 @@ class KgManager:
             输出目录: 图谱结果根目录；每个图谱在其中使用独立的同名目录
             页面路由前缀: 可选的浏览器访问路由前缀。未指定时使用同目录相对链接，
                 生成的 HTML 可直接从结果目录打开。
-            社区最小规模: 生成社区详情页的最小节点数；未指定时读取
-                GRAPH_COMMUNITY_MIN_SIZE，默认为 20。设置为 1 可查看所有社区。
+            社区最小规模: 生成社区详情页的最小节点数；未指定时使用当前图谱的
+                自定义或自动计算配置。
+            绘图引擎: "pyvis" 只生成 PyVis 全部页面，"sigma" 只生成
+                Sigma 全量图、社区总览和全部社区详情，"all" 保留默认生成流程。
         """
+        if 绘图引擎 not in {"all", "pyvis", "sigma"}:
+            raise ValueError(f"不支持的图谱绘制引擎: {绘图引擎}")
         self.file = name
 
         图谱目录 = Path(输出目录) / name
@@ -780,12 +996,22 @@ class KgManager:
         主页面名称 = f"{name}.html"
         主页面路径 = 图谱目录 / 主页面名称
 
+        # 高亮数据与图谱一起生成和发布。前端只需按文件读取一次，
+        # 定位节点时不再请求整份图谱来推导文本块中的实体与关系。
+        self._写入静态高亮索引(
+            图谱目录 / f"{name}.highlights.json",
+            高亮索引缓存,
+        )
+
         # 1. 社区发现
         社区分配 = {}
         if 聚类算法 == "louvain":
             try:
                 import community as community_louvain
-                社区分配 = community_louvain.best_partition(self.current_G.to_undirected())
+                社区分配 = community_louvain.best_partition(
+                    self.current_G.to_undirected(),
+                    random_state=42,
+                )
             except ImportError:
                 社区分配 = {n: 0 for n in self.current_G.nodes()}
                 print("提示: pip install python-louvain 可启用社区发现聚类")
@@ -800,7 +1026,7 @@ class KgManager:
         最大社区大小 = max(社区节点计数.values()) if 社区节点计数 else 0
         社区数量 = len(社区节点计数)
         if 社区最小规模 is None:
-            MIN_SIZE = _positive_int_env("GRAPH_COMMUNITY_MIN_SIZE", 20)
+            MIN_SIZE = self.resolve_community_min_size()
         else:
             MIN_SIZE = max(1, int(社区最小规模))
 
@@ -866,6 +1092,31 @@ class KgManager:
                 relation_key, edge_data.get("origin", "extracted")
             )
 
+        for source, target, edge_data in self.current_G.edges(data=True):
+            occurrences, origin = 关系出处(source, target, edge_data)
+            edge_data["evidence_blocks"] = occurrences
+            edge_data["source_block"] = (
+                occurrences[0].get("source_block", "")
+                if occurrences and isinstance(occurrences[0], dict)
+                else occurrences[0] if occurrences else ""
+            )
+            edge_data["origin"] = origin
+
+        # A Sigma-only redraw persists every child page so community links are
+        # immediate. The normal dual-engine processing path keeps details lazy
+        # to avoid extending document ingestion time.
+        if 绘图引擎 in {"all", "sigma"}:
+            write_sigma_graph_pages(
+                self.current_G,
+                图谱目录,
+                str(name),
+                社区分配,
+                MIN_SIZE,
+                include_detail_pages=绘图引擎 == "sigma",
+            )
+            if 绘图引擎 == "sigma":
+                return self.current_G
+
         # 分页后首页只包含社区节点，不能用首页节点数判断是否为大图。
         # 原图超过 50 个节点时，首页和所有社区子页面都使用静态布局。
         原图强制静态布局 = len(self.current_G) > 50
@@ -887,7 +1138,10 @@ class KgManager:
             return self.current_G
 
         # ---------- 分页模式 ----------
-        大社区 = [cid for cid, size in 社区节点计数.items() if size >= MIN_SIZE]
+        大社区 = sorted(
+            (cid for cid, size in 社区节点计数.items() if size >= MIN_SIZE),
+            key=str,
+        )
         # 确定文件名
         子页面名称 = {cid: f"{name}_community_{cid}.html" for cid in 大社区}
         子页面路径 = {cid: 图谱目录 / filename for cid, filename in 子页面名称.items()}
@@ -937,7 +1191,8 @@ class KgManager:
                 edge_lookup[key] = (u, v, data)
 
         ov_G = nx.Graph()
-        for cid, size in 社区节点计数.items():
+        for cid in 大社区:
+            size = 社区节点计数[cid]
             代表节点名 = 社区代表节点.get(cid, str(cid))
             ov_G.add_node(代表节点名,
                           label=代表节点名,
@@ -951,7 +1206,7 @@ class KgManager:
                                 f"主节点类型: {社区主节点类型.get(cid, '未分类')}")
 
         # 构建跨社区边（使用代表节点间的真实关系）
-        for cu, cv in itertools.combinations(社区节点计数.keys(), 2):
+        for cu, cv in itertools.combinations(大社区, 2):
             rep_u = 社区代表节点[cu]
             rep_v = 社区代表节点[cv]
             # 优先取代表节点之间的边
@@ -1008,7 +1263,8 @@ class KgManager:
             f'data-member-names="{html.escape(json.dumps([str(node) for node in 社区节点列表.get(cid, [])], ensure_ascii=False), quote=True)}" '
             f'data-types="{html.escape(社区主节点类型.get(cid, "未分类"), quote=True)}">'
             f'<a class="community-item-link" href="{html.escape(页面链接(子页面名称[cid]), quote=True)}">'
-            f'<span class="community-item-name">{html.escape(str(社区代表节点.get(cid, f"社区{cid}")))}</span>'
+            f'<span class="community-item-name">社区{html.escape(str(cid))} · '
+            f'{html.escape(str(社区代表节点.get(cid, f"社区{cid}")))}</span>'
             f'<span class="community-item-meta">{社区节点计数.get(cid, 0)} 个节点 · '
             f'主节点类型：{html.escape(社区主节点类型.get(cid, "未分类"))}</span></a>'
             f'<button type="button" class="community-source-link" '
@@ -1066,7 +1322,7 @@ class KgManager:
             )
 
         print(f"✅ 知识图谱已生成（社区分页）:")
-        print(f"   主页面（跨社区关系）: {主页面路径}  ({社区数量} 个社区, {ov_G.number_of_edges()} 条跨社区边)")
+        print(f"   主页面（跨社区关系）: {主页面路径}  ({len(大社区)} 个可浏览社区, {ov_G.number_of_edges()} 条跨社区边)")
         for cid in 大社区:
             print(f"   社区 {cid} 详情页: {子页面路径[cid]}  ({社区节点计数[cid]} 个节点)")
         return self.current_G
@@ -1285,8 +1541,8 @@ class KgManager:
             bgcolor="#ffffff",
             font_color="#1a1a1a",
             directed=is_directed,
-            # Keep the stored checkpoint compact. The result endpoint replaces
-            # this reference with the installed local asset before delivery.
+            # Keep every community page compact. The render finalizer replaces
+            # these CDN references with the shared, cacheable local asset URL.
             cdn_resources='remote'
         )
 
@@ -1444,11 +1700,11 @@ class KgManager:
         # 写入HTML
         net.write_html(str(文件名), notebook=False)
 
-        # 注入交互增强（含导航栏）
-        self._注入交互增强(文件名, len(G.nodes()), len(G.edges()), 导航HTML)
+        # 在绘制阶段一次性写入交互层、导航和本地静态资源引用。
+        self._写入静态图谱页面(文件名, len(G.nodes()), len(G.edges()), 导航HTML)
 
-    def _注入交互增强(self, html_file, 节点总数, 边总数, nav_html=""):
-        """注入高级交互功能 + 可选导航HTML（修复版）"""
+    def _写入静态图谱页面(self, html_file, 节点总数, 边总数, nav_html=""):
+        """将完整交互功能和导航固化到生成的 HTML 文件。"""
         # Community pages live beside the main page, so their parent directory
         # is the stable file identifier used by the edit/history API.
         graph_name = Path(html_file).parent.name
@@ -1459,25 +1715,135 @@ class KgManager:
                 "</body>",
                 nav_html + interaction_html + "</body>",
             )
-            # PyVis includes Bootstrap even though this page does not use its
-            # controls. Remove those remaining remote dependencies.
-            content = re.sub(
-                r'\s*<link\b[^>]*href="https://cdn\.jsdelivr\.net/npm/bootstrap@[^\"]+"[^>]*>',
-                '',
-                content,
-                flags=re.IGNORECASE | re.DOTALL,
-            )
-            content = re.sub(
-                r'\s*<script\b[^>]*src="https://cdn\.jsdelivr\.net/npm/bootstrap@[^\"]+"[^>]*>\s*</script>',
-                '',
-                content,
-                flags=re.IGNORECASE | re.DOTALL,
-            )
             content = content.replace(' <script src="lib/bindings/utils.js"></script>', '')
+            content = finalize_generated_graph_html(
+                content,
+                asset_base_url="/api/graph-assets",
+            )
             graph_html.seek(0)
             graph_html.write(content)
             graph_html.truncate()
         return
+
+    @staticmethod
+    def _高亮词存在于文本(term, normalized_text):
+        normalized_term = re.sub(r"\s+", " ", str(term or "")).strip().lower()
+        return bool(normalized_term and normalized_term in normalized_text)
+
+    @staticmethod
+    def _有效高亮实体词(term):
+        normalized_term = re.sub(r"\s+", " ", str(term or "")).strip().lower()
+        return bool(
+            normalized_term
+            and normalized_term not in HIGHLIGHT_ENTITY_STOP_TERMS
+            and not re.fullmatch(r"(?:甲|乙|丙|丁|[a-z])", normalized_term)
+        )
+
+    def _写入静态高亮索引(self, index_file, previous_index=None):
+        """生成按文本块组织的静态高亮原文索引。
+
+        每个块的签名同时包含原文和图谱关系。增量更新、图谱编辑或重绘时，
+        签名未变的块直接复用已生成结果，只重建发生变化的部分。
+        """
+        previous_blocks = {
+            str(block.get("bid", "")): block
+            for block in (previous_index or {}).get("blocks", [])
+            if isinstance(block, dict) and block.get("bid")
+        }
+        graph_blocks = {
+            str(block.get("bid", "")): block
+            for block in (self.kg_triplet or [])
+            if isinstance(block, dict) and block.get("bid")
+        }
+        legacy_entity_mapping = dict(
+            (self.bidirectional_mapping or {}).get("entity_to_label") or {}
+        )
+        generated_blocks = []
+        reused_blocks = 0
+
+        for index, bolt in enumerate(self.Bolts or []):
+            if not isinstance(bolt, (list, tuple)) or len(bolt) < 2:
+                continue
+            bid, text = str(bolt[0]), str(bolt[1])
+            graph_block = graph_blocks.get(bid, {})
+            relations = graph_block.get("relation") or []
+            block_entities = graph_block.get("entities") or []
+            normalized_text = re.sub(r"\s+", " ", text).strip().lower()
+            if not block_entities and legacy_entity_mapping:
+                block_entities = [
+                    {"name": name, "type": entity_type}
+                    for name, entity_type in legacy_entity_mapping.items()
+                    if self._有效高亮实体词(name)
+                    and self._高亮词存在于文本(name, normalized_text)
+                ]
+            signature_payload = json.dumps(
+                {"text": text, "entities": block_entities, "relations": relations},
+                ensure_ascii=False,
+                sort_keys=True,
+                default=str,
+                separators=(",", ":"),
+            )
+            signature = hashlib.sha256(signature_payload.encode("utf-8")).hexdigest()
+            cached = previous_blocks.get(bid)
+            if cached and cached.get("signature") == signature:
+                block_payload = dict(cached)
+                block_payload["index"] = index
+                generated_blocks.append(block_payload)
+                reused_blocks += 1
+                continue
+
+            entity_terms = self._unique_entity_names(block_entities)
+            relation_terms = []
+            evidence_terms = []
+            for relation in relations:
+                if not isinstance(relation, dict):
+                    continue
+                entity_terms.extend((relation.get("source"), relation.get("target")))
+                relation_terms.append(relation.get("relation"))
+                evidence_terms.append(relation.get("context"))
+
+            def unique_present(values, entity_terms_only=False):
+                result = []
+                seen = set()
+                for value in values:
+                    term = str(value or "").strip()
+                    if not term or term in seen:
+                        continue
+                    if entity_terms_only and not self._有效高亮实体词(term):
+                        continue
+                    if not self._高亮词存在于文本(term, normalized_text):
+                        continue
+                    seen.add(term)
+                    result.append(term)
+                return result
+
+            generated_blocks.append({
+                "bid": bid,
+                "text": text,
+                "index": index,
+                "signature": signature,
+                "highlight_terms": {
+                    "entityTerms": unique_present(entity_terms, entity_terms_only=True),
+                    "relationTerms": unique_present(relation_terms),
+                    "evidenceTerms": unique_present(evidence_terms),
+                },
+            })
+
+        payload = {
+            "schema": 2,
+            "graph_name": str(self.file or Path(index_file).stem.replace(".highlights", "")),
+            "blocks": generated_blocks,
+            "stats": {
+                "total_blocks": len(generated_blocks),
+                "reused_blocks": reused_blocks,
+                "rebuilt_blocks": len(generated_blocks) - reused_blocks,
+            },
+        }
+        Path(index_file).write_text(
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        return payload
 
         js_injection = f"""
         <style>
@@ -2102,6 +2468,11 @@ class KgManager:
                 self.current_G = state["current_G"]
                 self.Bolts = state["Bolts"]
                 self.original_file_type = state.get('original_file_type', '.txt')
+                self.configure_community_pagination(
+                    state.get("community_min_size_mode"),
+                    state.get("community_min_size"),
+                    state.get("community_auto_percent"),
+                )
                 self._persisted_bolt_count = len(self.Bolts)
                 self._persisted_bolt_file = self.file
                 return True

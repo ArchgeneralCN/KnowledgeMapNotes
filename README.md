@@ -11,7 +11,7 @@
 
 KnowledgeMapNotes is a knowledge-graph-based note system. It converts TXT, Markdown, and PDF documents into knowledge graphs and provides HybridRAG question answering using vector retrieval, entity relationships, and graph community information.
 
-The project includes a Vue 3 web interface and a FastAPI backend. It supports incremental document updates, per-chunk processing progress, paginated communities for large graphs, streaming answers, and runtime AI configuration.
+The project includes a React web interface and a FastAPI backend. It supports incremental document updates, three-stage processing progress, paginated communities for large graphs, streaming answers, and runtime AI configuration.
 
 ## Demo
 
@@ -23,12 +23,13 @@ https://github.com/user-attachments/assets/5e9e6ffd-4e18-4915-b3a4-85198eb8bb0f
 - **Knowledge graph construction**: Automatically extracts entities and relationships, calculates relationship weights, and performs knowledge fusion.
 - **Configurable processing prompts**: Provides general, story, and custom note types. Custom types can edit prompts for entity extraction, relationship extraction, and knowledge fusion independently.
 - **Reliable file updates**: Completed files with the same name can be updated incrementally. Residual data from a previously failed file is cleared before a complete retry.
-- **Processing progress**: Displays upload, processing, incremental update, completion, and failure states, including chunk count, percentage, time per chunk, and estimated remaining time.
+- **Processing progress**: Tracks entity extraction, relationship extraction, and knowledge fusion separately, including completed items, measured speed, stage ETA, and overall ETA.
 - **HybridRAG Q&A**: Combines vector retrieval, entity recognition, and graph communities. Supports regular and SSE streaming responses, stopping generation, and conversation history.
 - **Graph visualization**: Supports node and relationship search, highlighting, edge weights, Louvain community overviews, and detail pages for large graphs.
 - **Readable graph layout**: Uses static ForceAtlas2 for graph generation and redraws. Isolated nodes are placed around the relational graph, while coordinate scaling and collision resolution reduce overlap.
 - **Knowledge base management**: Search and filter files, preview or download originals, inspect primary entities, delete files, and clear RAG history separately.
 - **Source evidence navigation**: Click a node or relationship to jump to its source chunk. Layered highlighting distinguishes the source chunk, current entities/relationships, other entities/relationships, and relationship descriptions.
+- **Long-document windowing**: Very large source documents render incrementally. Full-document highlighting is limited to a viewport window, and a loading indicator remains visible while the next chunk is prepared.
 - **Document workflow**: Preview documents by default, inspect source, edit rich text, save drafts, browse document history, restore versions, apply incremental updates, and redraw graphs automatically.
 - **Unified history restore**: Graph history stores document snapshots as well. Restoring a graph also restores its document, and document, incremental, and graph operations can be rolled back together.
 - **Themes and readability**: Default, dark, blue, and eye-care themes share coordinated colors for text, panels, code blocks, draft notices, and evidence highlighting.
@@ -65,7 +66,7 @@ https://github.com/user-attachments/assets/5e9e6ffd-4e18-4915-b3a4-85198eb8bb0f
 | --- | --- |
 | Backend | FastAPI, OpenAI Python SDK, ChromaDB, SentenceTransformers |
 | Graph | NetworkX, PyVis, Louvain Community Detection |
-| Frontend | Vue 3, Vite, Element Plus, Axios |
+| Frontend | React 19, Vite, React Router, Lucide, Axios |
 | Content rendering | Markdown-It, DOMPurify |
 | Deployment | FastAPI static hosting, Docker Compose, Nginx |
 
@@ -73,15 +74,7 @@ https://github.com/user-attachments/assets/5e9e6ffd-4e18-4915-b3a4-85198eb8bb0f
 
 Read the documentation online at [archgeneralcn.github.io/KMN_docs_site](https://archgeneralcn.github.io/KMN_docs_site/).
 
-An independent VitePress documentation site is available in `docs-site/`. It covers setup, core workflows, deployment, security, environment variables, HTTP APIs, and troubleshooting, with local search, dark mode, and responsive navigation.
-
-```bash
-cd docs-site
-npm install
-npm run dev
-```
-
-Open http://localhost:5173. Run `npm run build` for a production build; static output is written to `docs-site/docs/.vitepress/dist`.
+The repository documentation is maintained in the root README files and `docs/`. The online documentation site is published separately and its source is not part of this repository checkout.
 
 ## Quick Start
 
@@ -92,7 +85,7 @@ Open http://localhost:5173. Run `npm run build` for a production build; static o
 - A text-model API for graph construction and RAG; it does not have to be configured before the backend starts
 - An optional CUDA GPU; use `DEVICE=cpu` in CPU-only environments
 
-The first startup loads embedding and reranking models and therefore requires disk space. An internet connection is also required when downloading models from Hugging Face.
+The first startup downloads the embedding and reranking models through ModelScope, so it requires an internet connection and sufficient disk space. Later runs use the local models under the project `models/` directory.
 
 On the first deployment, only `backend/default_examples/本软件使用说明.kmn.zip` is imported automatically. This does not call the text AI or overwrite data with the same name. Optional completed packages in `backend/kmnzips` can be imported manually from the upload page. Set `DEFAULT_EXAMPLES_ENABLED=False` in `backend/.env` to start with an empty instance.
 
@@ -103,7 +96,33 @@ git clone https://github.com/Xikcn/KnowledgeMapNotes.git
 cd KnowledgeMapNotes
 ```
 
-### 2. Create the Backend Configuration
+### 2. Start Everything (Recommended)
+
+On Windows, double-click `start.bat` or run:
+
+```bat
+start.bat
+```
+
+On Linux and macOS, run:
+
+```bash
+./start.sh
+```
+
+The same cross-platform entry point can also be invoked directly:
+
+```bash
+python start.py
+```
+
+The launcher creates `.venv`, installs backend dependencies, downloads both models through ModelScope into `models/`, writes their absolute local paths to `backend/.env`, builds the frontend, and starts the complete application. Existing API keys and unrelated `.env` settings are preserved.
+
+After setup, use the URL printed after `[start] KnowledgeMapNotes is starting at ...`. The default is http://127.0.0.1:8000. If port `8000` is occupied, the launcher automatically tries `8001`, `8002`, and later ports and prints the selected URL.
+
+Use the same script for every later startup; unchanged dependencies, models, and frontend builds are skipped automatically. Press `Ctrl+C` to stop the service. The detailed Chinese guide covers first-time setup, directories, port selection, updates, and troubleshooting: [Local one-command deployment](docs/本地部署.md).
+
+### 3. Create the Backend Configuration (Optional)
 
 ```bash
 cp backend/.env.example backend/.env
@@ -113,7 +132,7 @@ Do not commit `backend/.env` when it contains real credentials.
 
 The text-model fields may remain empty. After startup, open **Settings -> AI Model Settings** in the web interface, enter the Base URL, API key, and model name, test the connection, and then save it.
 
-Example configuration for a CPU environment with online model loading:
+Example configuration for a CPU environment with local model loading:
 
 ```dotenv
 # Prompt version: v1 is faster; v2 is slower but produces better results
@@ -142,16 +161,23 @@ VL_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 VL_MODEL=qwen-vl-max-latest
 
 # Embedding and reranking models
-IS_USE_LOCAL=False
+IS_USE_LOCAL=True
 EMBEDDINGS=BAAI/bge-base-zh
-EMBEDDINGS_PATH=/absolute/path/to/bge-base-zh
-RERANK_MODEL=BAAI/bge-reranker-base
+EMBEDDINGS_PATH=../models/bge-base-zh
+RERANK_MODEL=../models/bge-reranker-base
 DEVICE=cpu
 
 # Text splitters
 SIMPLE=[txt,pdf]
 SEMANTIC=[]
 CHARACTER=[md]
+KG_CHUNK_MAX_TOKENS=1024
+KG_CHUNK_MIN_TOKENS=384
+
+# Community detail threshold
+GRAPH_COMMUNITY_MIN_SIZE_MODE=custom
+GRAPH_COMMUNITY_MIN_SIZE=20
+GRAPH_COMMUNITY_AUTO_PERCENT=5
 
 # Runtime data directories, relative to backend/
 CHROMADB_PATH=./chroma_data
@@ -160,7 +186,7 @@ TXT_FOLDER=txt_files
 RESULT_FOLDER=results
 ```
 
-`SIMPLE`, `SEMANTIC`, and `CHARACTER` accept comma-separated extensions in forms such as `[txt,pdf]` or `txt,pdf`. An extension should appear in only one splitter. Unmatched extensions use the default splitter.
+`SIMPLE`, `SEMANTIC`, and `CHARACTER` accept comma-separated extensions in forms such as `[txt,pdf]` or `txt,pdf`. An extension should appear in only one splitter. Unmatched extensions use the default splitter. `KG_CHUNK_MAX_TOKENS` and `KG_CHUNK_MIN_TOKENS` are defaults; web settings can override them for each upload. Smaller chunks can reduce missed entities in long documents at the cost of more API calls. Main and fallback models can independently enable streaming structured responses with `AI_STREAM` and `FALLBACK_STREAM`.
 
 To use a local embedding model, set `IS_USE_LOCAL=True` and point `EMBEDDINGS_PATH` to the model directory. The current PDF processor uses `qwen-vl-max-latest`; `VL_MODEL` is reserved and changing it does not currently switch the vision model.
 
@@ -168,13 +194,13 @@ Other optional environment variables:
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `HOST` | `0.0.0.0` | Backend listen address |
-| `PORT` | `8000` | Backend listen port |
+| `HOST` | `127.0.0.1` | Launcher listen address; use `0.0.0.0` for LAN access |
+| `PORT` | `8000` | Preferred port; the launcher increments it automatically when occupied |
 | `FRONTEND_DIST` | `<project>/frontend/dist` | Frontend build directory; use an absolute path when overriding it |
 | `RAG_WORKER_COUNT` | `4` | RAG thread-pool size |
 | `CORS_ALLOW_ORIGINS` | `*` | Allowed origins, separated by commas |
 
-### 3. Install Backend Dependencies
+### 4. Install Backend Dependencies Manually
 
 With standard `venv`:
 
@@ -198,7 +224,16 @@ On Windows PowerShell, activate the environment with:
 .venv\Scripts\Activate.ps1
 ```
 
-### 4. Choose a Run Mode
+For a manual deployment, download the same models from the repository root:
+
+```bash
+modelscope download BAAI/bge-base-zh --local_dir models/bge-base-zh --exclude "*.bin" "*.onnx"
+modelscope download BAAI/bge-reranker-base --local_dir models/bge-reranker-base --exclude "*.bin" "*.onnx"
+```
+
+`backend/.env.example` already points to these two local directories.
+
+### 5. Choose a Manual Run Mode
 
 #### Option A: Serve the Built Frontend from FastAPI
 
@@ -404,6 +439,7 @@ HybridRAG request example:
 KnowledgeMapNotes/
 ├── backend/
 │   ├── main.py                    # FastAPI application entry point
+│   ├── services/                  # AI, document, progress, and RAG services
 │   ├── KnowledgeGraphManager/     # Graph construction, fusion, and visualization
 │   ├── LLM/                       # Model calls and RAG output processing
 │   ├── OmniStore/                 # ChromaDB and knowledge-base storage
@@ -414,15 +450,19 @@ KnowledgeMapNotes/
 │   ├── uploads/                   # Uploaded source files
 │   ├── txt_files/                 # Converted text files
 │   ├── results/<document>/        # Graph home and community pages
+│   ├── processing_states/         # Job state and recovery metadata
+│   ├── graph_history/             # Combined graph/document revisions
 │   └── chroma_data/               # Persistent ChromaDB data
 └── frontend/
-    ├── src/                       # Vue 3 application source
+    ├── src/                       # React application source
     ├── dist/                      # Output generated by npm run build
     ├── vite.config.js             # Development server and API proxy
     └── nginx.conf                 # Docker frontend reverse proxy
 ```
 
-`uploads`, `txt_files`, `results`, and `chroma_data` form one related runtime data set. Keep them consistent when migrating, restoring, or backing up a knowledge base.
+`uploads`, `txt_files`, `results`, `processing_states`, `graph_history`, and `chroma_data` form one related runtime data set. Browser refreshes do not cancel backend work or erase persisted progress; after a backend interruption, the saved checkpoint can be resumed. Keep these directories consistent when migrating, restoring, or backing up a knowledge base.
+
+See [`docs/backend-architecture.md`](docs/backend-architecture.md) for module boundaries and maintenance notes.
 
 ## Douyin Chat JSON to TXT
 
@@ -479,7 +519,7 @@ Enable PDF image recognition in the web settings and verify `VL_API_KEY` and `VL
 
 ### Why does a large graph open multiple pages?
 
-When Louvain finds multiple communities and at least one reaches the pagination threshold, the system generates a cross-community overview and detail pages for larger communities. By default, detail pages are generated for communities with at least 20 nodes. Set `GRAPH_COMMUNITY_MIN_SIZE=1` in `backend/.env` and regenerate the graph to create detail pages for every community; increase it to reduce the number of pages.
+When Louvain finds multiple communities and at least one reaches the pagination threshold, the system generates a cross-community overview and detail pages for larger communities. The threshold can be configured under Settings → Graph construction as either a fixed node count or an automatic percentage. Automatic mode uses `ceil((total nodes + average degree) × percentage)` and clamps the result between 1 and the graph's node count. Set the custom value to `1` to expose every community, then redraw the graph to apply the change.
 
 ### Why did changes to `.env` not take effect?
 

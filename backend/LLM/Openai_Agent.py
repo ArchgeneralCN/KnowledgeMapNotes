@@ -35,8 +35,10 @@ class OpenaiAgent:
         model_name=None,
         temperature=None,
         enable_thinking=False,
+        stream=False,
         fallback_client=None,
         fallback_model_name=None,
+        fallback_stream=False,
         max_output_tokens=None,
         max_output_parameter=None,
     ):
@@ -65,8 +67,10 @@ class OpenaiAgent:
                 else float(os.getenv("TEMPERATURE", "0"))
             ),
             enable_thinking=enable_thinking,
+            stream=stream,
             fallback_client=fallback_client,
             fallback_model_name=fallback_model_name,
+            fallback_stream=fallback_stream,
         )
 
     def configure(
@@ -75,8 +79,10 @@ class OpenaiAgent:
         model_name,
         temperature,
         enable_thinking,
+        stream=False,
         fallback_client=None,
         fallback_model_name=None,
+        fallback_stream=False,
     ):
         """Atomically replace the client and request options used by new calls."""
         with self._config_lock:
@@ -88,6 +94,8 @@ class OpenaiAgent:
             self.fallback_model_name = fallback_model_name or model_name
             self.temperature = temperature
             self.enable_thinking = enable_thinking
+            self.stream = bool(stream)
+            self.fallback_stream = bool(fallback_stream)
 
     def _request_config(self, rag=False, fallback=False):
         with self._config_lock:
@@ -102,6 +110,7 @@ class OpenaiAgent:
                 model_name,
                 self.temperature,
                 self.enable_thinking,
+                self.fallback_stream if fallback else self.stream,
             )
 
     def _has_fallback(self):
@@ -252,6 +261,33 @@ class OpenaiAgent:
             )
         return ""
 
+    @classmethod
+    def _consume_stream(cls, response_stream):
+        """Consume a chat-completion stream while retaining its stop reason."""
+        output = []
+        finish_reason = None
+        for chunk in response_stream:
+            content = cls._extract_stream_content(chunk)
+            if content:
+                output.append(content)
+            parsed_chunk = chunk
+            if isinstance(parsed_chunk, (bytes, bytearray)):
+                parsed_chunk = parsed_chunk.decode("utf-8", errors="replace")
+            if isinstance(parsed_chunk, str):
+                text = parsed_chunk.strip()
+                if text.startswith("data:"):
+                    text = text[5:].strip()
+                try:
+                    parsed_chunk = json.loads(text)
+                except json.JSONDecodeError:
+                    parsed_chunk = {}
+            choices = cls._response_field(parsed_chunk, "choices") or []
+            if choices:
+                reason = cls._response_field(choices[0], "finish_reason")
+                if reason:
+                    finish_reason = reason
+        return "".join(output), finish_reason
+
     def agent_safe_generate_response(
         self,
         prompt,
@@ -297,7 +333,7 @@ class OpenaiAgent:
 
     def agent_request(self, prompt, input_parameter, fallback=False):
         self.temp_sleep()
-        client, model_name, temperature, enable_thinking = self._request_config(
+        client, model_name, temperature, enable_thinking, stream = self._request_config(
             fallback=fallback
         )
         if client is None:
@@ -310,14 +346,20 @@ class OpenaiAgent:
             ],
             "temperature": temperature,
             "extra_body": self._thinking_options(enable_thinking),
+            "stream": stream,
             self.max_output_parameter: self.max_output_tokens,
         }
         response = client.chat.completions.create(**request_options)
-        output, finish_reason = self._extract_chat_completion(response)
+        output, finish_reason = (
+            self._consume_stream(response)
+            if stream
+            else self._extract_chat_completion(response)
+        )
         logger.info(
-            "AI 响应完成: provider=%s model=%s finish_reason=%s chars=%d",
+            "AI 响应完成: provider=%s model=%s stream=%s finish_reason=%s chars=%d",
             "备用 AI" if fallback else "主 AI",
             model_name,
+            stream,
             finish_reason,
             len(output),
         )
@@ -447,7 +489,7 @@ class OpenaiAgent:
         if messages:
             formatted_messages.extend(messages)
         formatted_messages.append({'role': 'user', 'content': input_parameter})
-        client, model_name, temperature, enable_thinking = self._request_config(
+        client, model_name, temperature, enable_thinking, _ = self._request_config(
             rag=True,
             fallback=fallback,
         )
@@ -471,7 +513,7 @@ class OpenaiAgent:
             formatted_messages.extend(messages)
         formatted_messages.append({'role': 'user', 'content': input_parameter})
 
-        client, model_name, temperature, enable_thinking = self._request_config(
+        client, model_name, temperature, enable_thinking, _ = self._request_config(
             rag=True,
             fallback=fallback,
         )

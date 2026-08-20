@@ -2,6 +2,7 @@ uvicorn
 openai
 pydantic
 fastapi
+modelscope
 sentence-transformers
 chromadb
 numpy

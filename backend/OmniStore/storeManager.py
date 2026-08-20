@@ -48,9 +48,14 @@ class  storeManager:
 
     def edge_max_node(self,file,n):
         current_g = self.get_G(file)
+        if current_g is None:
+            return []
         degrees = current_g.degree()
         sorted_degrees = sorted(degrees, key=lambda x: x[1], reverse=True)
-        return sorted_degrees[:n]
+        # The public /file-entities endpoint promises entity names. Returning
+        # NetworkX ``(node, degree)`` tuples made JSON clients receive nested
+        # arrays and left the React entity chips blank.
+        return [node for node, _degree in sorted_degrees[:n]]
 
 
 
@@ -81,17 +86,19 @@ class  storeManager:
 
 
     def select_vectors(self, query, file, n_results):
+        return self.select_vector_context(query, file, n_results).get("documents", [])
+
+    def select_vector_context(self, query, file, n_results):
+        """返回带文本块 ID 的检索结果，用于 RAG 引用定位。"""
         try:
-            results = self.store.select_vectors(
+            return self.store.select_vectors(
                 query=query,
                 file=file,
                 n_results=n_results
             )
-            # print(results)
-            return results.get("documents", [])
         except Exception as e:
             print(f"选择向量失败: {file}, 错误: {str(e)}")
-            return []
+            return {"ids": [], "documents": [], "metadatas": [], "distances": []}
 
 
     def community_louvain_G(self, file, entity_names, weight_threshold=0.3, top_n=20):
@@ -168,5 +175,3 @@ class  storeManager:
         print(f"\nModularity of the entire graph: {modularity}")
 
         return knowledge_base
-
-

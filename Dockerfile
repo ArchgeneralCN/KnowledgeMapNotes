@@ -18,12 +18,14 @@ RUN npm run build
 FROM ${BASE_REGISTRY}/python:3.12-slim AS production
 
 ARG PYPI_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG PYPI_FALLBACK_INDEX=https://pypi.org/simple
 ARG TORCH_FIND_LINKS=https://mirrors.aliyun.com/pytorch-wheels/cpu/
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    HF_ENDPOINT=https://hf-mirror.com \
+    PIP_ROOT_USER_ACTION=ignore \
+    HF_ENDPOINT=https://huggingface.co \
     HOST=0.0.0.0 \
     PORT=7860 \
     FRONTEND_DIST=/app/frontend/dist \
@@ -48,9 +50,13 @@ COPY backend/requirements.txt ./requirements.txt
 # Cache the Python dependencies and local models in layers that are not
 # invalidated when only application source files change.
 RUN python -m pip install --upgrade pip \
-    && python -m pip install modelscope --index-url "${PYPI_INDEX}" \
+    && python -m pip install modelscope \
+        --index-url "${PYPI_INDEX}" \
+        --extra-index-url "${PYPI_FALLBACK_INDEX}" \
     && python -m pip install 'torch==2.6.0+cpu' --find-links "${TORCH_FIND_LINKS}" \
-    && python -m pip install -r requirements.txt --index-url "${PYPI_INDEX}" \
+    && python -m pip install -r requirements.txt \
+        --index-url "${PYPI_INDEX}" \
+        --extra-index-url "${PYPI_FALLBACK_INDEX}" \
     && modelscope download BAAI/bge-base-zh \
         --local_dir /app/models/bge-base-zh \
         --exclude '*.bin' '*.onnx' \

@@ -9,6 +9,9 @@ from pathlib import Path
 import pyvis
 
 
+GRAPH_EDITOR_VERSION = 7
+
+
 GRAPH_INTERACTION_TEMPLATE = r"""
 <style>
   div.vis-configuration-wrapper,
@@ -99,6 +102,7 @@ GRAPH_INTERACTION_TEMPLATE = r"""
   }
   .community-list-item:hover { border-color: #93c5fd; background: #eff6ff; }
   .community-list-item.search-match { border-color: #60a5fa; background: #eff6ff; }
+  .community-list-item.is-loading { opacity: .68; }
   .community-item-link { display: block; color: #334155; text-decoration: none; }
   .community-item-name { display: block; font-size: 11px; font-weight: 700; }
   .community-item-meta {
@@ -111,7 +115,7 @@ GRAPH_INTERACTION_TEMPLATE = r"""
   }
   .community-source-link:hover { background: #dbeafe; border-color: #60a5fa; }
   .community-back-bar {
-    position: fixed; z-index: 1900; right: 10px; bottom: 10px; display: flex; gap: 10px;
+    position: fixed; z-index: 2050; right: 10px; bottom: 10px; display: flex; gap: 10px;
     padding: 7px 10px; border: 1px solid #e5e7eb; border-radius: 18px;
     background: rgba(255,255,255,.94); box-shadow: 0 3px 12px rgba(15,23,42,.12);
     color: #64748b; font-size: 10px;
@@ -172,14 +176,18 @@ GRAPH_INTERACTION_TEMPLATE = r"""
   .graph-editor-actions button:hover { filter: brightness(.97); }
 
   @media (max-width: 720px) {
-    .search-panel, .filter-panel { width: 230px; }
-    .control-panel { width: 220px; }
-    .community-directory { width: min(280px, calc(100vw - 16px)); }
+    .graph-floating-panel { max-height: calc(50% - 18px); overflow: auto; }
+    .search-panel, .filter-panel { left: 8px; width: calc(50% - 12px); }
+    .control-panel, .community-directory { right: 8px; width: calc(50% - 12px); }
+    .control-panel { top: 8px; }
+    .community-directory { bottom: 8px; max-height: calc(50% - 18px); }
+    .graph-panel-body { min-width: 0; }
+    .control-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   }
 </style>
 <script>
 (function () {
-  const GRAPH_EDITOR_VERSION = 3;
+  const GRAPH_EDITOR_VERSION = __GRAPH_EDITOR_VERSION__;
   const NODE_COUNT = __NODE_COUNT__;
   const EDGE_COUNT = __EDGE_COUNT__;
   const GRAPH_NAME = __GRAPH_NAME__;
@@ -188,7 +196,7 @@ GRAPH_INTERACTION_TEMPLATE = r"""
   let minimumWeight = 0.5;
   let focusKeepNodes = null;
   let hubsCollapsed = false;
-  let immersive = false;
+  let immersive = true;
   const activeEntityTypes = new Set();
   const collapsedEdgeIds = new Set();
   const edgeStates = {};
@@ -454,9 +462,71 @@ GRAPH_INTERACTION_TEMPLATE = r"""
     if (!button) return;
     button.addEventListener('click', () => {
       const collapsed = panel.classList.toggle('is-collapsed');
-      button.textContent = collapsed ? '+' : '−';
-      button.setAttribute('aria-label', collapsed ? '展开面板' : '收起面板');
+      delete panel.dataset.autoCollapsed;
+      syncPanelCollapseButton(panel, collapsed);
     });
+  }
+
+  function syncPanelCollapseButton(panel, collapsed = panel.classList.contains('is-collapsed')) {
+    const button = panel.querySelector('.graph-panel-collapse');
+    if (!button) return;
+    button.textContent = collapsed ? '+' : '−';
+    button.setAttribute('aria-label', collapsed ? '展开面板' : '收起面板');
+  }
+
+  function applyDefaultImmersivePanels() {
+    document.querySelectorAll('.graph-floating-panel').forEach(panel => {
+      if (panel.classList.contains('community-directory')) {
+        syncPanelCollapseButton(panel);
+        return;
+      }
+      panel.classList.add('is-collapsed');
+      panel.dataset.immersiveCollapsed = '1';
+      syncPanelCollapseButton(panel, true);
+    });
+  }
+
+  function setupResponsivePanels(host, graphContainer) {
+    const compactWidth = 720;
+    const apply = (forceExpand = false) => {
+      const width = graphContainer.getBoundingClientRect().width || window.innerWidth;
+      const compact = width < compactWidth;
+      document.querySelectorAll('.graph-floating-panel').forEach(panel => {
+        if (panel.classList.contains('community-directory')) {
+          if (panel.dataset.autoCollapsed === '1' || panel.dataset.immersiveCollapsed === '1') {
+            panel.classList.remove('is-collapsed');
+            delete panel.dataset.autoCollapsed;
+            delete panel.dataset.immersiveCollapsed;
+          }
+          syncPanelCollapseButton(panel);
+          return;
+        }
+        if (forceExpand && (
+          panel.dataset.autoCollapsed === '1' || panel.dataset.immersiveCollapsed === '1'
+        )) {
+          panel.classList.remove('is-collapsed');
+          delete panel.dataset.autoCollapsed;
+          delete panel.dataset.immersiveCollapsed;
+        } else if (compact && immersive) {
+          if (!panel.classList.contains('is-collapsed')) {
+            panel.classList.add('is-collapsed');
+            panel.dataset.autoCollapsed = '1';
+          }
+        } else if (!immersive && panel.dataset.autoCollapsed === '1') {
+          panel.classList.remove('is-collapsed');
+          delete panel.dataset.autoCollapsed;
+        }
+        syncPanelCollapseButton(panel);
+      });
+    };
+    if (typeof ResizeObserver === 'function') {
+      const observer = new ResizeObserver(() => apply());
+      observer.observe(host);
+    } else {
+      window.addEventListener('resize', apply);
+    }
+    apply();
+    return apply;
   }
 
   function renderEntityTypeOptions(container) {
@@ -614,10 +684,7 @@ GRAPH_INTERACTION_TEMPLATE = r"""
   function setupCommunityDirectory() {
     const directory = document.getElementById('communityDirectory');
     if (!directory) return;
-    directory.querySelector('.graph-panel-collapse')?.addEventListener('click', event => {
-      const collapsed = directory.classList.toggle('is-collapsed');
-      event.currentTarget.textContent = collapsed ? '+' : '−';
-    });
+    bindPanelCollapse(directory);
     const search = document.getElementById('communitySearchInput');
     const typeFilter = document.getElementById('communityTypeFilter');
     const list = document.getElementById('communityList');
@@ -625,6 +692,14 @@ GRAPH_INTERACTION_TEMPLATE = r"""
     const originalOrder = new Map(items.map((item, index) => [item, index]));
     const empty = document.getElementById('communityEmptyState');
     directory.querySelectorAll('.community-source-link').forEach(bindCommunitySourceButton);
+    directory.querySelectorAll('.community-item-link').forEach(link => {
+      link.addEventListener('click', () => {
+        const item = link.closest('.community-list-item');
+        item?.classList.add('is-loading');
+        const meta = item?.querySelector('.community-item-meta');
+        if (meta) meta.textContent = '正在加载社区子图...';
+      });
+    });
     editorMetadataReady.then(refreshCommunityMetadata);
     const apply = () => {
       const term = (search?.value || '').toLowerCase().trim();
@@ -708,7 +783,17 @@ GRAPH_INTERACTION_TEMPLATE = r"""
       } else if (kind === 'edge') {
         const edge = network.body.data.edges.get(id)
           || network.body.data.edges.get().find(candidate => String(candidate.id) === requestedId);
-        const apiId = edgeApiIds.get(requestedId) || requestedId;
+        let apiId = edgeApiIds.get(requestedId) || requestedId;
+        if (edge && !edgeDetails.has(String(apiId))) {
+          const matchingDetail = [...edgeDetails.entries()].find(([, detail]) => {
+            const endpointsMatch = (String(detail.source) === String(edge.from)
+              && String(detail.target) === String(edge.to))
+              || (String(detail.source) === String(edge.to)
+                && String(detail.target) === String(edge.from));
+            return endpointsMatch && (!detail.relation || String(detail.relation) === String(edge.label || ''));
+          });
+          if (matchingDetail) apiId = matchingDetail[0];
+        }
         const detail = edgeDetails.get(String(apiId)) || {};
         sourceBlocks = detail.evidence_blocks || [];
         if (!sourceBlocks.length && detail.source_block) sourceBlocks = [detail.source_block];
@@ -769,27 +854,48 @@ GRAPH_INTERACTION_TEMPLATE = r"""
     });
   }
 
-  function highlightGraphTarget(kind, id) {
+  function highlightGraphTarget(kind, id, locateSource = true, edgeHint = {}) {
     const requestedId = String(id ?? '');
     if (!requestedId) return;
     editorMetadataReady.then(() => {
       if (kind === 'node') {
         const node = network.body.data.nodes.get(requestedId)
           || network.body.data.nodes.get().find(item => String(item.id) === requestedId);
-        if (!node) return;
+        if (!node) {
+          window.parent?.postMessage({ type: 'knowledge-graph-highlight-missing', kind, id: requestedId }, '*');
+          return;
+        }
         network.selectNodes([node.id]);
         network.focus(node.id, { scale: 1.45, animation: { duration: 350 } });
-        requestEvidence('node', node.id);
+        window.parent?.postMessage({ type: 'knowledge-graph-highlighted', kind, id: requestedId }, '*');
+        if (locateSource) requestEvidence('node', node.id);
         return;
       }
-      const edge = network.body.data.edges.get(requestedId)
+      let edge = network.body.data.edges.get(requestedId)
         || network.body.data.edges.get().find(item =>
           String(item.id) === requestedId || String(edgeApiIds.get(String(item.id))) === requestedId
         );
-      if (!edge) return;
+      if (!edge && (edgeHint.source || edgeHint.target || edgeHint.relation)) {
+        const source = String(edgeHint.source || '');
+        const target = String(edgeHint.target || '');
+        const relation = String(edgeHint.relation || '');
+        edge = network.body.data.edges.get().find(item => {
+          const endpointsMatch = (!source || !target)
+            ? String(item.from) === source || String(item.to) === target
+            : (String(item.from) === source && String(item.to) === target)
+              || (String(item.from) === target && String(item.to) === source);
+          const relationMatches = !relation || String(item.label || '') === relation;
+          return endpointsMatch && relationMatches;
+        });
+      }
+      if (!edge) {
+        window.parent?.postMessage({ type: 'knowledge-graph-highlight-missing', kind, id: requestedId }, '*');
+        return;
+      }
       network.selectEdges([edge.id]);
       network.fit({ nodes: [edge.from, edge.to], animation: { duration: 350 } });
-      requestEvidence('edge', edge.id);
+      window.parent?.postMessage({ type: 'knowledge-graph-highlighted', kind, id: requestedId }, '*');
+      if (locateSource) requestEvidence('edge', edge.id);
     });
   }
 
@@ -837,7 +943,10 @@ GRAPH_INTERACTION_TEMPLATE = r"""
     return editorApi(`/graph-mutation/${encodeURIComponent(GRAPH_NAME)}`, {
       method: 'POST',
       body: JSON.stringify({ operation, revision: editorRevision, ...payload })
-    }).then(() => window.location.reload());
+    }).then(() => {
+      window.parent?.postMessage({ type: 'knowledge-graph-updated', filename: GRAPH_NAME }, '*');
+      window.location.reload();
+    });
   }
 
   function selectedNode(target) {
@@ -1027,9 +1136,20 @@ GRAPH_INTERACTION_TEMPLATE = r"""
     initializeGraphMetadata();
     editorMetadataReady = syncEditorRevision();
     window.addEventListener('message', event => {
-      if (event.source !== window.parent || event.data?.type !== 'knowledge-graph-highlight') return;
-      if (event.data.graphName && event.data.graphName !== GRAPH_NAME) return;
-      highlightGraphTarget(event.data.kind, event.data.id);
+      if (event.source !== window.parent) return;
+      if (event.data?.graphName && event.data.graphName !== GRAPH_NAME) return;
+      if (event.data?.type === 'knowledge-graph-exit-immersive') {
+        immersive = false;
+        applyResponsivePanels(true);
+        return;
+      }
+      if (event.data?.type === 'knowledge-graph-highlight') {
+        highlightGraphTarget(event.data.kind, event.data.id, event.data.locateSource !== false, {
+          source: event.data.source,
+          target: event.data.target,
+          relation: event.data.relation
+        });
+      }
     });
     document.addEventListener('click', hideContextMenu);
     // vis-network's `oncontext` is not emitted consistently across its
@@ -1105,18 +1225,27 @@ GRAPH_INTERACTION_TEMPLATE = r"""
 
     [searchPanel, controlPanel, filterPanel].forEach(bindPanelCollapse);
 
+    let applyResponsivePanels = () => {};
     const immersiveButton = document.createElement('button');
     immersiveButton.className = 'immersive-toggle';
     immersiveButton.type = 'button';
-    immersiveButton.textContent = '⛶ 沉浸模式';
+    immersiveButton.textContent = immersive ? '退出沉浸' : '⛶ 沉浸模式';
     immersiveButton.addEventListener('click', () => {
+      const leavingImmersive = immersive;
       immersive = !immersive;
-      document.querySelectorAll('.graph-floating-panel').forEach(panel => {
-        panel.classList.toggle('is-collapsed', immersive);
-        const button = panel.querySelector('.graph-panel-collapse');
-        if (button) button.textContent = immersive ? '+' : '−';
-      });
+      if (immersive) {
+        document.querySelectorAll('.graph-floating-panel').forEach(panel => {
+          if (panel.classList.contains('community-directory')) {
+            syncPanelCollapseButton(panel);
+            return;
+          }
+          if (!panel.classList.contains('is-collapsed')) panel.dataset.immersiveCollapsed = '1';
+          panel.classList.add('is-collapsed');
+          syncPanelCollapseButton(panel, true);
+        });
+      }
       immersiveButton.textContent = immersive ? '退出沉浸' : '⛶ 沉浸模式';
+      applyResponsivePanels(leavingImmersive);
     });
     host.insertBefore(immersiveButton, graphContainer);
 
@@ -1227,6 +1356,9 @@ GRAPH_INTERACTION_TEMPLATE = r"""
     network.on('blurNode', () => { const tip = document.getElementById('node-tooltip'); if (tip) tip.style.display = 'none'; });
 
     setupCommunityDirectory();
+    applyDefaultImmersivePanels();
+    applyResponsivePanels = setupResponsivePanels(host, graphContainer);
+    window.requestAnimationFrame(applyResponsivePanels);
     applyVisibilityFilters(); renderSearchResults(); updateCounter();
   });
 })();
@@ -1243,6 +1375,7 @@ def build_graph_interaction_html(
     """Build the static interaction layer with escaped numeric counters."""
     return (
         GRAPH_INTERACTION_TEMPLATE
+        .replace("__GRAPH_EDITOR_VERSION__", escape(str(GRAPH_EDITOR_VERSION)))
         .replace("__NODE_COUNT__", escape(str(int(node_count))))
         .replace("__EDGE_COUNT__", escape(str(int(edge_count))))
         .replace("__GRAPH_NAME__", json.dumps(str(graph_name), ensure_ascii=False))
@@ -1271,13 +1404,16 @@ def get_local_vis_asset_path(asset_name: str) -> Path:
     )
 
 
-def prepare_legacy_graph_html(
+def finalize_generated_graph_html(
     html_content: str,
-    asset_base_url: str | None = None,
-    graph_name: str = "",
+    asset_base_url: str | None = "/api/graph-assets",
 ) -> str:
-    """Make older CDN-based graph pages local and notify the parent on first draw."""
-    if "cdnjs.cloudflare.com/ajax/libs/vis-network/" in html_content:
+    """Finalize browser assets while writing a graph page to disk."""
+    has_vis_asset_reference = (
+        "cdnjs.cloudflare.com/ajax/libs/vis-network/" in html_content
+        or "/api/graph-assets/vis-network" in html_content
+    )
+    if has_vis_asset_reference:
         if asset_base_url:
             base_url = asset_base_url.rstrip("/")
             css_replacement = f'<link rel="stylesheet" href="{base_url}/vis-network.css">'
@@ -1295,6 +1431,20 @@ def prepare_legacy_graph_html(
         )
         html_content = re.sub(
             r'<script\b[^>]*src="https://cdnjs\.cloudflare\.com/ajax/libs/vis-network/[^\"]+"[^>]*>\s*</script>',
+            lambda _match: js_replacement,
+            html_content,
+            count=1,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        html_content = re.sub(
+            r'<link\b[^>]*href="/api/graph-assets/vis-network\.css"[^>]*>',
+            lambda _match: css_replacement,
+            html_content,
+            count=1,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        html_content = re.sub(
+            r'<script\b[^>]*src="/api/graph-assets/vis-network\.min\.js"[^>]*>\s*</script>',
             lambda _match: js_replacement,
             html_content,
             count=1,
@@ -1321,6 +1471,16 @@ def prepare_legacy_graph_html(
         lambda match: match.group(1) + str(iteration_targets[int(match.group(2))]),
         html_content,
     )
+    return html_content
+
+
+def prepare_legacy_graph_html(
+    html_content: str,
+    asset_base_url: str | None = None,
+    graph_name: str = "",
+) -> str:
+    """Upgrade legacy graph content during explicit migration or export work."""
+    html_content = finalize_generated_graph_html(html_content, asset_base_url)
 
     if "knowledge-graph-ready" not in html_content:
         ready_script = r"""
@@ -1345,7 +1505,7 @@ document.addEventListener('DOMContentLoaded', function () {
 """
         html_content = html_content.replace("</body>", ready_script + "</body>")
     if graph_name and (
-        "const GRAPH_EDITOR_VERSION = 3;" not in html_content
+        f"const GRAPH_EDITOR_VERSION = {GRAPH_EDITOR_VERSION};" not in html_content
         or "function applyLargeGraphPerformance()" not in html_content
         or "function moveLegacyIsolatedNodesOutside()" not in html_content
         or "const GRAPH_STATIC_LAYOUT_VERSION =" not in html_content

@@ -3,21 +3,27 @@ ARG BASE_REGISTRY=docker.m.daocloud.io/library
 FROM ${BASE_REGISTRY}/python:3.12-slim
 
 ARG PYPI_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
+ARG PYPI_FALLBACK_INDEX=https://pypi.org/simple
 ARG TORCH_FIND_LINKS=https://mirrors.aliyun.com/pytorch-wheels/cpu/
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    HF_ENDPOINT=https://hf-mirror.com
+    PIP_ROOT_USER_ACTION=ignore \
+    HF_ENDPOINT=https://huggingface.co
 
 WORKDIR /app
 
 # 复制依赖文件并安装
 COPY requirements.txt .
 RUN python -m pip install --upgrade pip \
-    && python -m pip install modelscope --index-url "${PYPI_INDEX}" \
+    && python -m pip install modelscope \
+        --index-url "${PYPI_INDEX}" \
+        --extra-index-url "${PYPI_FALLBACK_INDEX}" \
     && python -m pip install 'torch==2.6.0+cpu' --find-links "${TORCH_FIND_LINKS}" \
-    && python -m pip install -r requirements.txt --index-url "${PYPI_INDEX}"
+    && python -m pip install -r requirements.txt \
+        --index-url "${PYPI_INDEX}" \
+        --extra-index-url "${PYPI_FALLBACK_INDEX}"
 RUN modelscope download BAAI/bge-base-zh \
     --local_dir /app/models/bge-base-zh \
     --exclude '*.bin' '*.onnx'

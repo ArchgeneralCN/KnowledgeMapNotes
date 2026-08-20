@@ -2,17 +2,16 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import time
 import uuid
 import zipfile
-from collections import defaultdict, deque
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
-from typing import Any, AsyncGenerator, Deque, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -20,7 +19,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from openai import OpenAI
 import networkx as nx
 from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -38,8 +36,13 @@ from transfer_package import (
     read_transfer_package,
 )
 from KnowledgeGraphManager.graph_interactions import (
+    GRAPH_EDITOR_VERSION,
     get_local_vis_asset_path,
     prepare_legacy_graph_html,
+)
+from KnowledgeGraphManager.sigma_static import (
+    SIGMA_STATIC_PAGE_VERSION,
+    write_sigma_graph_pages,
 )
 from KnowledgeGraphManager.graph_editing import (
     GraphEditError,
@@ -49,10 +52,22 @@ from KnowledgeGraphManager.graph_editing import (
     state_from_snapshot,
     state_snapshot,
 )
-
-os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+from services.ai_runtime import (
+    AIRuntime,
+    create_ai_settings_router,
+    create_openai_client,
+    parse_boolean,
+)
+from services.document_store import DocumentStore
+from services.processing_progress import ProcessingProgressStore, STAGE_CONFIG
+from services.rag_service import RAGRequest, RAGService, create_rag_router
 
 load_dotenv(dotenv_path="./.env")
+# Do not force a third-party mirror here.  Mirrors commonly redirect or omit
+# Hugging Face metadata headers, which makes huggingface_hub raise
+# FileMetadataError.  Users behind a restricted network can opt in with
+# HF_ENDPOINT in .env or the process environment.
+os.environ.setdefault("HF_ENDPOINT", "https://huggingface.co")
 
 # 配置日志
 logging.basicConfig(
@@ -64,34 +79,6 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger("文件处理服务")
-
-
-class RAGRequest(BaseModel):
-    """A request to answer a question against a processed knowledge graph."""
-
-    request: str
-    model: Optional[str] = None
-    flow: bool = False
-    top_k: int = 1
-    weight_threshold: float = 0.3
-    max_relations: int = 20
-    filename: Optional[str] = None
-    messages: Optional[List[Dict[str, str]]] = None
-    session_id: Optional[str] = None
-
-
-class AISettingsUpdate(BaseModel):
-    """Runtime settings for the OpenAI-compatible text model."""
-
-    base_url: str
-    api_key: Optional[str] = None
-    model_name: str
-    temperature: float = Field(ge=0, le=2)
-    enable_thinking: bool = False
-    fallback_enabled: bool = False
-    fallback_base_url: Optional[str] = None
-    fallback_api_key: Optional[str] = None
-    fallback_model_name: Optional[str] = None
 
 
 class GraphMutationRequest(BaseModel):
@@ -159,6 +146,17 @@ TXT_FOLDER = Path(os.getenv("TXT_FOLDER", "txt_files"))
 RESULT_FOLDER = Path(os.getenv("RESULT_FOLDER", "results"))
 STATUS_FOLDER = Path(os.getenv("STATUS_FOLDER", "processing_states"))
 GRAPH_HISTORY_FOLDER = Path(os.getenv("GRAPH_HISTORY_FOLDER", "graph_history"))
+document_store = DocumentStore(TXT_FOLDER, GRAPH_HISTORY_FOLDER, logger)
+get_source_text_path = document_store.source_path
+get_document_draft_path = document_store.draft_path
+get_document_rich_path = document_store.rich_path
+get_document_history_path = document_store.history_path
+_read_document_history = document_store.read_history
+_write_document_history = document_store.write_history
+_document_snapshot = document_store.snapshot
+_restore_document_snapshot = document_store.restore_snapshot
+_append_document_version = document_store.append_version
+_document_operation_label = document_store.operation_label
 MAX_TRANSFER_PACKAGE_SIZE = 100 * 1024 * 1024
 DEFAULT_EXAMPLE_FOLDER = Path(__file__).resolve().parent / "default_examples"
 DEFAULT_EXAMPLE_PACKAGE = DEFAULT_EXAMPLE_FOLDER / f"本软件使用说明{PACKAGE_SUFFIX}"
@@ -167,104 +165,78 @@ try:
 except (TypeError, ValueError):
     CHECKPOINT_INTERVAL = 10
 
-PROCESS_STATUS: Dict[str, Dict[str, Any]] = {}
-process_status_lock = Lock()
+processing_progress = ProcessingProgressStore(STATUS_FOLDER)
+PROCESS_STATUS = processing_progress.statuses
+process_status_lock = processing_progress.lock
+PROCESSING_STAGE_CONFIG = STAGE_CONFIG
+
+
+def _sync_progress_store() -> None:
+    """Keep the service compatible with tests that replace STATUS_FOLDER."""
+    processing_progress.status_folder = STATUS_FOLDER
 
 
 def persist_process_status(base_name: str, status: Dict[str, Any]) -> None:
-    """Atomically persist recovery metadata so a service restart is resumable."""
-    status_path = STATUS_FOLDER / f"{base_name}.json"
-    temporary_path = status_path.with_suffix(".json.tmp")
-    temporary_path.write_text(
-        json.dumps(status, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    temporary_path.replace(status_path)
+    _sync_progress_store()
+    processing_progress.persist(base_name, status)
 
 
 def set_process_status(base_name: str, status: str, **updates: Any) -> None:
-    """Atomically update the status and chunk-level progress for one file."""
-    with process_status_lock:
-        current = PROCESS_STATUS.get(base_name, {})
-        next_status = {
-            **current,
-            **updates,
-            "status": status,
-            "updated_at": time.time(),
-        }
-        PROCESS_STATUS[base_name] = next_status
-        persist_process_status(base_name, next_status)
+    _sync_progress_store()
+    processing_progress.set(base_name, status, **updates)
 
 
 def get_process_status(base_name: str) -> Optional[Dict[str, Any]]:
-    """Return a copy so responses cannot observe a partially changed status."""
-    with process_status_lock:
-        status = PROCESS_STATUS.get(base_name)
-        return status.copy() if status else None
+    return processing_progress.get(base_name)
 
 
-def create_chunk_progress_callback(base_name: str, status: str = "processing"):
-    """Record a completed chunk and estimate remaining work from its duration."""
-    def update_progress(completed_chunks: int, total_chunks: int, chunk_seconds: float) -> None:
-        remaining_chunks = max(total_chunks - completed_chunks, 0)
-        current = get_process_status(base_name) or {}
-        effective_status = "pausing" if current.get("pause_requested") else status
-        set_process_status(
-            base_name,
-            effective_status,
-            completed_chunks=completed_chunks,
-            total_chunks=total_chunks,
-            percentage=round(completed_chunks * 100 / total_chunks) if total_chunks else 0,
-            latest_chunk_seconds=round(chunk_seconds, 1),
-            estimated_remaining_seconds=(
-                max(1, round(remaining_chunks * chunk_seconds)) if remaining_chunks else 0
-            ),
-        )
+def _new_stage_progress(
+    stage: str,
+    completed: int = 0,
+    total: int = 0,
+    total_known: bool = False,
+    previous: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    return processing_progress.new_stage(stage, completed, total, total_known, previous)
 
-    return update_progress
 
-# Ensure configured runtime directories exist before accepting requests.
+def _overall_stage_metrics(stage_progress: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    return processing_progress.overall(stage_progress)
+
+
+def initialize_stage_progress(
+    base_name: str,
+    status: str,
+    total_chunks: Optional[int],
+    completed_chunks: int = 0,
+    preserve_timings: bool = False,
+) -> None:
+    _sync_progress_store()
+    processing_progress.initialize(
+        base_name, status, total_chunks, completed_chunks, preserve_timings
+    )
+
+
+def create_stage_progress_callback(base_name: str, status: str = "processing"):
+    _sync_progress_store()
+    return processing_progress.stage_callback(base_name, status)
+
+
+def create_fusion_progress_callback(base_name: str, status: str = "processing"):
+    _sync_progress_store()
+    return processing_progress.fusion_callback(base_name, status)
+
+
+# Create runtime directories before restoring interrupted processing state.
 for folder in [UPLOAD_FOLDER, TXT_FOLDER, RESULT_FOLDER, STATUS_FOLDER, GRAPH_HISTORY_FOLDER]:
     folder.mkdir(parents=True, exist_ok=True)
 
 
 def restore_process_statuses() -> None:
-    """Restore file states and mark abandoned in-flight work as interrupted."""
-    active_statuses = {"uploading", "processing", "updating", "resuming", "pausing"}
-    for status_path in STATUS_FOLDER.glob("*.json"):
-        try:
-            restored = json.loads(status_path.read_text(encoding="utf-8"))
-            base_name = status_path.stem
-            if restored.get("status") == "redrawing":
-                has_existing_graph = (RESULT_FOLDER / base_name / f"{base_name}.html").is_file()
-                restored["status"] = "completed" if has_existing_graph else "error"
-                restored["error_message"] = (
-                    "重新绘制被服务中断，已保留原图"
-                    if has_existing_graph else "重新绘制被服务中断，图谱页面不存在"
-                )
-                restored["pause_requested"] = False
-                persist_process_status(base_name, restored)
-            elif restored.get("status") in active_statuses:
-                completed = int(restored.get("completed_chunks") or 0)
-                was_pausing = restored.get("status") == "pausing" or restored.get("pause_requested")
-                restored["status"] = "paused" if was_pausing else (
-                    "interrupted" if completed else "error"
-                )
-                restored["error_message"] = (
-                    None if was_pausing else "服务中断，等待继续处理"
-                )
-                restored["pause_requested"] = False
-                source_path = Path(
-                    restored.get("source_text_path") or TXT_FOLDER / f"{base_name}.source.txt"
-                )
-                original_filename = restored.get("original_filename")
-                restored["resumable"] = source_path.is_file() or bool(
-                    original_filename and (UPLOAD_FOLDER / original_filename).is_file()
-                )
-                persist_process_status(base_name, restored)
-            PROCESS_STATUS[base_name] = restored
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
-            logger.warning("忽略损坏的处理状态文件: %s", status_path, exc_info=True)
+    _sync_progress_store()
+    damaged = processing_progress.restore(UPLOAD_FOLDER, TXT_FOLDER, RESULT_FOLDER)
+    for path in damaged:
+        logger.warning("忽略损坏的处理状态文件: %s", path)
 
 
 restore_process_statuses()
@@ -297,23 +269,49 @@ def get_base_name(filename: str) -> str:
         raise HTTPException(status_code=400, detail="文件名不合法")
     return base_name
 
+
+def get_transfer_import_path(base_name: str) -> Path:
+    """Return the private staging path for one fully uploaded transfer package."""
+    return UPLOAD_FOLDER / f".{get_base_name(f'{base_name}.txt')}.importing{PACKAGE_SUFFIX}"
+
 # 初始化知识图谱组件
 from OmniStore.chromadb_store import StoreTool
 from sentence_transformers import SentenceTransformer
-from KnowledgeGraphManager.KGManager import KgManager, PROCESSING_PROMPT_FILES, ProcessingPaused
+from KnowledgeGraphManager.KGManager import (
+    KgManager,
+    PROCESSING_PROMPT_FILES,
+    ProcessingPaused,
+    normalize_community_pagination_settings,
+)
 
 
 
-device = os.getenv("DEVICE")
+device = os.getenv("DEVICE") or "cpu"
 
 
-if os.getenv("IS_USE_LOCAL") == "True":
-    embeddings = SentenceTransformer(
-        os.getenv("EMBEDDINGS_PATH")
-    ).to(device)
-else:
-    # 初始化模型和组件
-    embeddings = SentenceTransformer(os.getenv("EMBEDDINGS")).to(device)
+def _load_embedding_model() -> SentenceTransformer:
+    """Load embeddings without contacting the hub for a configured local path."""
+    use_local = os.getenv("IS_USE_LOCAL", "False").strip().lower() in {"1", "true", "yes", "on"}
+    model_name = os.getenv("EMBEDDINGS_PATH" if use_local else "EMBEDDINGS")
+    if not model_name:
+        setting = "EMBEDDINGS_PATH" if use_local else "EMBEDDINGS"
+        raise RuntimeError(f"{setting} is required to load the embedding model")
+
+    if use_local:
+        model_path = Path(model_name).expanduser()
+        if not model_path.is_dir():
+            raise RuntimeError(
+                f"Local embedding model directory does not exist: {model_path}. "
+                "Run start.py to download models or set IS_USE_LOCAL=False."
+            )
+        return SentenceTransformer(
+            str(model_path), device=device, local_files_only=True
+        )
+
+    return SentenceTransformer(model_name, device=device)
+
+
+embeddings = _load_embedding_model()
 
 
 # 创建两个独立的存储工具
@@ -322,6 +320,11 @@ graph_history = GraphHistory(GRAPH_HISTORY_FOLDER)
 graph_edit_lock = Lock()
 
 MAX_CUSTOM_PROMPT_LENGTH = 30_000
+(
+    DEFAULT_COMMUNITY_MIN_SIZE_MODE,
+    DEFAULT_COMMUNITY_MIN_SIZE,
+    DEFAULT_COMMUNITY_AUTO_PERCENT,
+) = normalize_community_pagination_settings()
 
 
 def _graph_manager_state(manager: KgManager) -> Dict[str, Any]:
@@ -333,6 +336,9 @@ def _graph_manager_state(manager: KgManager) -> Dict[str, Any]:
         "current_G": manager.current_G,
         "Bolts": manager.Bolts,
         "original_file_type": manager.original_file_type,
+        "community_min_size_mode": manager.community_min_size_mode,
+        "community_min_size": manager.community_min_size,
+        "community_auto_percent": manager.community_auto_percent,
         "document": _document_snapshot(base_name) if base_name else {},
     }
 
@@ -358,6 +364,11 @@ def _restore_manager_state(manager: KgManager, state: Dict[str, Any]) -> None:
     manager.current_G = state.get("current_G") or nx.DiGraph()
     manager.Bolts = state.get("Bolts") or []
     manager.original_file_type = state.get("original_file_type") or ".txt"
+    manager.configure_community_pagination(
+        state.get("community_min_size_mode"),
+        state.get("community_min_size"),
+        state.get("community_auto_percent"),
+    )
 
 
 def _current_graph_revision(base_name: str) -> int:
@@ -396,10 +407,27 @@ async def get_editable_graph(filename: str):
 
 
 @app.post("/redraw-graph/{filename}")
-async def redraw_graph(filename: str):
+async def redraw_graph(
+    filename: str,
+    renderer: str = "all",
+    community_min_size_mode: str = DEFAULT_COMMUNITY_MIN_SIZE_MODE,
+    community_min_size: int = DEFAULT_COMMUNITY_MIN_SIZE,
+    community_auto_percent: float = DEFAULT_COMMUNITY_AUTO_PERCENT,
+):
     """Redraw one file's complete graph from its saved state."""
     filename = get_safe_filename(filename)
     base_name = get_base_name(filename)
+    renderer = str(renderer or "all").strip().lower()
+    if renderer not in {"all", "pyvis", "sigma"}:
+        raise HTTPException(status_code=422, detail="renderer 必须是 pyvis 或 sigma")
+    try:
+        community_settings = normalize_community_pagination_settings(
+            community_min_size_mode,
+            community_min_size,
+            community_auto_percent,
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     progress = get_process_status(base_name) or {}
     status = progress.get("status", "completed")
     if status in {"uploading", "processing", "updating", "resuming", "pausing", "redrawing"}:
@@ -413,11 +441,19 @@ async def redraw_graph(filename: str):
         base_name,
         "redrawing",
         percentage=100,
+        community_min_size_mode=community_settings[0],
+        community_min_size=community_settings[1],
+        community_auto_percent=community_settings[2],
         estimated_remaining_seconds=None,
         error_message=None,
     )
     try:
-        history_revision = await asyncio.to_thread(redraw_graph_from_store, base_name)
+        history_revision = await asyncio.to_thread(
+            redraw_graph_from_store,
+            base_name,
+            renderer,
+            *community_settings,
+        )
     except HTTPException:
         set_process_status(
             base_name,
@@ -442,7 +478,8 @@ async def redraw_graph(filename: str):
     return {
         "status": "completed",
         "filename": filename,
-        "message": "图谱已根据当前保存的图谱状态重新绘制",
+        "message": f"{renderer.upper() if renderer != 'all' else '全部'} 图谱已根据当前保存状态重新绘制",
+        "renderer": renderer,
         "history_revision": history_revision,
     }
 
@@ -455,15 +492,39 @@ async def get_graph_history(filename: str):
 
 @app.get("/graph-sources/{filename}")
 async def get_graph_sources(filename: str):
-    """Return completed text blocks used to locate graph evidence in the reader."""
+    """Return the static, per-block source highlight index generated with the graph."""
     base_name = get_base_name(filename)
+    highlight_index = RESULT_FOLDER / base_name / f"{base_name}.highlights.json"
+    current_index = {}
+    if highlight_index.is_file():
+        try:
+            current_index = json.loads(highlight_index.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            current_index = {}
+        try:
+            current_schema = int(current_index.get("schema") or 0)
+        except (TypeError, ValueError):
+            current_schema = 0
+        if current_schema >= 2:
+            return FileResponse(
+                highlight_index,
+                media_type="application/json",
+                headers={"Cache-Control": "no-cache"},
+            )
+
+    # Compatibility for graph pages created before static highlight indexes:
+    # migrate once on first access, then every later request is a file response.
     manager = _load_editable_graph(base_name)
-    return {
-        "blocks": [
-            {"bid": str(bid), "text": str(text), "index": index}
-            for index, (bid, text) in enumerate(manager.Bolts)
-        ]
-    }
+    highlight_index.parent.mkdir(parents=True, exist_ok=True)
+    manager._写入静态高亮索引(
+        highlight_index,
+        current_index if isinstance(current_index, dict) else None,
+    )
+    return FileResponse(
+        highlight_index,
+        media_type="application/json",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 @app.post("/graph-mutation/{filename}")
@@ -589,340 +650,51 @@ def normalize_processing_prompts(
             normalized_prompts[stage] = prompt
     return normalized_prompts
 
-def parse_boolean(value: Optional[str], default: bool = False) -> bool:
-    if value is None:
-        return default
-    return value.strip().lower() in {"true", "1", "yes", "on", "enabled"}
-
-
-ai_settings_lock = Lock()
-AI_SETTINGS: Dict[str, Any] = {
-    "base_url": os.getenv("BASE_URL", "").strip(),
-    "api_key": os.getenv("API_KEY", "").strip(),
-    "model_name": os.getenv("MODEL_NAME", "").strip(),
-    "temperature": float(os.getenv("TEMPERATURE", "0")),
-    "enable_thinking": parse_boolean(os.getenv("ENABLE_THINKING")),
-    "fallback_enabled": parse_boolean(os.getenv("FALLBACK_ENABLED")),
-    "fallback_base_url": os.getenv("FALLBACK_BASE_URL", "").strip(),
-    "fallback_api_key": os.getenv("FALLBACK_API_KEY", "").strip(),
-    "fallback_model_name": os.getenv("FALLBACK_MODEL_NAME", "").strip(),
-}
-
-
-def create_openai_client(api_key: str, base_url: str) -> Optional[OpenAI]:
-    """Create a client only after the user has supplied both required values."""
-    if not api_key or not base_url:
-        return None
-    return OpenAI(api_key=api_key, base_url=base_url)
-
-
-client = create_openai_client(
-    api_key=AI_SETTINGS["api_key"],
-    base_url=AI_SETTINGS["base_url"],
-)
-fallback_client = create_openai_client(
-    api_key=AI_SETTINGS["fallback_api_key"],
-    base_url=AI_SETTINGS["fallback_base_url"],
-) if AI_SETTINGS["fallback_enabled"] else None
+ai_runtime = AIRuntime(logger)
+client = ai_runtime.client
+fallback_client = ai_runtime.fallback_client
 if client is None:
     logger.info("未在环境变量中配置 AI 服务，等待用户在前端完成设置")
 
-# 多模态模型
+# The vision client is independent from the text-model runtime.
 vl_client = create_openai_client(
     api_key=os.getenv("VL_API_KEY", "").strip(),
     base_url=os.getenv("VL_BASE_URL", "").strip(),
 )
+
 from LLM.Openai_Agent import OpenaiAgent
-# 创建两个独立的agent
+
 rag_agent = OpenaiAgent(
     client,
-    model_name=AI_SETTINGS["model_name"],
-    temperature=AI_SETTINGS["temperature"],
-    enable_thinking=AI_SETTINGS["enable_thinking"],
+    model_name=ai_runtime.settings["model_name"],
+    temperature=ai_runtime.settings["temperature"],
+    enable_thinking=ai_runtime.settings["enable_thinking"],
+    stream=ai_runtime.settings["stream"],
     fallback_client=fallback_client,
-    fallback_model_name=AI_SETTINGS["fallback_model_name"],
+    fallback_model_name=ai_runtime.settings["fallback_model_name"],
+    fallback_stream=ai_runtime.settings["fallback_stream"],
 )
 kg_agent = OpenaiAgent(
     client,
-    model_name=AI_SETTINGS["model_name"],
-    temperature=AI_SETTINGS["temperature"],
-    enable_thinking=AI_SETTINGS["enable_thinking"],
+    model_name=ai_runtime.settings["model_name"],
+    temperature=ai_runtime.settings["temperature"],
+    enable_thinking=ai_runtime.settings["enable_thinking"],
+    stream=ai_runtime.settings["stream"],
     fallback_client=fallback_client,
-    fallback_model_name=AI_SETTINGS["fallback_model_name"],
+    fallback_model_name=ai_runtime.settings["fallback_model_name"],
+    fallback_stream=ai_runtime.settings["fallback_stream"],
 )
-
-
-def mask_api_key(api_key: str) -> str:
-    if not api_key:
-        return ""
-    if len(api_key) <= 7:
-        return "****"
-    return f"{api_key[:3]}...{api_key[-4:]}"
-
-
-def get_public_ai_settings() -> Dict[str, Any]:
-    with ai_settings_lock:
-        settings = AI_SETTINGS.copy()
-    return {
-        "base_url": settings["base_url"],
-        "model_name": settings["model_name"],
-        "temperature": settings["temperature"],
-        "enable_thinking": settings["enable_thinking"],
-        "api_key_configured": bool(settings["api_key"]),
-        "api_key_hint": mask_api_key(settings["api_key"]),
-        "fallback_enabled": settings["fallback_enabled"],
-        "fallback_base_url": settings["fallback_base_url"],
-        "fallback_model_name": settings["fallback_model_name"],
-        "fallback_api_key_configured": bool(settings["fallback_api_key"]),
-        "fallback_api_key_hint": mask_api_key(settings["fallback_api_key"]),
-    }
+app.include_router(create_ai_settings_router(ai_runtime, rag_agent, kg_agent))
 
 
 def require_ai_settings() -> None:
-    """Reject model-dependent requests until runtime settings are complete."""
-    with ai_settings_lock:
-        primary_configured = client is not None and bool(AI_SETTINGS["model_name"])
-        fallback_configured = (
-            AI_SETTINGS["fallback_enabled"]
-            and fallback_client is not None
-            and bool(AI_SETTINGS["fallback_model_name"])
-        )
-        is_configured = primary_configured or fallback_configured
-    if not is_configured:
-        raise HTTPException(status_code=503, detail="请先在前端完成 AI 配置")
-
-
-def request_ai_validation_completion(ai_client: OpenAI, settings: Dict[str, Any]) -> None:
-    """Send the smallest useful request for validating an OpenAI-compatible service."""
-    response = ai_client.with_options(timeout=20.0, max_retries=0).chat.completions.create(
-        model=settings["model_name"],
-        messages=[{"role": "user", "content": "Reply with OK."}],
-        temperature=settings["temperature"],
-        max_tokens=32,
-        extra_body={
-            "thinking": {
-                "type": "enabled" if settings["enable_thinking"] else "disabled"
-            }
-        },
-    )
-    # A gateway can return HTTP 200 with an HTML landing page or raw text.
-    # Validate the actual OpenAI-compatible response before accepting settings.
-    OpenaiAgent._extract_chat_completion(response)
+    """Compatibility facade used by processing and RAG endpoints."""
+    ai_runtime.require_settings()
 
 
 async def validate_current_ai_settings() -> None:
-    """Verify the active model configuration before starting file processing."""
-    require_ai_settings()
-    with ai_settings_lock:
-        current_client = client
-        current_fallback_client = fallback_client
-        settings = AI_SETTINGS.copy()
-
-    primary_error: Optional[Exception] = None
-    try:
-        await asyncio.wait_for(
-            asyncio.to_thread(request_ai_validation_completion, current_client, settings),
-            timeout=25.0,
-        )
-        return
-    except Exception as primary_exc:
-        primary_error = primary_exc
-        logger.warning(
-            "上传前 AI 配置校验失败: base_url=%s model=%s error=%s",
-            settings["base_url"],
-            settings["model_name"],
-            primary_exc,
-        )
-
-    if settings["fallback_enabled"] and current_fallback_client is not None:
-        fallback_settings = {
-            **settings,
-            "base_url": settings["fallback_base_url"],
-            "api_key": settings["fallback_api_key"],
-            "model_name": settings["fallback_model_name"],
-        }
-        try:
-            await asyncio.wait_for(
-                asyncio.to_thread(
-                    request_ai_validation_completion,
-                    current_fallback_client,
-                    fallback_settings,
-                ),
-                timeout=25.0,
-            )
-            logger.info("主 AI 校验失败，备用 AI 可用，允许继续处理")
-            return
-        except Exception as fallback_exc:
-            logger.warning("备用 AI 配置校验失败: %s", fallback_exc)
-            raise HTTPException(
-                status_code=502,
-                detail=f"主 AI 和备用 AI 均不可用: {fallback_exc}",
-            ) from fallback_exc
-
-    raise HTTPException(
-        status_code=502,
-        detail=f"主 AI 不可用且未配置备用 AI: {primary_error}",
-    ) from primary_error
-
-
-def prepare_ai_settings(
-    settings: AISettingsUpdate,
-) -> tuple[OpenAI, Optional[OpenAI], Dict[str, Any]]:
-    """Validate settings and build a client without changing runtime state."""
-    base_url = settings.base_url.strip().rstrip("/")
-    model_name = settings.model_name.strip()
-    submitted_api_key = (settings.api_key or "").strip()
-    fallback_base_url = (settings.fallback_base_url or "").strip().rstrip("/")
-    fallback_model_name = (settings.fallback_model_name or "").strip()
-    submitted_fallback_api_key = (settings.fallback_api_key or "").strip()
-
-    if not base_url.startswith(("http://", "https://")):
-        raise HTTPException(status_code=422, detail="Base URL 必须以 http:// 或 https:// 开头")
-    if not model_name:
-        raise HTTPException(status_code=422, detail="模型名称不能为空")
-
-    with ai_settings_lock:
-        api_key = submitted_api_key or AI_SETTINGS["api_key"]
-        fallback_api_key = (
-            submitted_fallback_api_key or AI_SETTINGS["fallback_api_key"]
-        )
-    if not api_key:
-        raise HTTPException(status_code=422, detail="API Key 不能为空")
-
-    try:
-        next_client = create_openai_client(api_key=api_key, base_url=base_url)
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=f"AI 配置无效: {exc}") from exc
-    if next_client is None:
-        raise HTTPException(status_code=422, detail="Base URL 和 API Key 不能为空")
-
-    next_fallback_client = None
-    if settings.fallback_enabled:
-        if not fallback_base_url.startswith(("http://", "https://")):
-            raise HTTPException(status_code=422, detail="备用 Base URL 必须以 http:// 或 https:// 开头")
-        if not fallback_model_name:
-            raise HTTPException(status_code=422, detail="备用模型名称不能为空")
-        if not fallback_api_key:
-            raise HTTPException(status_code=422, detail="备用 API Key 不能为空")
-        try:
-            next_fallback_client = create_openai_client(
-                api_key=fallback_api_key,
-                base_url=fallback_base_url,
-            )
-        except Exception as exc:
-            raise HTTPException(status_code=422, detail=f"备用 AI 配置无效: {exc}") from exc
-
-    return next_client, next_fallback_client, {
-        "base_url": base_url,
-        "api_key": api_key,
-        "model_name": model_name,
-        "temperature": settings.temperature,
-        "enable_thinking": settings.enable_thinking,
-        "fallback_enabled": settings.fallback_enabled,
-        "fallback_base_url": fallback_base_url,
-        "fallback_api_key": fallback_api_key,
-        "fallback_model_name": fallback_model_name,
-    }
-
-
-@app.get("/ai-settings")
-async def get_ai_settings():
-    """Return runtime model settings without exposing the API key."""
-    return get_public_ai_settings()
-
-
-@app.post("/ai-settings/validate")
-async def validate_ai_settings():
-    """Validate the active model configuration without changing it."""
-    await validate_current_ai_settings()
-    return {"message": "AI 配置校验成功"}
-
-
-@app.put("/ai-settings")
-async def update_ai_settings(settings: AISettingsUpdate):
-    """Apply model settings to subsequent graph extraction and RAG calls."""
-    global client, fallback_client
-
-    next_client, next_fallback_client, next_settings = prepare_ai_settings(settings)
-
-    with ai_settings_lock:
-        rag_agent.configure(
-            next_client,
-            model_name=next_settings["model_name"],
-            temperature=next_settings["temperature"],
-            enable_thinking=next_settings["enable_thinking"],
-            fallback_client=next_fallback_client,
-            fallback_model_name=next_settings["fallback_model_name"],
-        )
-        kg_agent.configure(
-            next_client,
-            model_name=next_settings["model_name"],
-            temperature=next_settings["temperature"],
-            enable_thinking=next_settings["enable_thinking"],
-            fallback_client=next_fallback_client,
-            fallback_model_name=next_settings["fallback_model_name"],
-        )
-        client = next_client
-        fallback_client = next_fallback_client
-        AI_SETTINGS.update(next_settings)
-
-    logger.info(
-        "AI 配置已更新: base_url=%s model=%s temperature=%s thinking=%s",
-        next_settings["base_url"],
-        next_settings["model_name"],
-        settings.temperature,
-        settings.enable_thinking,
-    )
-    return {"message": "AI 配置已更新", **get_public_ai_settings()}
-
-
-@app.post("/ai-settings/test")
-async def test_ai_settings(settings: AISettingsUpdate):
-    """Test submitted settings with a minimal request without saving them."""
-    test_client, test_fallback_client, test_settings = prepare_ai_settings(settings)
-
-    started_at = time.monotonic()
-    try:
-        await asyncio.wait_for(
-            asyncio.to_thread(request_ai_validation_completion, test_client, test_settings),
-            timeout=25.0,
-        )
-    except asyncio.TimeoutError as exc:
-        raise HTTPException(status_code=504, detail="AI 连接测试超时，请检查服务地址或网络") from exc
-    except Exception as exc:
-        logger.warning(
-            "AI 连接测试失败: base_url=%s model=%s error=%s",
-            test_settings["base_url"],
-            test_settings["model_name"],
-            exc,
-        )
-        raise HTTPException(status_code=502, detail=f"AI 连接测试失败: {exc}") from exc
-
-    if test_settings["fallback_enabled"] and test_fallback_client is not None:
-        fallback_test_settings = {
-            **test_settings,
-            "base_url": test_settings["fallback_base_url"],
-            "api_key": test_settings["fallback_api_key"],
-            "model_name": test_settings["fallback_model_name"],
-        }
-        try:
-            await asyncio.wait_for(
-                asyncio.to_thread(
-                    request_ai_validation_completion,
-                    test_fallback_client,
-                    fallback_test_settings,
-                ),
-                timeout=25.0,
-            )
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"备用 AI 连接测试失败: {exc}") from exc
-
-    latency_ms = round((time.monotonic() - started_at) * 1000)
-    return {
-        "message": "主 AI 和备用 AI 连接测试成功"
-        if test_settings["fallback_enabled"] else "AI 连接测试成功",
-        "latency_ms": latency_ms,
-    }
+    """Validate the active runtime before starting a long-running job."""
+    await ai_runtime.validate_current()
 
 
 @app.get("/processing-prompts/defaults")
@@ -939,32 +711,86 @@ simple_files = parse_file_extensions(os.getenv("SIMPLE", ""))
 semantic_files = parse_file_extensions(os.getenv("SEMANTIC", ""))
 character_files = parse_file_extensions(os.getenv("CHARACTER", ""))
 
+
+def _chunk_token_setting(name: str, default: int, minimum: int = 0) -> int:
+    try:
+        return max(minimum, int(os.getenv(name, str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
+chunk_max_tokens = _chunk_token_setting("KG_CHUNK_MAX_TOKENS", 1024, 128)
+chunk_min_tokens = min(
+    chunk_max_tokens - 1,
+    _chunk_token_setting("KG_CHUNK_MIN_TOKENS", 384, 1),
+)
+CHUNK_MAX_TOKENS_LIMIT = 32_768
+CHUNK_MIN_TOKENS_LIMIT = 128
+
+
+def normalize_chunk_token_settings(
+    max_tokens: Optional[int] = None,
+    min_tokens: Optional[int] = None,
+) -> tuple[int, int]:
+    """Validate the per-file splitter settings captured when a job starts."""
+    resolved_max = chunk_max_tokens if max_tokens is None else int(max_tokens)
+    resolved_min = chunk_min_tokens if min_tokens is None else int(min_tokens)
+    if not CHUNK_MIN_TOKENS_LIMIT <= resolved_max <= CHUNK_MAX_TOKENS_LIMIT:
+        raise ValueError(
+            f"每块最大 Token 必须在 {CHUNK_MIN_TOKENS_LIMIT} 到 {CHUNK_MAX_TOKENS_LIMIT} 之间"
+        )
+    if resolved_min < 1 or resolved_min >= resolved_max:
+        raise ValueError("每块最小 Token 必须大于 0 且小于最大 Token")
+    return resolved_max, resolved_min
+
 # 初始化默认分割器
 kg_splitter = None
 
 # 创建默认分割器
 if simple_files:
     from TextSlicer.SimpleTextSplitter import SimpleTextSplitter
-    kg_splitter = SimpleTextSplitter(2048, 1024)
+    kg_splitter = SimpleTextSplitter(chunk_max_tokens, chunk_min_tokens)
 elif semantic_files:
     from TextSlicer.SemanticTextSplitter import SemanticTextSplitter
-    kg_splitter = SemanticTextSplitter(2048, 1024)
+    kg_splitter = SemanticTextSplitter(chunk_max_tokens, chunk_min_tokens)
 elif character_files:
     from TextSlicer.CharacterTextSplitter import CharacterTextSplitter
-    kg_splitter = CharacterTextSplitter(separator="</end>", keep_separator=False, max_tokens=2048, min_tokens=1024)
+    kg_splitter = CharacterTextSplitter(
+        separator="</end>",
+        keep_separator=False,
+        max_tokens=chunk_max_tokens,
+        min_tokens=chunk_min_tokens,
+    )
 
 
-def get_splitter_for_extension(file_extension: str):
+def get_splitter_for_extension(
+    file_extension: str,
+    max_tokens: Optional[int] = None,
+    min_tokens: Optional[int] = None,
+):
     """Build the configured splitter for a file type, with a default fallback."""
+    resolved_max, resolved_min = normalize_chunk_token_settings(max_tokens, min_tokens)
     if file_extension in simple_files:
-        return SimpleTextSplitter(2048, 1024)
+        return SimpleTextSplitter(resolved_max, resolved_min)
     if file_extension in semantic_files:
-        return SemanticTextSplitter(2048, 1024)
+        return SemanticTextSplitter(resolved_max, resolved_min)
     if file_extension in character_files:
         return CharacterTextSplitter(
-            separator="</end>", keep_separator=False, max_tokens=2048, min_tokens=1024
+            separator="</end>",
+            keep_separator=False,
+            max_tokens=resolved_max,
+            min_tokens=resolved_min,
         )
-    return kg_splitter
+    if kg_splitter is None:
+        return None
+    if kg_splitter.__class__.__name__ == "CharacterTextSplitter":
+        return kg_splitter.__class__(
+            separator="</end>",
+            keep_separator=False,
+            max_tokens=resolved_max,
+            min_tokens=resolved_min,
+        )
+    return kg_splitter.__class__(resolved_max, resolved_min)
 
 
 # 创建两个独立的kg_manager
@@ -986,414 +812,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-rag_executor = ThreadPoolExecutor(max_workers=int(os.getenv("RAG_WORKER_COUNT", "4")))
 file_locks: Dict[str, Lock] = {}
-rag_locks: Dict[str, asyncio.Lock] = {}
-
-# 消息队列系统
-# 存储结构: {session_id: deque([消息1, 消息2, ...]), ...}
-message_queues: Dict[str, Deque["PendingRAGRequest"]] = {}
-# 每个会话的响应状态: {session_id: {"status": "processing/idle/error"}, ...}
-session_responses: Dict[str, Dict[str, object]] = {}
 
 
-@dataclass
-class PendingRAGRequest:
-    request: RAGRequest
-    completion: asyncio.Future[Dict[str, str]]
-
-
-def initialize_session(session_id: Optional[str] = None) -> str:
-    """Return an existing session or initialize state for a new one."""
-    session_id = session_id or str(uuid.uuid4())
-    if session_id not in message_queues:
-        message_queues[session_id] = deque()
-        session_responses[session_id] = {"status": "idle"}
-    return session_id
-
-
-@app.post("/create_session")
-async def create_session():
-    """
-    创建新的会话ID。
-    
-    用途：
-        用于前端或客户端创建一个新的对话会话，后续RAG问答等操作可复用该session_id。
-    
-    参数：
-        无
-    
-    返回：
-        dict: {"session_id": str} 新生成的会话ID。
-    
-    异常：
-        无
-    """
-    session_id = initialize_session()
-    return {"session_id": session_id}
-
-
-@app.post("/hybridrag")
-async def hybridrag(item: RAGRequest):
-    """
-    处理混合RAG请求。
-    
-    用途：
-        结合知识图谱和RAG检索，生成问答结果。
-    
-    参数：
-        item (RAGRequest): 包含请求内容、模型、会话ID、历史消息等。
-    
-    返回：
-        JSONResponse: {"result": {"answer": str, "material": str}} 或错误信息。
-    
-    异常：
-        处理失败时返回500。
-    """
-    require_ai_settings()
-    if not item.filename:
-        raise HTTPException(status_code=422, detail="filename 为必填项")
-
-    item.filename = get_safe_filename(item.filename)
-    session_id = initialize_session(item.session_id)
-    item.session_id = session_id
-    completion = asyncio.get_running_loop().create_future()
-    message_queues[session_id].append(PendingRAGRequest(item, completion))
-
-    if session_responses[session_id]["status"] == "idle":
-        asyncio.create_task(process_session_queue(session_id))
-    session_responses[session_id]["status"] = "processing"
-
-    try:
-        return JSONResponse({"result": await completion})
-    except Exception as exc:
-        logger.exception("处理知识图谱查询失败: session_id=%s", session_id)
-        return JSONResponse(status_code=500, content={"error": str(exc)})
-
-
-@app.post("/hybridrag/stream")
-async def hybridrag_stream(item: RAGRequest):
-    """Process a RAG request and return server-sent events."""
-    require_ai_settings()
-    if not item.filename:
-        raise HTTPException(status_code=422, detail="filename 为必填项")
-
-    item.filename = get_safe_filename(item.filename)
-    item.session_id = initialize_session(item.session_id)
-    request_id = str(uuid.uuid4())
-
-    async def stream_generator() -> AsyncGenerator[str, None]:
-        try:
-            loop = asyncio.get_running_loop()
-            base_name = get_base_name(item.filename or "")
-            rag_locks.setdefault(base_name, asyncio.Lock())
-
-            async with rag_locks[base_name]:
-                logger.info("开始流式知识图谱查询: filename=%s request_id=%s", item.filename, request_id)
-                yield "data: " + json.dumps(
-                    {"type": "status", "content": "开始处理", "request_id": request_id}
-                ) + "\n\n"
-
-                store_manager = storeManager(store=chromadb_store, agent=kg_agent)
-                rag_entity = await loop.run_in_executor(
-                    rag_executor, store_manager.text2entity, item.request, base_name
-                ) or []
-                yield "data: " + json.dumps(
-                    {"type": "status", "content": "实体识别完成", "request_id": request_id}
-                ) + "\n\n"
-
-                community_info = await loop.run_in_executor(
-                    rag_executor,
-                    store_manager.community_louvain_G,
-                    base_name,
-                    rag_entity,
-                    item.weight_threshold,
-                    item.max_relations,
-                ) or []
-                yield "data: " + json.dumps(
-                    {"type": "status", "content": "社区检测完成", "request_id": request_id}
-                ) + "\n\n"
-
-                results = await loop.run_in_executor(
-                    rag_executor, store_manager.select_vectors, item.request, base_name, item.top_k
-                ) or []
-                yield "data: " + json.dumps(
-                    {"type": "status", "content": "生成中...", "request_id": request_id}
-                ) + "\n\n"
-
-                response_stream = await loop.run_in_executor(
-                    rag_executor,
-                    rag_agent.hybrid_rag_stream,
-                    item.request,
-                    community_info,
-                    results,
-                    item.messages,
-                )
-                if response_stream is None:
-                    raise RuntimeError("响应流生成失败")
-
-                full_text = ""
-                for chunk in response_stream:
-                    if chunk is None:
-                        continue
-                    content = rag_agent.process_hybrid_rag_stream_chunk(chunk)
-                    if content:
-                        full_text += content
-                        yield "data: " + json.dumps({
-                            "type": "content",
-                            "chunk": content,
-                            "full": full_text,
-                            "request_id": request_id,
-                        }) + "\n\n"
-
-                answer, material = rag_agent.extract_material_from_text(full_text)
-                yield "data: " + json.dumps({
-                    "type": "final",
-                    "answer": answer,
-                    "material": material,
-                    "request_id": request_id,
-                }) + "\n\n"
-        except Exception as exc:
-            logger.exception("流式知识图谱查询失败: request_id=%s", request_id)
-            yield "data: " + json.dumps({
-                "type": "error",
-                "content": str(exc),
-                "request_id": request_id,
-            }) + "\n\n"
-        finally:
-            yield "data: " + json.dumps({
-                "type": "done",
-                "request_id": request_id,
-            }) + "\n\n"
-
-    return StreamingResponse(
-        stream_generator(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+def _load_rag_graph_payload(base_name: str) -> Dict[str, Any]:
+    """Load the current editable graph snapshot used to build RAG citations."""
+    manager = _load_editable_graph(base_name)
+    return graph_payload(
+        _graph_manager_state(manager),
+        _current_graph_revision(base_name),
     )
 
 
-# 处理会话队列的后台任务
-async def process_session_queue(session_id: str):
-    """Process a session sequentially and resolve the matching HTTP request."""
-    loop = asyncio.get_running_loop()
+rag_service = RAGService(
+    vector_store=chromadb_store,
+    kg_agent=kg_agent,
+    rag_agent=rag_agent,
+    require_ai_settings=require_ai_settings,
+    safe_filename=get_safe_filename,
+    base_name=get_base_name,
+    graph_payload_loader=_load_rag_graph_payload,
+    logger=logger,
+)
+app.include_router(create_rag_router(rag_service))
 
-    try:
-        while message_queues.get(session_id):
-            pending_request = message_queues[session_id].popleft()
-            item = pending_request.request
-            base_name = get_base_name(item.filename or "")
-            rag_locks.setdefault(base_name, asyncio.Lock())
-
-            try:
-                async with rag_locks[base_name]:
-                    logger.info("开始处理知识图谱查询: filename=%s session_id=%s", item.filename, session_id)
-                    store_manager = storeManager(store=chromadb_store, agent=kg_agent)
-                    rag_entity = await loop.run_in_executor(
-                        rag_executor, store_manager.text2entity, item.request, base_name
-                    )
-                    community_info = await loop.run_in_executor(
-                        rag_executor,
-                        store_manager.community_louvain_G,
-                        base_name,
-                        rag_entity,
-                        item.weight_threshold,
-                        item.max_relations,
-                    )
-                    results = await loop.run_in_executor(
-                        rag_executor, store_manager.select_vectors, item.request, base_name, item.top_k
-                    )
-                    result = await loop.run_in_executor(
-                        rag_executor,
-                        rag_agent.hybrid_rag,
-                        item.request,
-                        community_info,
-                        results,
-                        item.messages,
-                        item.flow,
-                    )
-
-                if not result or result == -1:
-                    raise RuntimeError("生成回答失败")
-
-                response_data = {
-                    "answer": result.get("answer", ""),
-                    "material": result.get("material", ""),
-                }
-                if not pending_request.completion.done():
-                    pending_request.completion.set_result(response_data)
-            except Exception as exc:
-                logger.exception("处理队列中的知识图谱查询失败: session_id=%s", session_id)
-                if not pending_request.completion.done():
-                    pending_request.completion.set_exception(exc)
-
-        if session_id in session_responses:
-            session_responses[session_id]["status"] = "idle"
-    except Exception:
-        logger.exception("处理会话队列失败: session_id=%s", session_id)
-        if session_id in session_responses:
-            session_responses[session_id]["status"] = "error"
-
-
-@app.get("/session_status/{session_id}")
-async def get_session_status(session_id: str):
-    """
-    获取会话状态。
-    
-    用途：
-        查询指定session_id的处理状态和队列长度。
-    
-    参数：
-        session_id (str): 会话ID。
-    
-    返回：
-        dict: {"status": str, "queue_length": int}
-    
-    异常：
-        会话不存在时返回404。
-    """
-    if session_id not in session_responses:
-        return JSONResponse(
-            status_code=404,
-            content={"error": "会话不存在"}
-        )
-
-    # 返回会话状态和消息队列长度
-    queue_length = len(message_queues.get(session_id, deque()))
-    return {
-        "status": session_responses[session_id]["status"],
-        "queue_length": queue_length
-    }
-
-
-@app.delete("/session/{session_id}")
-async def delete_session(session_id: str):
-    """
-    清除会话数据。
-    
-    用途：
-        删除指定session_id的队列和状态数据。
-    
-    参数：
-        session_id (str): 会话ID。
-    
-    返回：
-        dict: {"message": str}
-    
-    异常：
-        无
-    """
-    if session_responses.get(session_id, {}).get("status") == "processing":
-        raise HTTPException(status_code=409, detail="会话仍在处理中，暂不能删除")
-
-    message_queues.pop(session_id, None)
-    session_responses.pop(session_id, None)
-
-    return {"message": f"会话 {session_id} 已清除"}
-
-
-def get_source_text_path(base_name: str) -> Path:
-    """Return the private full-text source used for recovery and incremental work."""
-    return TXT_FOLDER / f"{base_name}.source.txt"
-
-
-def get_document_draft_path(base_name: str) -> Path:
-    return TXT_FOLDER / f"{base_name}.draft.txt"
-
-
-def get_document_rich_path(base_name: str) -> Path:
-    return TXT_FOLDER / f"{base_name}.rich.html"
-
-
-def get_document_history_path(base_name: str) -> Path:
-    return GRAPH_HISTORY_FOLDER / f"{base_name}.document.json"
-
-
-def _read_document_history(base_name: str) -> Dict[str, Any]:
-    path = get_document_history_path(base_name)
-    if not path.is_file():
-        return {"schema": 1, "next_revision": 1, "versions": []}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            raise ValueError("文档历史格式无效")
-        data.setdefault("schema", 1)
-        data.setdefault("next_revision", 1)
-        data.setdefault("versions", [])
-        return data
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
-        logger.warning("读取文档历史失败，将创建新历史: %s", exc)
-        return {"schema": 1, "next_revision": 1, "versions": []}
-
-
-def _write_document_history(base_name: str, data: Dict[str, Any]) -> None:
-    path = get_document_history_path(base_name)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".document.json.tmp")
-    temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    temporary.replace(path)
-
-
-def _document_snapshot(base_name: str, content: Optional[str] = None, rich_content: Optional[str] = None) -> Dict[str, Any]:
-    draft_path = get_document_draft_path(base_name)
-    if content is None:
-        content_path = draft_path
-        if not content_path.is_file():
-            content_path = TXT_FOLDER / f"{base_name}.txt"
-        content = content_path.read_text(encoding="utf-8") if content_path.is_file() else ""
-    if rich_content is None:
-        rich_path = get_document_rich_path(base_name)
-        rich_content = rich_path.read_text(encoding="utf-8") if rich_path.is_file() else ""
-    return {
-        "content": str(content),
-        "rich_content": str(rich_content or ""),
-        "draft": draft_path.is_file(),
-    }
-
-
-def _restore_document_snapshot(base_name: str, snapshot: Optional[Dict[str, Any]]) -> None:
-    """Restore the document files represented by a combined graph snapshot."""
-    if not snapshot:
-        return
-    content = str(snapshot.get("content") or "")
-    rich_content = str(snapshot.get("rich_content") or "")
-    if snapshot.get("draft"):
-        get_document_draft_path(base_name).write_text(content, encoding="utf-8")
-    else:
-        (TXT_FOLDER / f"{base_name}.txt").write_text(content, encoding="utf-8")
-        get_source_text_path(base_name).write_text(content, encoding="utf-8")
-        get_document_draft_path(base_name).unlink(missing_ok=True)
-    if rich_content:
-        get_document_rich_path(base_name).write_text(rich_content, encoding="utf-8")
-    else:
-        get_document_rich_path(base_name).unlink(missing_ok=True)
-
-
-def _append_document_version(base_name: str, snapshot: Dict[str, Any], operation: str) -> int:
-    data = _read_document_history(base_name)
-    revision = int(data.get("next_revision") or 1)
-    data["versions"].append({
-        "revision": revision,
-        "operation": operation,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        **snapshot,
-    })
-    data["next_revision"] = revision + 1
-    _write_document_history(base_name, data)
-    return revision
-
-
-def _document_operation_label(operation: str) -> str:
-    operation = str(operation or "")
-    if operation.startswith("before:document_edit"):
-        return "文档修改前"
-    if operation.startswith("document_edit"):
-        return "文档修改后"
-    if operation.startswith("before:document_restore"):
-        return "文档还原前"
-    if operation.startswith("document_restore:"):
-        return f"还原文档版本 {operation.split(':', 1)[1]}"
-    return "文档版本"
+# Compatibility aliases for tests and integrations that imported these from main.
+rag_executor = rag_service.executor
+rag_locks = rag_service.document_locks
+message_queues = rag_service.message_queues
+session_responses = rag_service.session_responses
+initialize_session = rag_service.initialize_session
+build_rag_citations = rag_service.build_citations
+process_session_queue = rag_service.process_session_queue
 
 
 def export_file_transfer_package(base_name: str) -> tuple[bytes, str]:
@@ -1482,6 +932,11 @@ def import_file_transfer_package(payload: bytes) -> Dict[str, Any]:
     manager.current_G = graph_from_node_link_data(state["current_G"])
     manager.Bolts = [tuple(block) for block in (state.get("Bolts") or [])]
     manager.original_file_type = original_filename
+    manager.configure_community_pagination(
+        state.get("community_min_size_mode"),
+        state.get("community_min_size"),
+        state.get("community_auto_percent"),
+    )
 
     result_directory = RESULT_FOLDER / base_name
     created_paths = [
@@ -1544,6 +999,27 @@ def import_file_transfer_package(payload: bytes) -> Dict[str, Any]:
         "imported": True,
         "percentage": 100,
     }
+
+
+def process_transfer_package_import(base_name: str, package_path: Path) -> None:
+    """Import a fully staged package independently of the browser request."""
+    try:
+        import_file_transfer_package(package_path.read_bytes())
+    except Exception as exc:
+        logger.error("后台导入图谱迁移包失败: %s", exc, exc_info=True)
+        current = get_process_status(base_name) or {}
+        set_process_status(
+            base_name,
+            "error",
+            original_filename=current.get("original_filename") or f"{base_name}.txt",
+            percentage=0,
+            partial_available=False,
+            resumable=False,
+            pause_requested=False,
+            error_message=f"图谱迁移包导入失败: {exc}",
+        )
+    finally:
+        package_path.unlink(missing_ok=True)
 
 
 def default_example_exists(base_name: str) -> bool:
@@ -1622,13 +1098,27 @@ def write_processed_text(base_name: str, bolts: List[Any]) -> None:
     temporary_path.replace(text_path)
 
 
-def render_graph_atomically(manager: KgManager, base_name: str) -> None:
+def render_graph_atomically(manager: KgManager, base_name: str, renderer: str = "all") -> None:
     """Render beside the live result and publish the main page only when complete."""
+    if renderer not in {"all", "pyvis", "sigma"}:
+        raise ValueError(f"Unsupported graph renderer: {renderer}")
     temporary_root = RESULT_FOLDER / f".{base_name}.{uuid.uuid4().hex}.tmp"
+    target_directory = RESULT_FOLDER / base_name
+    previous_highlight_index = None
+    previous_index_path = target_directory / f"{base_name}.highlights.json"
+    if previous_index_path.is_file():
+        try:
+            previous_highlight_index = json.loads(previous_index_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.warning("旧高亮索引无法读取，将完整重建: %s", base_name)
     try:
-        manager.绘制知识图谱(base_name, 输出目录=temporary_root)
+        manager.绘制知识图谱(
+            base_name,
+            输出目录=temporary_root,
+            高亮索引缓存=previous_highlight_index,
+            绘图引擎=renderer,
+        )
         generated_directory = temporary_root / base_name
-        target_directory = RESULT_FOLDER / base_name
         target_directory.mkdir(parents=True, exist_ok=True)
         generated_files = list(generated_directory.iterdir())
         main_page = f"{base_name}.html"
@@ -1636,23 +1126,49 @@ def render_graph_atomically(manager: KgManager, base_name: str) -> None:
         for generated_file in generated_files:
             generated_file.replace(target_directory / generated_file.name)
         generated_names = {path.name for path in generated_files}
+        def belongs_to_selected_renderer(page_name: str) -> bool:
+            if renderer == "all":
+                return True
+            if renderer == "sigma":
+                return page_name.startswith(f"{base_name}.sigma")
+            return (
+                page_name == f"{base_name}.html"
+                or page_name.startswith(f"{base_name}_community_")
+            )
+
         for stale_page in target_directory.glob("*.html"):
-            if stale_page.name not in generated_names:
+            if (
+                belongs_to_selected_renderer(stale_page.name)
+                and stale_page.name not in generated_names
+            ):
                 stale_page.unlink()
     finally:
         shutil.rmtree(temporary_root, ignore_errors=True)
 
 
-def redraw_graph_from_store(base_name: str) -> int:
+def redraw_graph_from_store(
+    base_name: str,
+    renderer: str = "all",
+    community_min_size_mode: Optional[str] = None,
+    community_min_size: Optional[int] = None,
+    community_auto_percent: Optional[float] = None,
+) -> int:
     """Render the persisted graph again without re-running document extraction."""
     with graph_edit_lock:
         manager = _load_editable_graph(base_name)
+        if community_min_size_mode is not None:
+            manager.configure_community_pagination(
+                community_min_size_mode,
+                community_min_size,
+                community_auto_percent,
+            )
         revision = graph_history.commit_snapshot(
             base_name,
             _graph_manager_state(manager),
             "redraw_graph",
         )
-        render_graph_atomically(manager, base_name)
+        render_graph_atomically(manager, base_name, renderer)
+        manager.save_store()
         return revision
 
 
@@ -1673,12 +1189,17 @@ def persist_graph_checkpoint(
     write_processed_text(base_name, manager.Bolts)
     current = get_process_status(base_name) or {}
     effective_status = "pausing" if current.get("pause_requested") else processing_status
+    percentage = (
+        current.get("overall_percentage")
+        if current.get("stage_progress") else
+        (round(completed_chunks * 100 / total_chunks) if total_chunks else 0)
+    )
     set_process_status(
         base_name,
         effective_status,
         completed_chunks=completed_chunks,
         total_chunks=total_chunks,
-        percentage=round(completed_chunks * 100 / total_chunks) if total_chunks else 0,
+        percentage=percentage,
         partial_available=True,
         resumable=True,
     )
@@ -1774,8 +1295,12 @@ def mark_file_processing_failed(base_name: str, error: Exception) -> None:
         completed_chunks=completed_chunks,
         total_chunks=max(int(progress.get("total_chunks") or 0), completed_chunks),
         percentage=(
-            round(completed_chunks * 100 / max(int(progress.get("total_chunks") or 0), completed_chunks))
-            if completed_chunks else 0
+            progress.get("overall_percentage")
+            if progress.get("stage_progress") else
+            (
+                round(completed_chunks * 100 / max(int(progress.get("total_chunks") or 0), completed_chunks))
+                if completed_chunks else 0
+            )
         ),
         estimated_remaining_seconds=None,
         partial_available=partial_available,
@@ -1792,6 +1317,9 @@ def process_knowledge_graph(
     splitter=None,
     custom_prompts: Optional[Dict[str, str]] = None,
     resume: bool = False,
+    community_min_size_mode: Optional[str] = None,
+    community_min_size: Optional[int] = None,
+    community_auto_percent: Optional[float] = None,
 ):
     """处理文本内容生成知识图谱"""
     try:
@@ -1826,6 +1354,11 @@ def process_knowledge_graph(
                 embedding_model=embeddings,
                 store=chromadb_store,
             )
+            kg_manager.configure_community_pagination(
+                community_min_size_mode,
+                community_min_size,
+                community_auto_percent,
+            )
 
             # 设置笔记类型以及本次文件专用的处理提示词
             kg_manager.configure_processing_prompts(note_type, custom_prompts)
@@ -1843,6 +1376,13 @@ def process_knowledge_graph(
                 if completed_offset > len(all_blocks) or completed_texts != source_prefix:
                     raise ValueError("恢复源文件与已完成检查点不一致，请重新上传文件")
                 blocks_to_process = all_blocks[completed_offset:]
+                # The current processing request is authoritative when a user
+                # changes pagination settings before resuming a file.
+                kg_manager.configure_community_pagination(
+                    community_min_size_mode,
+                    community_min_size,
+                    community_auto_percent,
+                )
 
             set_process_status(
                 base_name,
@@ -1850,6 +1390,13 @@ def process_knowledge_graph(
                 completed_chunks=completed_offset,
                 total_chunks=len(all_blocks),
                 percentage=round(completed_offset * 100 / len(all_blocks)) if all_blocks else 0,
+            )
+            initialize_stage_progress(
+                base_name,
+                processing_status,
+                len(all_blocks),
+                completed_offset,
+                preserve_timings=resume,
             )
 
             checkpoint_callback = lambda manager, completed, total: persist_graph_checkpoint_if_due(
@@ -1864,14 +1411,18 @@ def process_knowledge_graph(
             # 知识图谱构建过程；每个完成块都会形成可查看、可恢复的检查点。
             r = kg_manager.知识图谱的构建(
                 blocks_to_process,
-                progress_callback=create_chunk_progress_callback(base_name, processing_status),
+                stage_progress_callback=create_stage_progress_callback(base_name, processing_status),
                 checkpoint_callback=checkpoint_callback,
                 append=resume,
                 completed_offset=completed_offset,
                 total_chunks=len(all_blocks),
                 pause_callback=lambda: should_pause_file_processing(base_name),
             )
-            kg_manager.知识融合(r)
+            r = kg_manager.知识融合(
+                r,
+                progress_callback=create_fusion_progress_callback(base_name, processing_status),
+                pause_callback=lambda: should_pause_file_processing(base_name),
+            )
             if should_pause_file_processing(base_name):
                 raise ProcessingPaused("用户已暂停文件处理")
             logger.info(f"知识图谱构建完成，耗时: {time.time() - start_time:.2f}秒")
@@ -1914,12 +1465,30 @@ def process_uploaded_file(
     note_type: str = "general",
     use_img2txt: bool = False,
     custom_prompts: Optional[Dict[str, str]] = None,
+    max_chunk_tokens: Optional[int] = None,
+    min_chunk_tokens: Optional[int] = None,
+    community_min_size_mode: Optional[str] = None,
+    community_min_size: Optional[int] = None,
+    community_auto_percent: Optional[float] = None,
 ):
     """后台处理任务（包含文件转换）"""
     try:
         # 获取文件信息
         base_name = os.path.splitext(filename)[0]
         file_ext = os.path.splitext(filename)[1].lower()
+        max_chunk_tokens, min_chunk_tokens = normalize_chunk_token_settings(
+            max_chunk_tokens,
+            min_chunk_tokens,
+        )
+        (
+            community_min_size_mode,
+            community_min_size,
+            community_auto_percent,
+        ) = normalize_community_pagination_settings(
+            community_min_size_mode,
+            community_min_size,
+            community_auto_percent,
+        )
         txt_filename = f"{os.path.splitext(filename)[0]}.txt"
         txt_path = os.path.join(TXT_FOLDER, txt_filename)
 
@@ -1931,6 +1500,11 @@ def process_uploaded_file(
             completed_chunks=0,
             total_chunks=0,
             percentage=0,
+            processing_stage=None,
+            stage_progress={},
+            overall_percentage=0,
+            overall_speed_percent_per_minute=None,
+            estimated_total_remaining_seconds=None,
             latest_chunk_seconds=None,
             estimated_remaining_seconds=None,
         )
@@ -1978,6 +1552,11 @@ def process_uploaded_file(
             note_type=note_type,
             custom_prompts=custom_prompts or {},
             use_img2txt=use_img2txt,
+            chunk_max_tokens=max_chunk_tokens,
+            chunk_min_tokens=min_chunk_tokens,
+            community_min_size_mode=community_min_size_mode,
+            community_min_size=community_min_size,
+            community_auto_percent=community_auto_percent,
             resume_mode="initial",
             resumable=True,
             partial_available=False,
@@ -1990,8 +1569,11 @@ def process_uploaded_file(
             text_content,
             filename,
             note_type,
-            get_splitter_for_extension(file_ext),
+            get_splitter_for_extension(file_ext, max_chunk_tokens, min_chunk_tokens),
             custom_prompts,
+            community_min_size_mode=community_min_size_mode,
+            community_min_size=community_min_size,
+            community_auto_percent=community_auto_percent,
         )
 
         # 处理完成后更新状态
@@ -2015,6 +1597,11 @@ def process_update_file(
     use_img2txt: bool = False,
     note_type: str = "general",
     custom_prompts: Optional[Dict[str, str]] = None,
+    max_chunk_tokens: Optional[int] = None,
+    min_chunk_tokens: Optional[int] = None,
+    community_min_size_mode: Optional[str] = None,
+    community_min_size: Optional[int] = None,
+    community_auto_percent: Optional[float] = None,
     edited_text: Optional[str] = None,
 ):
     """处理文件增量更新"""
@@ -2022,6 +1609,19 @@ def process_update_file(
         # 获取文件信息
         base_name = os.path.splitext(filename)[0]
         file_ext = os.path.splitext(filename)[1].lower()
+        max_chunk_tokens, min_chunk_tokens = normalize_chunk_token_settings(
+            max_chunk_tokens,
+            min_chunk_tokens,
+        )
+        (
+            community_min_size_mode,
+            community_min_size,
+            community_auto_percent,
+        ) = normalize_community_pagination_settings(
+            community_min_size_mode,
+            community_min_size,
+            community_auto_percent,
+        )
         new_txt_filename = f"{base_name}_new.txt"
         new_txt_path = os.path.join(TXT_FOLDER, new_txt_filename)
 
@@ -2032,7 +1632,12 @@ def process_update_file(
             "pausing" if current_progress.get("pause_requested") else "updating",
             completed_chunks=int(current_progress.get("completed_chunks") or 0),
             total_chunks=int(current_progress.get("total_chunks") or 0),
-            percentage=int(current_progress.get("percentage") or 0),
+            percentage=0,
+            processing_stage=None,
+            stage_progress={},
+            overall_percentage=0,
+            overall_speed_percent_per_minute=None,
+            estimated_total_remaining_seconds=None,
             latest_chunk_seconds=None,
             estimated_remaining_seconds=None,
         )
@@ -2041,9 +1646,14 @@ def process_update_file(
         # 新建独立的KgManager实例
         kg_manager = KgManager(
             agent=kg_agent,
-            splitter=get_splitter_for_extension(file_ext),
+            splitter=get_splitter_for_extension(file_ext, max_chunk_tokens, min_chunk_tokens),
             embedding_model=embeddings,
             store=chromadb_store,
+        )
+        kg_manager.configure_community_pagination(
+            community_min_size_mode,
+            community_min_size,
+            community_auto_percent,
         )
         kg_manager.configure_processing_prompts(note_type, custom_prompts)
 
@@ -2092,6 +1702,11 @@ def process_update_file(
             note_type=note_type,
             custom_prompts=custom_prompts or {},
             use_img2txt=use_img2txt,
+            chunk_max_tokens=max_chunk_tokens,
+            chunk_min_tokens=min_chunk_tokens,
+            community_min_size_mode=community_min_size_mode,
+            community_min_size=community_min_size,
+            community_auto_percent=community_auto_percent,
             resume_mode="update",
             resumable=True,
         )
@@ -2129,6 +1744,11 @@ def process_update_file(
         # 增量更新前，先加载原有知识图谱
         if not kg_manager.load_store(base_name):
             raise ValueError(f"无法加载原有知识图谱: {base_name}")
+        kg_manager.configure_community_pagination(
+            community_min_size_mode,
+            community_min_size,
+            community_auto_percent,
+        )
         before_history = state_snapshot(_graph_manager_state(kg_manager))
 
         # 执行增量更新
@@ -2136,9 +1756,15 @@ def process_update_file(
         start_time = time.time()
 
         # 执行增量更新
+        initialize_stage_progress(
+            base_name,
+            "updating",
+            None,
+            preserve_timings=False,
+        )
         new_kg_triplet = kg_manager.增量更新(
             new_text_content,
-            progress_callback=create_chunk_progress_callback(base_name, status="updating"),
+            stage_progress_callback=create_stage_progress_callback(base_name, status="updating"),
             checkpoint_callback=lambda manager, completed, total: persist_graph_checkpoint_if_due(
                 manager,
                 base_name,
@@ -2151,7 +1777,11 @@ def process_update_file(
         )
         if should_pause_file_processing(base_name):
             raise ProcessingPaused("用户已暂停文件处理")
-        new_kg_triplet = kg_manager.知识融合(new_kg_triplet)
+        new_kg_triplet = kg_manager.知识融合(
+            new_kg_triplet,
+            progress_callback=create_fusion_progress_callback(base_name, status="updating"),
+            pause_callback=lambda: should_pause_file_processing(base_name),
+        )
         if should_pause_file_processing(base_name):
             raise ProcessingPaused("用户已暂停文件处理")
 
@@ -2250,6 +1880,11 @@ def process_edited_document_update(base_name: str, filename: str) -> None:
             bool(progress.get("use_img2txt")),
             progress.get("note_type", "general"),
             progress.get("custom_prompts") or {},
+            progress.get("chunk_max_tokens"),
+            progress.get("chunk_min_tokens"),
+            progress.get("community_min_size_mode"),
+            progress.get("community_min_size"),
+            progress.get("community_auto_percent"),
             edited_text=content,
         )
         if (get_process_status(base_name) or {}).get("status") in {"completed", "redrawing"}:
@@ -2282,6 +1917,11 @@ def process_resume_file(base_name: str) -> None:
                 bool(progress.get("use_img2txt")),
                 progress.get("note_type", "general"),
                 progress.get("custom_prompts") or {},
+                progress.get("chunk_max_tokens"),
+                progress.get("chunk_min_tokens"),
+                progress.get("community_min_size_mode"),
+                progress.get("community_min_size"),
+                progress.get("community_auto_percent"),
             )
             return
 
@@ -2295,6 +1935,11 @@ def process_resume_file(base_name: str) -> None:
                 progress.get("note_type", "general"),
                 bool(progress.get("use_img2txt")),
                 progress.get("custom_prompts") or {},
+                progress.get("chunk_max_tokens"),
+                progress.get("chunk_min_tokens"),
+                progress.get("community_min_size_mode"),
+                progress.get("community_min_size"),
+                progress.get("community_auto_percent"),
             )
             return
         text_content, _ = read_text_file(source_path)
@@ -2314,9 +1959,16 @@ def process_resume_file(base_name: str) -> None:
             text_content,
             original_filename,
             progress.get("note_type", "general"),
-            get_splitter_for_extension(file_ext),
+            get_splitter_for_extension(
+                file_ext,
+                progress.get("chunk_max_tokens"),
+                progress.get("chunk_min_tokens"),
+            ),
             progress.get("custom_prompts") or {},
             resume=has_checkpoint,
+            community_min_size_mode=progress.get("community_min_size_mode"),
+            community_min_size=progress.get("community_min_size"),
+            community_auto_percent=progress.get("community_auto_percent"),
         )
     except ProcessingPaused:
         mark_file_processing_paused(base_name)
@@ -2412,6 +2064,20 @@ async def upload_file(
     entity_prompt: Optional[str] = Form(None, alias="entityPrompt"),
     relationship_prompt: Optional[str] = Form(None, alias="relationshipPrompt"),
     fusion_prompt: Optional[str] = Form(None, alias="fusionPrompt"),
+    max_chunk_tokens: int = Form(chunk_max_tokens, alias="chunkMaxTokens"),
+    min_chunk_tokens: int = Form(chunk_min_tokens, alias="chunkMinTokens"),
+    community_min_size_mode: str = Form(
+        DEFAULT_COMMUNITY_MIN_SIZE_MODE,
+        alias="communityMinSizeMode",
+    ),
+    community_min_size: int = Form(
+        DEFAULT_COMMUNITY_MIN_SIZE,
+        alias="communityMinSize",
+    ),
+    community_auto_percent: float = Form(
+        DEFAULT_COMMUNITY_AUTO_PERCENT,
+        alias="communityAutoPercent",
+    ),
 ):
     """
     支持多种格式的文件上传接口，支持增量更新。
@@ -2440,11 +2106,43 @@ async def upload_file(
             if len(package_content) > MAX_TRANSFER_PACKAGE_SIZE:
                 raise HTTPException(status_code=413, detail="图谱迁移包不能超过 100 MB")
         try:
-            imported = await asyncio.to_thread(
-                import_file_transfer_package,
-                bytes(package_content),
+            payload = bytes(package_content)
+            package = await asyncio.to_thread(read_transfer_package, payload)
+            base_name = get_base_name(f"{package.base_name}.txt")
+            original_filename = get_safe_filename(package.original_filename)
+            current = get_process_status(base_name) or {}
+            if current.get("status") == "importing":
+                raise FileExistsError(f"文件 {original_filename} 正在导入")
+            if (
+                chromadb_store.load_state(base_name) is not None
+                or (RESULT_FOLDER / base_name).exists()
+                or (UPLOAD_FOLDER / original_filename).exists()
+            ):
+                raise FileExistsError(f"文件 {original_filename} 已存在，请先删除后再导入")
+
+            package_path = get_transfer_import_path(base_name)
+            temporary_path = package_path.with_suffix(f"{package_path.suffix}.tmp")
+            await asyncio.to_thread(temporary_path.write_bytes, payload)
+            await asyncio.to_thread(temporary_path.replace, package_path)
+            set_process_status(
+                base_name,
+                "importing",
+                original_filename=original_filename,
+                completed_chunks=0,
+                total_chunks=0,
+                percentage=95,
+                partial_available=False,
+                resumable=False,
+                pause_requested=False,
+                error_message=None,
             )
-            return JSONResponse(imported)
+            background_tasks.add_task(process_transfer_package_import, base_name, package_path)
+            return JSONResponse({
+                "status": "importing",
+                "message": "迁移包已完整上传，正在后台导入",
+                "filename": original_filename,
+                "percentage": 95,
+            })
         except FileExistsError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except (ValueError, FileNotFoundError) as exc:
@@ -2464,6 +2162,22 @@ async def upload_file(
             relationship_prompt,
             fusion_prompt,
         )
+        try:
+            max_chunk_tokens, min_chunk_tokens = normalize_chunk_token_settings(
+                max_chunk_tokens,
+                min_chunk_tokens,
+            )
+            (
+                community_min_size_mode,
+                community_min_size,
+                community_auto_percent,
+            ) = normalize_community_pagination_settings(
+                community_min_size_mode,
+                community_min_size,
+                community_auto_percent,
+            )
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         logger.info(f"收到图片文本识别参数: {use_img2txt} -> {use_img2txt_bool}")
 
@@ -2530,6 +2244,11 @@ async def upload_file(
                 note_type=note_type,
                 custom_prompts=custom_prompts or {},
                 use_img2txt=use_img2txt_bool,
+                chunk_max_tokens=max_chunk_tokens,
+                chunk_min_tokens=min_chunk_tokens,
+                community_min_size_mode=community_min_size_mode,
+                community_min_size=community_min_size,
+                community_auto_percent=community_auto_percent,
                 resume_mode="update",
                 source_text_path=str(get_source_text_path(base_name)),
                 partial_available=bool(existing_chunk_count and result_file.is_file()),
@@ -2545,6 +2264,11 @@ async def upload_file(
                 use_img2txt_bool,
                 note_type,
                 custom_prompts,
+                max_chunk_tokens,
+                min_chunk_tokens,
+                community_min_size_mode,
+                community_min_size,
+                community_auto_percent,
             )
 
             return JSONResponse({
@@ -2567,6 +2291,11 @@ async def upload_file(
                 note_type=note_type,
                 custom_prompts=custom_prompts or {},
                 use_img2txt=use_img2txt_bool,
+                chunk_max_tokens=max_chunk_tokens,
+                chunk_min_tokens=min_chunk_tokens,
+                community_min_size_mode=community_min_size_mode,
+                community_min_size=community_min_size,
+                community_auto_percent=community_auto_percent,
                 resume_mode="initial",
                 resumable=False,
                 partial_available=False,
@@ -2579,6 +2308,11 @@ async def upload_file(
                 note_type,
                 use_img2txt_bool,
                 custom_prompts,
+                max_chunk_tokens,
+                min_chunk_tokens,
+                community_min_size_mode,
+                community_min_size,
+                community_auto_percent,
             )
 
             return JSONResponse({
@@ -2624,6 +2358,7 @@ async def get_processing_status(filename: str):
     # 状态映射，用于前端展示
     status_map = {
         "uploading": "上传中",
+        "importing": "迁移包导入中",
         "processing": "处理中",
         "updating": "增量更新中",
         "resuming": "继续处理中",
@@ -2639,6 +2374,8 @@ async def get_processing_status(filename: str):
         status = progress["status"]
         result_exists = (RESULT_FOLDER / base_name / f'{base_name}.html').exists()
         display_status = status_map.get(status, status)
+        character_count, last_edited_at = get_file_library_metadata(base_name)
+        document_history = _read_document_history(base_name)
 
         return JSONResponse({
             "status": status,
@@ -2650,9 +2387,21 @@ async def get_processing_status(filename: str):
             "percentage": progress.get("percentage", 0),
             "latest_chunk_seconds": progress.get("latest_chunk_seconds"),
             "estimated_remaining_seconds": progress.get("estimated_remaining_seconds"),
+            "processing_stage": progress.get("processing_stage"),
+            "stage_progress": progress.get("stage_progress") or {},
+            "overall_percentage": progress.get("overall_percentage", progress.get("percentage", 0)),
+            "overall_speed_percent_per_minute": progress.get("overall_speed_percent_per_minute"),
+            "estimated_total_remaining_seconds": progress.get(
+                "estimated_total_remaining_seconds",
+                progress.get("estimated_remaining_seconds"),
+            ),
             "partial_available": bool(progress.get("partial_available")),
             "resumable": bool(progress.get("resumable")),
             "error_message": progress.get("error_message"),
+            "document_modified": get_document_draft_path(base_name).is_file(),
+            "document_revision": int(document_history.get("next_revision") or 1) - 1,
+            "character_count": character_count,
+            "last_edited_at": last_edited_at,
         })
     else:
         return JSONResponse(
@@ -2870,10 +2619,103 @@ async def get_result_page(graph_name: str, page_name: str):
         page_name.startswith(child_page_prefix)
         and page_name.endswith(".html")
     )
-    if page_name != main_page_name and not is_community_page:
+    is_sigma_page = page_name == f"{graph_name}.sigma.html"
+    is_sigma_community_page = (
+        page_name == f"{graph_name}.sigma-communities.html"
+        or (
+            page_name.startswith(f"{graph_name}.sigma-community-")
+            and page_name.endswith(".html")
+        )
+    )
+    is_sigma_requested = is_sigma_page or is_sigma_community_page
+    if (
+        page_name != main_page_name
+        and not is_community_page
+        and not is_sigma_page
+        and not is_sigma_community_page
+    ):
         raise HTTPException(status_code=404, detail="图谱页面不存在")
 
     result_path = RESULT_FOLDER / graph_name / page_name
+    sigma_page_is_current = False
+    if is_sigma_requested and result_path.is_file():
+        try:
+            with result_path.open("rb") as sigma_page:
+                sigma_page.seek(max(0, result_path.stat().st_size - 16_384))
+                sigma_page_is_current = (
+                    f"const SIGMA_STATIC_PAGE_VERSION = {SIGMA_STATIC_PAGE_VERSION};".encode()
+                    in sigma_page.read()
+                )
+        except OSError:
+            sigma_page_is_current = False
+    if is_sigma_requested and not sigma_page_is_current:
+        # Existing graphs created before Sigma persistence are migrated once on
+        # first use. Subsequent views only serve the saved HTML file.
+        try:
+            manager = await asyncio.to_thread(_load_editable_graph, graph_name)
+            payload = graph_payload(
+                _graph_manager_state(manager),
+                _current_graph_revision(graph_name),
+            )
+            sigma_graph = nx.MultiDiGraph()
+            for node in payload["nodes"]:
+                sigma_graph.add_node(
+                    node["id"],
+                    label=node.get("name") or node["id"],
+                    entity_type=node.get("entityType") or "未分类",
+                    source_blocks=node.get("source_blocks") or [],
+                )
+            for edge in payload["links"]:
+                if edge["source"] not in sigma_graph or edge["target"] not in sigma_graph:
+                    continue
+                sigma_graph.add_edge(
+                    edge["source"],
+                    edge["target"],
+                    edit_id=edge.get("id"),
+                    label=edge.get("relation") or "",
+                    title=edge.get("context") or edge.get("evidence") or "",
+                    weight=edge.get("weight") or 1,
+                    source_block=edge.get("source_block") or "",
+                    evidence_blocks=edge.get("evidence_blocks") or [],
+                    evidence_source=edge.get("source") or "",
+                    evidence_target=edge.get("target") or "",
+                    origin=edge.get("origin") or "extracted",
+                )
+            community_min_size = manager.resolve_community_min_size(
+                sigma_graph.number_of_nodes(),
+                sigma_graph.number_of_edges(),
+            )
+            sigma_partition = None
+            if page_name.startswith(f"{graph_name}.sigma-community-"):
+                overview_path = result_path.parent / f"{graph_name}.sigma-communities.html"
+                if overview_path.is_file():
+                    overview_html = overview_path.read_text(encoding="utf-8")
+                    payload_match = re.search(
+                        r'<script id="sigma-data" type="application/json">(.*?)</script>',
+                        overview_html,
+                        flags=re.DOTALL,
+                    )
+                    if payload_match:
+                        overview_payload = json.loads(payload_match.group(1))
+                        sigma_partition = {
+                            str(node): str(entry.get("id", ""))
+                            for entry in overview_payload.get("navigation", {}).get("entries", [])
+                            for node in entry.get("members", [])
+                        }
+                        for node in sigma_graph.nodes:
+                            sigma_partition.setdefault(str(node), f"unpaged:{node}")
+            await asyncio.to_thread(
+                write_sigma_graph_pages,
+                sigma_graph,
+                result_path.parent,
+                graph_name,
+                sigma_partition,
+                community_min_size,
+                page_name,
+            )
+        except Exception as exc:
+            logger.error("生成 Sigma 静态图谱失败: %s", graph_name, exc_info=True)
+            raise HTTPException(status_code=500, detail=f"生成 Sigma 静态图谱失败: {exc}") from exc
     if not result_path.is_file():
         raise HTTPException(status_code=404, detail="图谱页面不存在")
 
@@ -2882,11 +2724,19 @@ async def get_result_page(graph_name: str, page_name: str):
 
 @app.get("/graph-assets/{asset_name}")
 async def get_graph_asset(asset_name: str):
-    """Serve the installed PyVis runtime locally with long-lived browser caching."""
-    try:
-        asset_path = get_local_vis_asset_path(asset_name)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    """Serve local PyVis and Sigma runtimes with long-lived browser caching."""
+    if asset_name in {"sigma.min.js", "graphology.umd.min.js"}:
+        candidates = (
+            FRONTEND_DIST_FOLDER / "graph-assets" / asset_name,
+            Path(__file__).resolve().parent.parent / "frontend" / "node_modules" /
+            ("sigma/dist" if asset_name == "sigma.min.js" else "graphology/dist") / asset_name,
+        )
+        asset_path = next((path for path in candidates if path.is_file()), candidates[0])
+    else:
+        try:
+            asset_path = get_local_vis_asset_path(asset_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
     if not asset_path.is_file():
         raise HTTPException(status_code=404, detail="图谱资源不存在")
     media_type = "text/css" if asset_name.endswith(".css") else "text/javascript"
@@ -2897,35 +2747,33 @@ async def get_graph_asset(asset_name: str):
     )
 
 
-def get_graph_html_response(result_path: Path, graph_name: str, page_name: str) -> HTMLResponse:
-    """Serve graph HTML with a stable base for relative page navigation."""
+def get_graph_html_response(result_path: Path, graph_name: str, page_name: str):
+    """Serve finalized graphs and upgrade older interaction layers in memory."""
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "no-cache",
+        "Content-Disposition": f"inline; filename*=utf-8''{quote(page_name, safe='')}",
+    }
     html_content = result_path.read_text(encoding="utf-8")
-    html_content = prepare_legacy_graph_html(
-        html_content,
-        asset_base_url="/api/graph-assets",
-        graph_name=graph_name,
-    )
-    if "<head>" in html_content:
-        html_content = html_content.replace(
-            "<head>", '<head><base href="./">', 1
+    if f"const SIGMA_STATIC_PAGE_VERSION = {SIGMA_STATIC_PAGE_VERSION};" in html_content:
+        return FileResponse(
+            result_path,
+            media_type="text/html",
+            headers=headers,
         )
-
-    # Results produced by earlier versions may contain either of these absolute
-    # prefixes. Convert only this graph's navigation links so the injected base
-    # above also fixes old files without changing their on-disk contents.
-    for legacy_prefix in (
-        f'href="/api/result-page/{quote(graph_name, safe="")}/',
-        f'href="/KnowledgeMapNotes/results/{graph_name}/',
-        f'href="/KnowledgeMapNotes/results/{quote(graph_name, safe="")}/',
-    ):
-        html_content = html_content.replace(legacy_prefix, 'href="')
-
-    return HTMLResponse(
-        content=html_content,
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Content-Disposition": f"inline; filename*=utf-8''{quote(page_name, safe='')}",
-        },
+    if f"const GRAPH_EDITOR_VERSION = {GRAPH_EDITOR_VERSION};" not in html_content:
+        return HTMLResponse(
+            prepare_legacy_graph_html(
+                html_content,
+                asset_base_url="/api/graph-assets",
+                graph_name=graph_name,
+            ),
+            headers=headers,
+        )
+    return FileResponse(
+        result_path,
+        media_type="text/html",
+        headers=headers,
     )
 
 
@@ -2941,7 +2789,7 @@ async def get_result(filename: str):
         filename (str): 文件名。
     
     返回：
-        HTMLResponse: HTML文件。
+        FileResponse: 已预生成的 HTML 文件。
         JSONResponse: 错误时返回错误信息。
     
     异常：
@@ -2994,6 +2842,42 @@ async def health_check():
     return {"status": "healthy", "timestamp": time.time()}
 
 
+_file_text_stat_cache: Dict[str, tuple[int, int, int]] = {}
+
+
+def get_file_library_metadata(base_name: str) -> tuple[int, str]:
+    """Return exact non-whitespace character count and latest persisted edit time."""
+    text_path = get_document_draft_path(base_name)
+    if not text_path.is_file():
+        text_path = TXT_FOLDER / f"{base_name}.txt"
+
+    character_count = 0
+    if text_path.is_file():
+        stat = text_path.stat()
+        cache_key = str(text_path)
+        cached = _file_text_stat_cache.get(cache_key)
+        if cached and cached[:2] == (stat.st_mtime_ns, stat.st_size):
+            character_count = cached[2]
+        else:
+            content, _ = read_text_file(text_path)
+            character_count = len(re.sub(r"\s+", "", content))
+            _file_text_stat_cache[cache_key] = (stat.st_mtime_ns, stat.st_size, character_count)
+
+    edit_paths = [
+        text_path,
+        get_document_history_path(base_name),
+        GRAPH_HISTORY_FOLDER / f"{base_name}.json",
+        RESULT_FOLDER / base_name / f"{base_name}.highlights.json",
+    ]
+    edit_timestamps = [path.stat().st_mtime for path in edit_paths if path.is_file()]
+    latest_timestamp = max(edit_timestamps) if edit_timestamps else 0
+    latest_edit = (
+        datetime.fromtimestamp(latest_timestamp, tz=timezone.utc).isoformat()
+        if latest_timestamp else ""
+    )
+    return character_count, latest_edit
+
+
 @app.get("/list-files")
 async def list_files():
     """
@@ -3022,7 +2906,7 @@ async def list_files():
 
         # 获取当前正在处理的文件（从PROCESS_STATUS获取）
         tracked_statuses = {
-            "uploading", "processing", "updating", "resuming", "pausing", "redrawing",
+            "uploading", "importing", "processing", "updating", "resuming", "pausing", "redrawing",
             "paused", "interrupted", "error",
         }
         with process_status_lock:
@@ -3035,6 +2919,7 @@ async def list_files():
         # 状态映射，用于前端展示
         status_map = {
             "uploading": "上传中",
+            "importing": "迁移包导入中",
             "processing": "处理中",
             "updating": "增量更新中",
             "resuming": "继续处理中",
@@ -3060,6 +2945,7 @@ async def list_files():
             status = progress["status"]
             display_status = status_map.get(status, status)
             document_history = _read_document_history(base_name)
+            character_count, last_edited_at = get_file_library_metadata(base_name)
 
             processed_files.append({
                 "filename": original_filename,
@@ -3068,12 +2954,23 @@ async def list_files():
                 "percentage": progress.get("percentage", 0),
                 "completed_chunks": progress.get("completed_chunks", 0),
                 "total_chunks": progress.get("total_chunks", 0),
+                "latest_chunk_seconds": progress.get("latest_chunk_seconds"),
                 "estimated_remaining_seconds": progress.get("estimated_remaining_seconds"),
+                "processing_stage": progress.get("processing_stage"),
+                "stage_progress": progress.get("stage_progress") or {},
+                "overall_percentage": progress.get("overall_percentage", progress.get("percentage", 0)),
+                "overall_speed_percent_per_minute": progress.get("overall_speed_percent_per_minute"),
+                "estimated_total_remaining_seconds": progress.get(
+                    "estimated_total_remaining_seconds",
+                    progress.get("estimated_remaining_seconds"),
+                ),
                 "partial_available": bool(progress.get("partial_available")),
                 "resumable": bool(progress.get("resumable")),
                 "error_message": progress.get("error_message"),
                 "document_modified": get_document_draft_path(base_name).is_file(),
                 "document_revision": int(document_history.get("next_revision") or 1) - 1,
+                "character_count": character_count,
+                "last_edited_at": last_edited_at,
             })
 
         # 再添加仅在PROCESS_STATUS中的文件（正在处理但尚未添加到数据库的文件）
@@ -3083,6 +2980,7 @@ async def list_files():
                 status = progress["status"]
                 display_status = status_map.get(status, status)
                 document_history = _read_document_history(base_name)
+                character_count, last_edited_at = get_file_library_metadata(base_name)
                 processed_files.append({
                     "filename": progress.get("original_filename") or f"{base_name}.txt",
                     "status": status,
@@ -3090,12 +2988,23 @@ async def list_files():
                     "percentage": progress.get("percentage", 0),
                     "completed_chunks": progress.get("completed_chunks", 0),
                     "total_chunks": progress.get("total_chunks", 0),
+                    "latest_chunk_seconds": progress.get("latest_chunk_seconds"),
                     "estimated_remaining_seconds": progress.get("estimated_remaining_seconds"),
+                    "processing_stage": progress.get("processing_stage"),
+                    "stage_progress": progress.get("stage_progress") or {},
+                    "overall_percentage": progress.get("overall_percentage", progress.get("percentage", 0)),
+                    "overall_speed_percent_per_minute": progress.get("overall_speed_percent_per_minute"),
+                    "estimated_total_remaining_seconds": progress.get(
+                        "estimated_total_remaining_seconds",
+                        progress.get("estimated_remaining_seconds"),
+                    ),
                     "partial_available": bool(progress.get("partial_available")),
                     "resumable": bool(progress.get("resumable")),
                     "error_message": progress.get("error_message"),
                     "document_modified": get_document_draft_path(base_name).is_file(),
                     "document_revision": int(document_history.get("next_revision") or 1) - 1,
+                    "character_count": character_count,
+                    "last_edited_at": last_edited_at,
                 })
 
         return JSONResponse({"files": processed_files})
@@ -3129,7 +3038,7 @@ async def delete_file(filename: str):
         base_name = get_base_name(filename)
         progress = get_process_status(base_name) or {}
         if progress.get("status") in {
-            "uploading", "processing", "updating", "resuming", "pausing"
+            "uploading", "importing", "processing", "updating", "resuming", "pausing"
         }:
             raise HTTPException(status_code=409, detail="请先暂停文件处理，再执行删除")
         kg_manager.delete_store([base_name])
@@ -3142,6 +3051,7 @@ async def delete_file(filename: str):
             get_document_draft_path(base_name),
             get_document_rich_path(base_name),
             STATUS_FOLDER / f"{base_name}.json",
+            get_transfer_import_path(base_name),
             GRAPH_HISTORY_FOLDER / f"{base_name}.json",
             get_document_history_path(base_name),
             # Clean up a flat result produced by earlier versions as well.
@@ -3275,5 +3185,5 @@ if __name__ == "__main__":
     uvicorn.run(
         app,
         host=os.getenv("HOST", "localhost"),
-        port=int(os.getenv("PORT", "8000")),
+        port=int(os.getenv("PORT", "8002")),
     )

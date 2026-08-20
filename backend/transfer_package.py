@@ -93,6 +93,9 @@ def _serialize_state(state: Mapping[str, Any]) -> Dict[str, Any]:
         "current_G": graph_data,
         "Bolts": state.get("Bolts") or [],
         "original_file_type": state.get("original_file_type"),
+        "community_min_size_mode": state.get("community_min_size_mode"),
+        "community_min_size": state.get("community_min_size"),
+        "community_auto_percent": state.get("community_auto_percent"),
     }
 
 
